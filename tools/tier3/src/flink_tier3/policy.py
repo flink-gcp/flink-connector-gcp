@@ -50,50 +50,12 @@ FIRESTORE = _policy["environment"]["firestore"]
 FIRESTORE_STATE = _policy["environment"]["firestore_state"]
 
 BIGQUERY_OBSERVATIONS = {
-    # The measurement windows: a baseline after a warm-up, one after the
-    # upgrade and one after the failover. Thirty minutes of input hold three
-    # five-minute windows: with ten-minute baseline and post-recovery windows
-    # and none after the upgrade, bq1313-fl-10-a1's input outlasted the last
-    # by 232 s and bq1685-fl-10-a1's by 106 s. The warm-up is a minute, as for
-    # Cloud Tasks; the three minutes it was had no recorded reason, and the two
-    # it gives back are FILE_LOADS's margin.
-    "warmup_seconds": 60,
-    "baseline_seconds": 300,
-    "post_upgrade_seconds": 300,
-    "post_recovery_seconds": 300,
-    # After the baseline, the upgrade waits for a checkpoint triggered after
-    # it: two FILE_LOADS checkpoint intervals and a poll each, the longest
-    # interval any BigQuery mode runs at.
-    "upgrade_wait_seconds": 270,
+    # From admission to the application's creation: the supervisor and
+    # Operator readiness every scenario waits for, and the run's tables
+    # provisioned by then.
     "startup_seconds": 600,
-    # From admission to input flowing, which only the exercise waits for. A
-    # cold Autopilot cluster provisions a node each for the supervisor, the
-    # JobManager and the TaskManagers in turn; pilot bq1312-alo-10-a4 needed
-    # about ten minutes for that and missed the startup budget by seconds.
-    "input_seconds": 1200,
-    # A recovery may wait for a new node, as for Bigtable, and a FILE_LOADS
-    # proof then waits up to a 120-second interval for the first checkpoint
-    # after the restore: bq2034-fl-10-uploader-a1's upgraded TaskManagers
-    # waited 75 s for a scale-up, ran 207 s after the upgrade began, and 300 s
-    # ran out before that checkpoint. The source pauses with the job, so the
-    # budget takes no input from the windows; it does take wall-clock time
-    # from the visibility query, which the cleanup start caps.
-    "recovery_seconds": 600,
+    # From the finished application to the oracle's query result.
     "visibility_seconds": 600,
-    # FILE_LOADS deletes the JobManager only once a listing shows a load job
-    # of the run RUNNING, after the window that follows the upgrade. A commit
-    # starts within any 120-second checkpoint interval and runs its loads
-    # within seconds of starting, so the wait is one interval and a margin,
-    # listed without a gap. Input keeps flowing while it waits, and must still
-    # last the post-recovery window after the failover; the plan's tests hold
-    # that budget for every mode.
-    "in_flight_seconds": 130,
-    "in_flight_poll_seconds": 1,
-    # One measurement per this many seconds, not per poll. Six REST reads at
-    # the transport's timeout would otherwise let a slow endpoint spend two
-    # minutes of a window that is three, and a memory or GC trend does not
-    # need a sample every fifteen seconds to be readable.
-    "measure_seconds": 60,
 }
 
 CLOUDTASKS_OBSERVATIONS = {
@@ -101,25 +63,8 @@ CLOUDTASKS_OBSERVATIONS = {
     # Operator readiness every scenario waits for, then the run's queue
     # created, paused and read back once it settles.
     "startup_seconds": 600,
-    # From admission to input flowing, as for BigQuery: a cold Autopilot
-    # cluster provisions a node each for the supervisor, the JobManager and the
-    # TaskManagers in turn.
-    "input_seconds": 1200,
-    "recovery_seconds": 300,
     # From the finished application to a task listing that passes the oracle.
     "visibility_seconds": 600,
-    # The measurement windows: a baseline after a warm-up, one after the
-    # upgrade and one after the failover, read once a minute. With
-    # ct-1362-a1's recoveries, each proved about a minute and a half after it
-    # began, the last window ends about twenty minutes into the thirty minutes
-    # of input.
-    "warmup_seconds": 60,
-    "baseline_seconds": 300,
-    "post_upgrade_seconds": 300,
-    "post_recovery_seconds": 300,
-    # A checkpoint interval and a poll to see it complete, twice over.
-    "upgrade_wait_seconds": 120,
-    "measure_seconds": 60,
 }
 
 BIGTABLE_OBSERVATIONS = {
@@ -127,24 +72,8 @@ BIGTABLE_OBSERVATIONS = {
     # Operator readiness every scenario waits for, then the run's instance
     # created and ready, and its tables and app profile created and read back.
     "startup_seconds": 600,
-    # As for Cloud Tasks, from admission to input flowing.
-    "input_seconds": 1200,
-    # A replacement Pod may need a new node, as for Pub/Sub. bt1855-ri-a1's
-    # TaskManager found the nodes its predecessors vacated already retiring
-    # and waited for a scale-up, so 300 s ran out before a checkpoint after
-    # its restore completed; trials whose TaskManagers reused their nodes
-    # proved in 94 to 131 s.
-    "recovery_seconds": 600,
     # From the finished application to the oracles' last read.
     "visibility_seconds": 600,
-    # The measurement windows and their interval, as for Cloud Tasks.
-    "warmup_seconds": 60,
-    "baseline_seconds": 300,
-    "post_upgrade_seconds": 300,
-    "post_recovery_seconds": 300,
-    # A 30-second checkpoint interval and a poll to see it complete, twice over.
-    "upgrade_wait_seconds": 120,
-    "measure_seconds": 60,
 }
 
 SPANNER_OBSERVATIONS = {
@@ -153,17 +82,9 @@ SPANNER_OBSERVATIONS = {
     # written, about forty seconds in #1877's measurement, and the seed
     # table's three split points added one a minute.
     "startup_seconds": 600,
-    # The rest equal Bigtable's measured timings, kept as Spanner's own so that
-    # a later Bigtable change does not move a preregistered Spanner trial.
-    "input_seconds": 1200,
-    "recovery_seconds": 600,
+    # Bigtable's, kept as Spanner's own so that a later Bigtable change does
+    # not move a preregistered Spanner trial.
     "visibility_seconds": 600,
-    "warmup_seconds": 60,
-    "baseline_seconds": 300,
-    "post_upgrade_seconds": 300,
-    "post_recovery_seconds": 300,
-    "upgrade_wait_seconds": 120,
-    "measure_seconds": 60,
 }
 
 FIRESTORE_OBSERVATIONS = {
@@ -172,8 +93,6 @@ FIRESTORE_OBSERVATIONS = {
     # commits of at most 500 writes into each, the two databases together
     # (#2135).
     "startup_seconds": 600,
-    "input_seconds": 1200,
-    "recovery_seconds": 600,
     # The oracles read about 400,000 documents or entities from each
     # database, some 800,000 in all against a Spanner run's 600,000 rows, in
     # pages of 2,000 rather than 5,000; the read rate is unmeasured, so the
@@ -181,14 +100,6 @@ FIRESTORE_OBSERVATIONS = {
     # slowest job finishes about 3,100 seconds into the window
     # (firestore/plan.py).
     "visibility_seconds": 1200,
-    # The measurement windows equal Spanner's, kept as Firestore's own so that
-    # a later change there does not move a preregistered Firestore trial.
-    "warmup_seconds": 60,
-    "baseline_seconds": 300,
-    "post_upgrade_seconds": 300,
-    "post_recovery_seconds": 300,
-    "upgrade_wait_seconds": 120,
-    "measure_seconds": 60,
 }
 
 PUBSUB_ADMISSION = {
@@ -254,32 +165,9 @@ UNANSWERED_RESENDS = 2
 
 
 PUBSUB_EXERCISE = {
-    # Admission's own window and one poll, so that a RUNNING the runner set
-    # in its last moment is still seen.
-    "startup_seconds": PUBSUB_ADMISSION["startup_seconds"] + POLL,
-    # From the application's creation to its first cohort fully observed on
-    # the output subscription. A cold Autopilot cluster provisions a node each
-    # for the JobManager and the TaskManagers; BigQuery's pilot needed about
-    # ten minutes for those and the supervisor's node.
-    "input_seconds": 900,
-    # To a completed checkpoint triggered after that observation: one
-    # 120-second interval, one 120-second checkpoint timeout and a margin.
-    "checkpoint_seconds": 300,
-    # From the replay cohort's request to its processing observed, which must
-    # also come before the next checkpoint completes for the boundary to hold.
-    "boundary_seconds": 180,
     # From a cohort's request to its publication's start: the runner serves
     # requests once per poll.
     "cohort_seconds": 90,
-    # From the fault to restored attempts having replayed what the fault
-    # displaced: a replacement Pod may need a new node.
-    "recovery_seconds": 600,
-    # From the last cohort's request to its processing observed on both
-    # inputs and a checkpoint completed after it. Raised for the removed
-    # restore-deduplication trials, whose restored job could still be working
-    # through a delayed replay cohort; kept until the single-fault trials go.
-    "after_seconds": 600,
-    "measure_seconds": 60,
     # Output pulls per poll at most; an empty batch ends a poll's drain
     # sooner. Immediate pulls averaged 48-61 messages in #1361's trials, so
     # a 1,000-record trial's cohort, 666 output lines, takes about 14, and

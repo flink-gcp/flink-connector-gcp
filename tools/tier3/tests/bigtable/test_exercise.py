@@ -20,11 +20,9 @@ import pytest
 from flink_tier3.bigtable.exercise import (
     COMMIT_SECONDS,
     ORACLE_STAGE,
-    BigtableExercise,
     BigtableSequenceExercise,
 )
 from flink_tier3.bigtable.trial import Trial
-from flink_tier3.bigtable.verdict import OBSERVED, SAMPLED_STAGES
 from flink_tier3.common import TransportError, timestamp, utc
 from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.supervisor import RESOURCE_EXERCISES
@@ -59,43 +57,10 @@ class Tables:
 
 @pytest.fixture
 def exercise(prepared, monkeypatch):
-    """A Bigtable exercise that has proved both recoveries over a five-record input."""
-    environment, _, upgrade, _ = prepared
-    environment.actor = "supervisor"
-    end = utc(environment.clock() + 3600)
-    small = Trial(environment.approval.run_id, 5, 1, end, "sequence")
-    environment.approval = dataclasses.replace(
-        environment.approval, scenario="bigtable-recovery"
-    )
-    monkeypatch.setattr(
-        type(environment.approval), "bigtable_plan", property(lambda self: small)
-    )
-    rows = {
-        "eo": [eo_row(n) for n in range(5)],
-        "alo": [eo_row(n, markers=0) for n in range(5)],
-        "relay": [relay_row(n) for n in range(5)],
-    }
-    tables = Tables(environment, small, rows)
-    environment.records.set_phase(rt.Phase.READY)
-    environment.records.set_phase(rt.Phase.RUNNING)
-    value = BigtableExercise(environment, upgrade, tables)
-    value.outcomes.update(upgrade={}, failover={})
-    value.coverage = {
-        window: {"attempts": 1, "observed": sorted(OBSERVED)}
-        for window in SAMPLED_STAGES
-    }
-    # Progress counts only after the exercise's boundary, the window's start.
-    environment.sleep(10)
-    value.samples[("tm", 0)] = {
-        "at": environment.clock(),
-        "phase": "upgrade",
-        "processed": 5,
-        "lineage": "x",
-        "sequence": 4,
-        "pod_uid": "tm",
-    }
-    value.persist("baseline")
-    value.persist("complete")
+    """The sequence exercise at its oracle stage, its five-record input finished."""
+    value, tables = built(prepared, monkeypatch)
+    value.env.sleep(10)
+    finish(value, value.env.clock())
     assert value.stage == ORACLE_STAGE
     return value, tables
 
@@ -144,11 +109,6 @@ def test_an_input_finished_too_close_to_the_change_streams_end_is_unjudged(exerc
     assert record["outcomes"]["oracles"]["relay"]["verdict"] == "pass"
 
 
-def test_a_taskmanager_replacement_restarts_both_pipelines():
-    """The input with both sinks, and the relay; one would read bt1855-tm-a5's second restore as unplanned."""
-    assert BigtableExercise.failover_regions == 2
-
-
 def built(prepared, monkeypatch):
     """The exercise the supervisor builds for a five-record sequence trial."""
     environment, _, upgrade, _ = prepared
@@ -186,7 +146,6 @@ def sequence(prepared, monkeypatch):
 def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
     value, _ = sequence
     assert isinstance(value, BigtableSequenceExercise)
-    assert value.measurement_event is None
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 
@@ -204,7 +163,7 @@ def finish(value, at):
 
 
 def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
-    """No coverage or proofs; the three oracles decide."""
+    """The three oracles decide."""
     value, _ = sequence
     end = timestamp(value.trial.change_stream_end)
     finished = end - COMMIT_SECONDS - 60

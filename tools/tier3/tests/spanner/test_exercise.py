@@ -19,17 +19,15 @@ from types import SimpleNamespace
 
 import pytest
 from flink_tier3.common import TransportError, timestamp, utc
-from flink_tier3.exercise import TIME_LIMIT_SECONDS, RecoveryExercise
+from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.spanner import instance
 from flink_tier3.spanner.exercise import (
     COMMIT_SECONDS,
     ORACLE_STAGE,
-    SpannerExercise,
     SpannerSequenceExercise,
 )
 from flink_tier3.spanner.instance import Instance
 from flink_tier3.spanner.trial import LATE_ROWS, Trial, row_key
-from flink_tier3.spanner.verdict import OBSERVED, SAMPLED_STAGES
 from flink_tier3.supervisor import RESOURCE_EXERCISES
 
 from ..dispatched import inputs as inputs  # noqa: PLC0414
@@ -66,60 +64,16 @@ def tables(trial, late=True):
 
 @pytest.fixture
 def baseline(prepared, monkeypatch):
-    """A Spanner exercise in its baseline, over a five-record input and six seed rows."""
-    environment, _, upgrade, _ = prepared
-    environment.actor = "supervisor"
-    end = utc(environment.clock() + 3600)
-    small = Trial(environment.approval.run_id, 5, 1, end, 6, 1, "sequence")
-    environment.approval = dataclasses.replace(
-        environment.approval, scenario="spanner-recovery"
-    )
-    monkeypatch.setattr(
-        type(environment.approval), "spanner_plan", property(lambda self: small)
-    )
-    database = Database(tables(small, late=False))
-    controller = SimpleNamespace(
-        env=environment,
-        trial=small,
-        listing=lambda until: Instance(database, small, until, environment.clock),
-    )
-    environment.records.set_phase(rt.Phase.READY)
-    environment.records.set_phase(rt.Phase.RUNNING)
-    value = SpannerExercise(environment, upgrade, controller)
-    value.persist("baseline")
-    return value, database
+    """The exercise the supervisor builds, in its baseline, over a small input."""
+    return built(prepared, monkeypatch)
 
 
 @pytest.fixture
 def exercise(baseline):
-    """The exercise once both recoveries are proved and the input finished."""
+    """The exercise at its oracle stage, the input finished after the faults."""
     value, database = baseline
-    environment = value.env
-    database.tables = {name: sorted(rows) for name, rows in tables(value.trial).items()}
-    value.outcomes.update(
-        upgrade={},
-        failover={},
-        late_seed={"commit_timestamp": utc(environment.clock()), "rows": LATE_ROWS},
-    )
-    value.coverage = {
-        window: {
-            "attempts": 1,
-            "observed": sorted(OBSERVED),
-            "maxima": {"watermark": index},
-        }
-        for index, window in enumerate(SAMPLED_STAGES)
-    }
-    # Progress counts only after the exercise's boundary, the window's start.
-    environment.sleep(10)
-    value.samples[("tm", 0)] = {
-        "at": environment.clock(),
-        "phase": "upgrade",
-        "processed": 5,
-        "lineage": "x",
-        "sequence": 4,
-        "pod_uid": "tm",
-    }
-    value.persist("complete")
+    value.env.sleep(10)
+    finish(value, database, value.env.clock())
     assert value.stage == ORACLE_STAGE
     return value, database
 
@@ -176,29 +130,25 @@ def test_an_input_finished_too_close_to_the_change_streams_end_is_unjudged(exerc
     assert record["outcomes"]["oracles"]["change_stream"]["verdict"] == "pass"
 
 
-def test_late_rows_wait_for_a_copied_row_and_the_upgrade_for_their_record(
-    baseline, monkeypatch
+def test_late_rows_wait_for_a_copied_row_and_the_first_fault_for_their_record(
+    baseline,
 ):
-    """Rows written before the plan would be copied; an upgrade before the
-    rows leaves the batch oracle nothing to judge."""
+    """Rows written before the plan would be copied; a fault before the rows
+    leaves the batch oracle nothing to judge."""
     value, database = baseline
-    upgrades = []
-    monkeypatch.setattr(
-        RecoveryExercise, "begin_upgrade", lambda self, *args: upgrades.append(args)
-    )
     copies, database.tables["batch_out"] = database.tables["batch_out"], []
-    value.begin_upgrade({}, {}, [], [])
-    assert (database.commits, upgrades) == ([], [])
+    assert value.ready_for_sequence() is False
+    assert database.commits == []
     database.tables["batch_out"] = copies
     database.errors = [TransportError("timeout")]
-    value.begin_upgrade({}, {}, [], [])
-    assert upgrades == [] and "late_seed" not in value.outcomes
+    assert value.ready_for_sequence() is False
+    assert "late_seed" not in value.outcomes
     # An aborted commit, answered 409, is repeated at the next poll.
     database.aborts = 1
-    value.begin_upgrade({}, {}, [], [])
-    assert upgrades == [] and "late_seed" not in value.outcomes
+    assert value.ready_for_sequence() is False
+    assert "late_seed" not in value.outcomes
     assert database.aborts == 0
-    value.begin_upgrade({}, {}, [], [])
+    assert value.ready_for_sequence() is True
     [write] = database.commits
     assert dict(write["values"]) == {
         key: str(n) for key, n in value.trial.late_keys().items()
@@ -208,7 +158,6 @@ def test_late_rows_wait_for_a_copied_row_and_the_upgrade_for_their_record(
         "commit_timestamp": "2026-10-28T00:30:00.000001Z",
         "rows": LATE_ROWS,
     }
-    assert len(upgrades) == 1
 
 
 def test_the_batch_plan_is_read_from_the_jobmanager_log(baseline):
@@ -261,7 +210,6 @@ def sequence(prepared, monkeypatch):
 def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
     value, _ = sequence
     assert isinstance(value, SpannerSequenceExercise)
-    assert value.measurement_event is None
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 
@@ -294,7 +242,7 @@ def finish(value, database, at):
 
 
 def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
-    """No coverage, proofs or watermark; the three oracles decide."""
+    """The three oracles decide, without a watermark."""
     value, database = sequence
     value.env.sleep(10)
     finish(value, database, value.env.clock())

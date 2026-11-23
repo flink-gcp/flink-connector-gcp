@@ -22,7 +22,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import pytest
-from flink_tier3 import analyze, cli, runs
+from flink_tier3 import analyze, cli, recovery_analysis, runs
 from flink_tier3.common import Failure
 
 SRC_DIR = Path(analyze.__file__).resolve().parent
@@ -169,3 +169,33 @@ def test_a_fraction_renders_as_its_exact_value_and_a_float():
         "1": [{"fraction": "1/4", "float": 0.25}],
         "rows": [3, 1],
     }
+
+
+def test_the_archived_single_fault_names_are_the_shipped_ones():
+    """Each list holds exactly what the single-fault trials named.
+
+    A name dropped from a list would report its archived runs as malformed
+    trials, and one added would take a malformed trial for an archived run.
+    """
+    assert recovery_analysis.SINGLE_FAULT_KINDS == (
+        "jm-replacement",
+        "tm-replacement",
+        "rescale-out",
+        "rescale-in",
+    )
+    assert recovery_analysis.PUBSUB_SINGLE_FAULT_KINDS == (
+        "jm-replacement",
+        "tm-replacement",
+        "rescale-out",
+        "rescale-in",
+        "reactive-scale-out",
+        "reactive-scale-in",
+        "reactive-tm-eviction",
+        "reactive-tm-kill",
+        "adaptive-scale-in",
+    )
+    assert recovery_analysis.BIGQUERY_SINGLE_FAULTS == (
+        "tm-replacement",
+        "rescale-out",
+        "rescale-in",
+    )

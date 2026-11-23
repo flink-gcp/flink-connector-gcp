@@ -16,7 +16,7 @@
 
 from dataclasses import dataclass
 
-from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND, rendered_parallelism
+from ..exercise import SEQUENCE_KIND, rendered_parallelism
 from ..policy import PROJECT, RUN_ID
 
 # The application's bounds (kubernetes/apps/firestore RecoveryOptions) and the
@@ -91,16 +91,6 @@ class Trial:
             raise ValueError("Firestore seed pace must be 1 to 200 records per second")
         if self.kind not in KINDS:
             raise ValueError("Unknown Firestore trial kind")
-
-    @property
-    def failover(self):
-        """The exercise base's failover, which the sequence leaves unused."""
-        return FAULTS[DEFAULT_FAULT].failover
-
-    @property
-    def rescale(self):
-        """The exercise base's rescale, which the sequence leaves unused."""
-        return FAULTS[DEFAULT_FAULT].rescale
 
     def parallelism(self, phase):
         """Every vertex but the input's subtasks, and the TaskManagers running them."""

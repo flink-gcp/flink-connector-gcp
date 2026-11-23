@@ -19,17 +19,12 @@ from types import SimpleNamespace
 
 import pytest
 from flink_tier3.common import TransportError
-from flink_tier3.exercise import TIME_LIMIT_SECONDS, RecoveryExercise
+from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.firestore import database
 from flink_tier3.firestore.database import Databases
-from flink_tier3.firestore.exercise import (
-    ORACLE_STAGE,
-    FirestoreExercise,
-    FirestoreSequenceExercise,
-    firestore_exercise,
-)
+from flink_tier3.firestore.exercise import ORACLE_STAGE, FirestoreSequenceExercise
 from flink_tier3.firestore.trial import LATE_RECORDS, MODES, Trial
-from flink_tier3.firestore.verdict import OBSERVED, SAMPLED_STAGES
+from flink_tier3.supervisor import RESOURCE_EXERCISES
 
 from ..dispatched import inputs as inputs  # noqa: PLC0414
 from ..dispatched import prepared as prepared  # noqa: PLC0414
@@ -56,47 +51,18 @@ def plan_line(trial, mode):
 
 @pytest.fixture
 def baseline(prepared, monkeypatch):
-    """A Firestore exercise in its baseline, over a five-record input and six seed records."""
-    environment, _, upgrade, _ = prepared
-    environment.actor = "supervisor"
-    small = Trial(environment.approval.run_id, 5, 1, 6, 1, "sequence")
-    environment.approval = dataclasses.replace(
-        environment.approval, scenario="firestore-recovery"
-    )
-    monkeypatch.setattr(
-        type(environment.approval), "firestore_plan", property(lambda self: small)
-    )
-    service = Firestore(environment.clock, small)
-    service.databases = {mode: {} for mode in MODES}
-    service.ready_at = {mode: 0 for mode in MODES}
-    service.data = stored(small, late=False)
-    controller = SimpleNamespace(
-        env=environment,
-        trial=small,
-        listing=lambda until: Databases(service, small, until, environment.clock),
-    )
-    environment.records.set_phase(rt.Phase.READY)
-    environment.records.set_phase(rt.Phase.RUNNING)
-    value = FirestoreExercise(environment, upgrade, controller)
-    value.persist("baseline")
-    return value, service
+    """The exercise the supervisor builds, in its baseline, before the late seeds."""
+    return built(prepared, monkeypatch, late=False)
 
 
 @pytest.fixture
 def exercise(baseline):
-    """The exercise once both recoveries are proved and the input finished."""
+    """The exercise at its oracle stage, the input finished after the faults."""
     value, service = baseline
     environment = value.env
     service.data = stored(value.trial)
     late = {"commit_time": COMMITTED, "records": LATE_RECORDS}
-    value.outcomes.update(
-        upgrade={}, failover={}, late_seed={mode: late for mode in MODES}
-    )
-    value.coverage = {
-        window: {"attempts": 1, "observed": sorted(OBSERVED)}
-        for window in SAMPLED_STAGES
-    }
-    # Progress counts only after the exercise's boundary, the window's start.
+    value.outcomes.update(late_seed={mode: late for mode in MODES})
     environment.sleep(10)
     value.samples[("tm", 0)] = {
         "at": environment.clock(),
@@ -144,34 +110,29 @@ def test_a_copy_missing_in_one_database_fails_that_component_only(exercise):
     assert record["reasons"] == ["datastore_batch-oracle-not-passed"]
 
 
-def test_late_records_wait_for_a_copy_and_the_upgrade_for_both_records(
-    baseline, monkeypatch
+def test_late_records_wait_for_a_copy_and_the_first_fault_for_both_records(
+    baseline,
 ):
-    """Records written before the plan would be copied; an upgrade before
-    them leaves the batch oracle nothing to judge."""
+    """Records written before the plan would be copied; a fault before them
+    leaves the batch oracle nothing to judge."""
     value, service = baseline
-    upgrades = []
-    monkeypatch.setattr(
-        RecoveryExercise, "begin_upgrade", lambda self, *args: upgrades.append(args)
-    )
     copies = service.data["datastore"].pop("batch_out")
-    value.begin_upgrade({}, {}, [], [])
-    assert upgrades == [] and list(value.outcomes["late_seed"]) == ["native"]
+    assert value.ready_for_sequence() is False
+    assert list(value.outcomes["late_seed"]) == ["native"]
     assert service.writes == [("native", LATE_RECORDS)]
     service.data["datastore"]["batch_out"] = copies
     # A commit that said nothing, or aborted with 409, waits for the next poll.
     for error in (TransportError("timeout"), 409):
         service.errors[("commit", "datastore")] = error
-        value.begin_upgrade({}, {}, [], [])
-        assert upgrades == [] and "datastore" not in value.outcomes["late_seed"]
-    value.begin_upgrade({}, {}, [], [])
+        assert value.ready_for_sequence() is False
+        assert "datastore" not in value.outcomes["late_seed"]
+    assert value.ready_for_sequence() is True
     assert service.writes[-1] == ("datastore", LATE_RECORDS)
     assert set(service.data["datastore"]["seed"]) >= set(value.trial.late_keys())
     recorded = value.env.refresh().recovery["outcomes"]["late_seed"]
     assert recorded == {
         mode: {"commit_time": COMMITTED, "records": LATE_RECORDS} for mode in MODES
     }
-    assert len(upgrades) == 1
 
 
 def test_each_batch_plan_is_read_from_the_jobmanager_log(baseline):
@@ -203,8 +164,12 @@ def test_each_batch_plan_is_read_from_the_jobmanager_log(baseline):
     }
 
 
-def built(prepared, monkeypatch):
-    """The exercise the supervisor builds for a small sequence trial."""
+def built(prepared, monkeypatch, late=True):
+    """The exercise the supervisor builds for a small sequence trial.
+
+    Its databases hold what a usable run leaves, the late seeds only when
+    `late` says they were written.
+    """
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
     small = Trial(environment.approval.run_id, 5, 1, 6, 1, kind="sequence")
@@ -217,7 +182,7 @@ def built(prepared, monkeypatch):
     service = Firestore(environment.clock, small)
     service.databases = {mode: {} for mode in MODES}
     service.ready_at = {mode: 0 for mode in MODES}
-    service.data = stored(small)
+    service.data = stored(small, late=late)
     controller = SimpleNamespace(
         env=environment,
         trial=small,
@@ -225,7 +190,9 @@ def built(prepared, monkeypatch):
     )
     environment.records.set_phase(rt.Phase.READY)
     environment.records.set_phase(rt.Phase.RUNNING)
-    value = firestore_exercise(environment, upgrade, controller)
+    value = RESOURCE_EXERCISES[environment.approval.scenario](
+        environment, upgrade, controller
+    )
     value.persist("baseline")
     return value, service
 
@@ -239,7 +206,6 @@ def sequence(prepared, monkeypatch):
 def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
     value, _ = sequence
     assert isinstance(value, FirestoreSequenceExercise)
-    assert value.measurement_event is None
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 
@@ -256,7 +222,7 @@ def test_the_first_fault_waits_for_both_late_seeds(sequence):
 
 
 def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
-    """No coverage, proofs or restore counts; the four oracles decide."""
+    """The four oracles decide, whatever the run waited out."""
     value, _ = sequence
     late = {"commit_time": COMMITTED, "records": LATE_RECORDS}
     value.outcomes.update(late_seed={mode: late for mode in MODES})

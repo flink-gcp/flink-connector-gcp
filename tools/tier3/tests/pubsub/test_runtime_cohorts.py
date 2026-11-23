@@ -629,10 +629,10 @@ def test_the_collector_pulls_through_the_handoff_until_an_empty_batch(run):
     # the round, so one drain collects the whole backlog (#1720).
     assert collector.drain(5) == 7
     assert collector.batches == 3 and not a.service.messages.responses
-    assert collector.complete(FIRST)
-    assert not collector.complete(LAST)
-    assert collector.processed(0, 0, RECORDS) == {0, 1, 2}
-    assert collector.processed(1, 0, RECORDS, where=lambda o: o["restored"]) == set()
+    assert sorted(
+        (item["input_index"], item["sequence"]) for item in collector.observations
+    ) == [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
+    assert not any(item["restored"] for item in collector.observations)
     batches = [f["batch"] for f in collector.foreign]
     assert len(batches) == 1 and batches[0].endswith("-000002")
     assert len(collector.observations) == RECORDS

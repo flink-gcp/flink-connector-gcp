@@ -21,10 +21,9 @@ import re
 from ..common import Failure, retryable_commit, timestamp
 from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import FIRESTORE, FIRESTORE_OBSERVATIONS, FIRESTORE_STATE, POLL
-from .observe import observation, vertices
 from .oracle import BatchCopy, Seed, Sink
-from .trial import BATCH, INPUT, LATE_RECORDS, MODES, SEED, SEQUENCE_KIND
-from .verdict import MEASUREMENT_EVENT, sequence_verdict, summarize, verdict
+from .trial import BATCH, INPUT, LATE_RECORDS, MODES, SEED
+from .verdict import sequence_verdict
 
 # The stage between the finished application and the read collections.
 ORACLE_STAGE = "documents"
@@ -42,15 +41,12 @@ PLANNED = re.compile(
 
 
 class FirestoreExercise(FiniteInputExercise):
-    """Recover the finite input, then read both databases' collections against it.
+    """Run the finite input through the faults, then read both databases against it.
 
-    The caller supplies the supervisor's database controller. The approved
-    trial names the fault; the job finishes once the input is complete and
-    both copies are done. Before the upgrade the supervisor writes each
-    database's late seed records, once a copy there shows its batch read
-    planned. The verdict is decided from the recoveries, the families each
-    window read and the four oracle reports, and written with the transition
-    that completes the run.
+    The caller supplies the supervisor's database controller. The job
+    finishes once the input is complete and both copies are done. The verdict
+    is decided from the four oracle reports, by the `verdict` the fault
+    sequence names, and written with the transition that completes the run.
     """
 
     namespace = FIRESTORE
@@ -59,16 +55,6 @@ class FirestoreExercise(FiniteInputExercise):
     service = "Firestore"
     oracle_stage = ORACLE_STAGE
     progress_event = "firestore-progress"
-    measurement_event = MEASUREMENT_EVENT
-    baseline_event = "firestore-baseline-window"
-    # The input with both sinks, and each copy subtask: a lost TaskManager
-    # restarts the input's region and its own two copy subtasks, which share
-    # no edge with any other.
-    failover_regions = 3
-    # What is left after the last window is the job's end and the oracles,
-    # which check every record through another recovery too, and report its
-    # extra copies.
-    waits_out_interruptions = True
 
     def __init__(self, env, upgrade, databases):
         if env.approval.scenario != "firestore-recovery":
@@ -81,14 +67,6 @@ class FirestoreExercise(FiniteInputExercise):
         # time: overlapping log reads return a line more than once.
         self.plan_lines = set()
         super().__init__(env, upgrade, trial)
-
-    def discover(self, rest, known):
-        return vertices(rest, known)
-
-    def read(self, rest, state):
-        return observation(rest, state)
-
-    summarize = staticmethod(summarize)
 
     def progress(self, pod, text):
         """Read the input's progress, and each batch read's plan from the JobManager.
@@ -116,14 +94,6 @@ class FirestoreExercise(FiniteInputExercise):
                 "plans": plans.get(mode, {}).get("plans", 0) + 1,
             }
 
-    # The verdict the oracles' record is judged by.
-    verdict = staticmethod(verdict)
-
-    def begin_upgrade(self, app, cp, progress, pods):
-        """Write the late seed records first; the upgrade waits for their record."""
-        if self.late_seeds_written():
-            super().begin_upgrade(app, cp, progress, pods)
-
     def late_seeds_written(self):
         """Write each database's missing late seed records; whether both are written."""
         for mode in MODES:
@@ -139,7 +109,7 @@ class FirestoreExercise(FiniteInputExercise):
         commit sets fixed values, so one repeated after a response that never
         arrived, or after the commit aborted with 409, writes nothing new. A
         call that fails so is left to the next poll; the record holds the
-        commit before the upgrade may begin.
+        commit before the first fault may land.
         """
         try:
             api = self.databases.listing(self.deadline)
@@ -167,7 +137,7 @@ class FirestoreExercise(FiniteInputExercise):
         this stage.
         """
         if self.stage != ORACLE_STAGE:
-            raise Failure("Firestore oracles require both recoveries and the input")
+            raise Failure("Firestore oracles require the fault sequence and the input")
         until = self.oracle_window()
         api = self.retried(lambda: self.databases.listing(until), until)
         checked = self.env.clock()
@@ -225,19 +195,12 @@ class FirestoreExercise(FiniteInputExercise):
 class FirestoreSequenceExercise(FaultSequence, FirestoreExercise):
     """The Firestore trial as one fault sequence, judged by its data (ADR-0204).
 
-    The late seed records are written before the first fault, as before the
-    upgrade of a single-fault trial, and the oracles are the same four.
+    The late seed records are written before the first fault.
     """
 
+    # The verdict the oracles' record is judged by.
     verdict = staticmethod(sequence_verdict)
 
     def ready_for_sequence(self):
         """The first fault waits for both databases' late seed records."""
         return self.late_seeds_written()
-
-
-def firestore_exercise(env, upgrade, databases):
-    """The exercise the approved Firestore trial names."""
-    if env.approval.firestore_plan.kind == SEQUENCE_KIND:
-        return FirestoreSequenceExercise(env, upgrade, databases)
-    return FirestoreExercise(env, upgrade, databases)

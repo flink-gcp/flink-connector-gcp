@@ -20,27 +20,31 @@ import math
 import re
 import uuid
 
-from .bigquery.exercise import BigQueryExercise, bigquery_exercise, require_handoff
-from .bigtable.exercise import BigtableExercise, bigtable_exercise
+from .bigquery.exercise import (
+    BigQueryExercise,
+    BigQuerySequenceExercise,
+    require_handoff,
+)
+from .bigtable.exercise import BigtableExercise, BigtableSequenceExercise
 from .cleanup import Cleanup
-from .cloudtasks.exercise import CloudTasksExercise, cloudtasks_exercise
+from .cloudtasks.exercise import CloudTasksExercise, CloudTasksSequenceExercise
 from .common import ApiError, Failure, transient, utc
-from .firestore.exercise import FirestoreExercise, firestore_exercise
+from .firestore.exercise import FirestoreExercise, FirestoreSequenceExercise
 from .metrics import CHECKPOINTS_EVENT
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
-from .pubsub.exercise import pubsub_exercise
+from .pubsub.exercise import PubSubSequenceExercise
 from .pubsub.guard import PubSubGuard, admission_deadline
 from .pubsub.handoff import runner_released
 from .resource import RESOURCE_SCENARIOS
-from .spanner.exercise import SpannerExercise, spanner_exercise
+from .spanner.exercise import SpannerExercise, SpannerSequenceExercise
 
 # The exercise of each scenario whose runner creates one resource.
 RESOURCE_EXERCISES = {
-    "cloudtasks-recovery": cloudtasks_exercise,
-    "bigtable-recovery": bigtable_exercise,
-    "spanner-recovery": spanner_exercise,
-    "firestore-recovery": firestore_exercise,
+    "cloudtasks-recovery": CloudTasksSequenceExercise,
+    "bigtable-recovery": BigtableSequenceExercise,
+    "spanner-recovery": SpannerSequenceExercise,
+    "firestore-recovery": FirestoreSequenceExercise,
 }
 
 
@@ -69,9 +73,9 @@ class Supervisor:
         self.log_since = {}
         self.pod_read_failures = {}
         self.exercise = (
-            bigquery_exercise(env, upgrade, self.connector_jobs)
+            BigQuerySequenceExercise(env, upgrade)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
-            else pubsub_exercise(env, upgrade, pubsub)
+            else PubSubSequenceExercise(env, upgrade, pubsub)
             if env.approval.scenario == "pubsub-recovery"
             and upgrade is not None
             and pubsub is not None
@@ -321,8 +325,6 @@ class Supervisor:
             else:
                 admitted_by = self.env.schedule.cleanup_at
             self.env.wait(admitted, admitted_by)
-            if self.exercise:
-                self.exercise.admitted()
             while self.env.clock() < self.env.schedule.cleanup_at:
                 control = self.env.refresh()
                 if self.env.stopping or control.stop_requested:
@@ -350,10 +352,10 @@ class Supervisor:
                     owned = bool(service) and service["metadata"][
                         "uid"
                     ] in self.cleanup.owned(items, ["application"])
-                    if not owned and self.exercise and self.exercise.rest_may_vanish():
+                    if not owned and self.exercise:
                         # Missing, or recreated after this poll's inventory
-                        # read: no REST read this poll, and nothing unowned is
-                        # read.
+                        # read, as a fault may leave it: no REST read this
+                        # poll, and nothing unowned is read.
                         service = None
                     elif not owned:
                         raise Failure("REST service has no verified workload owner")

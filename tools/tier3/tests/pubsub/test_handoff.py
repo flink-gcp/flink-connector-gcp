@@ -645,12 +645,12 @@ def test_a_pull_refused_with_a_settled_answer_clears_its_marker_and_goes_on(
     make, env, http, _, _ = setup
     http.messages.responses.append(Response({}, status=status))
     with pytest.raises(AnsweredTransient):
-        make("supervisor").collect("one", retry_answered=True)
+        make("supervisor").collect("one")
     assert actors(env)["supervisor"]["inflight"] is None
     assert not env.refresh().stop_requested
     # The next pull goes ahead under another batch.
     http.messages.responses.append(Response({}))
-    assert make("supervisor").collect("two", retry_answered=True)["count"] == 0
+    assert make("supervisor").collect("two")["count"] == 0
 
 
 @pytest.mark.parametrize(
@@ -672,7 +672,7 @@ def test_any_other_failed_collection_still_stops_the_run(setup, responses):
     make, env, http, _, _ = setup
     http.messages.responses.extend(responses)
     with pytest.raises(Failure) as raised:
-        make("supervisor").collect("one", retry_answered=True)
+        make("supervisor").collect("one")
     assert not isinstance(raised.value, AnsweredTransient)
     assert env.refresh().stop_requested
 
@@ -690,16 +690,6 @@ def test_a_transient_refusal_after_an_evidence_failure_still_stops_the_run(setup
     http.messages.request = refused
     http.messages.responses.append(Response({}, status=429))
     with pytest.raises(Failure) as raised:
-        supervisor.collect("one", retry_answered=True)
+        supervisor.collect("one")
     assert not isinstance(raised.value, AnsweredTransient)
     assert actors(env)["supervisor"]["inflight"] is not None
-
-
-def test_without_retry_a_transient_refusal_stops_the_run(setup):
-    """The single-fault exercise keeps its earlier rule."""
-    make, env, http, _, _ = setup
-    http.messages.responses.append(Response({}, status=429))
-    with pytest.raises(Failure) as raised:
-        make("supervisor").collect("one")
-    assert not isinstance(raised.value, AnsweredTransient)
-    assert env.refresh().stop_requested

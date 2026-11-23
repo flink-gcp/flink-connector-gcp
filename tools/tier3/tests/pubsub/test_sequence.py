@@ -25,11 +25,11 @@ from flink_tier3.pubsub.oracle import input_ids
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
+from .relay import World
 from .test_actors import approval as approval  # noqa: PLC0414
 from .test_actors import prepared as prepared  # noqa: PLC0414
 from .test_admission import admitting as admitting  # noqa: PLC0414
 from .test_analyze import assess, export
-from .test_exercise import World
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 
@@ -46,16 +46,10 @@ def kinds(control):
     return [fault["kind"] for fault in control.recovery["outcomes"]["faults"]]
 
 
-def test_the_sequence_trial_builds_the_sequence_exercise(admitting):
+def test_the_supervisor_builds_the_sequence_exercise(admitting):
     built = admitting.supervisor.exercise
     assert type(built) is pubsub_exercise.PubSubSequenceExercise
-    environment = admitting.environment
-    # The approval is frozen; the trial dict it holds is not.
-    environment.approval.pubsub_trial["trial"] = "jm-replacement"
-    exercise = pubsub_exercise.pubsub_exercise(
-        environment, built.upgrade, built.handoff
-    )
-    assert type(exercise) is pubsub_exercise.PubSubExercise
+    assert built.handoff is admitting.supervisor.pubsub
 
 
 def test_a_sequence_runs_every_fault_and_is_judged_by_its_output(
@@ -86,8 +80,6 @@ def test_a_sequence_runs_every_fault_and_is_judged_by_its_output(
     assert len(patches) == 3
     assert deletions == ["jobmanager", "taskmanager"]
     assert world.relay.parallelism == 2
-    # Nothing samples or windows the run.
-    assert control.recovery["coverage"] == {}
     # The exported evidence recomputes to the same verdict.
     assessed = assess(export(world, control, tmp_path))
     assert assessed["problems"] == []

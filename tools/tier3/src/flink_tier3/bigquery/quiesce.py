@@ -59,8 +59,8 @@ def barrier(env):
     streams, the connector deliberately never finalizes them, and their
     server-assigned names are never surfaced outside Flink's own state. The
     measurement does not rest on this: the query oracle reads only after the
-    job reached FINISHED and its post-recovery window closed, which is where
-    a settled read is established. What rests on this barrier is that cleanup
+    job reached FINISHED with its whole input, which is where a settled read
+    is established. What rests on this barrier is that cleanup
     does not delete a table while a Pod that could write to it is still alive.
 
     Beyond that, exclusivity is by grant rather than by observation: the only

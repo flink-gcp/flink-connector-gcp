@@ -14,11 +14,9 @@
 # limitations under the License.
 """Recompute a deployed Spanner run's verdict from its exported evidence.
 
-The coverage, with each window's greatest watermark, partitions_reread and
-partitions_discovered readings, is rebuilt from the measurements the run
-exported, and the recoveries and the three oracle reports are read from its
-record, so a reader holding only the downloaded evidence directory can check
-the stored verdict against them. The oracle reports are not rebuilt: the
+The three oracle reports are read from the run's record, so a reader holding
+only the downloaded evidence directory can check the stored verdict against
+them. The oracle reports are not rebuilt: the
 supervisor read the tables, which the instance's deletion removed, and
 exported only the reports.
 
@@ -27,34 +25,29 @@ which the exercise writes from, so a rename cannot reach only one side.
 """
 
 from ..recovery_analysis import (
-    measurements,
-    missing_samples,
-    rebuild,
+    SINGLE_FAULT_NOTE,
+    malformed_records,
+    names_single_fault,
     recovery_record,
-    recovery_timings,
-    render_timings,
+    single_fault,
     unreadable,
     verdict_problems,
 )
-from .observe import COMPONENTS
-from .trial import SEQUENCE_KIND, Trial
+from .trial import Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
-    MEASUREMENT_EVENT,
-    SAMPLED_STAGES,
+    COMPONENTS,
     sequence_verdict,
-    summarize,
-    verdict,
-    watermark_advanced,
 )
 
 SCENARIO = "spanner-recovery"
+FIELD = "spanner_trial"
 
 
 def _trial(run):
     approval = run.approval if isinstance(run.approval, dict) else {}
-    value = approval.get("spanner_trial")
+    value = approval.get(FIELD)
     if not isinstance(value, dict):
         return None
     try:
@@ -64,53 +57,31 @@ def _trial(run):
 
 
 def assess(run):
-    """One Spanner run's verdict, beside its recoveries' timing.
-
-    A fault-sequence run (ADR-0204) lists the faults it injected instead,
-    and has no recovery proofs to time.
-    """
+    """One Spanner run's verdict, beside the faults it injected (ADR-0204)."""
     record = recovery_record(run, COMPLETE_EVENT)
-    if _sequence(run):
-        outcomes = record.get("outcomes") if isinstance(record, dict) else None
-        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-        return {
-            **_verdict(run),
-            "faults": faults if isinstance(faults, list) else [],
-            "recoveries": [],
-        }
-    return {**_verdict(run), "recoveries": recovery_timings(run, record)}
-
-
-def _sequence(run):
-    trial = _trial(run)
-    return trial is not None and trial.kind == SEQUENCE_KIND
+    outcomes = record.get("outcomes") if isinstance(record, dict) else None
+    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+    return {**_verdict(run), "faults": faults if isinstance(faults, list) else []}
 
 
 def _verdict(run):
-    readings, malformed = measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
-    samples = len(readings)
+    malformed = malformed_records(run, COMPLETE_EVENT)
+    if names_single_fault(run, FIELD):
+        return single_fault(run, recovery_record(run, COMPLETE_EVENT))
     if _trial(run) is None:
-        return unreadable(run, None, ["approval-without-spanner-trial"], samples)
+        return unreadable(run, None, ["approval-without-spanner-trial"])
     if not isinstance(run.result, dict):
-        return unreadable(run, None, ["missing-result.json"], samples)
+        return unreadable(run, None, ["missing-result.json"])
     if malformed:
-        return unreadable(run, None, [f"malformed-evidence:{malformed}"], samples)
+        return unreadable(run, None, [f"malformed-evidence:{malformed}"])
     complete = bool(run.events_of(COMPLETE_EVENT))
     record = recovery_record(run, COMPLETE_EVENT)
     if not isinstance(record, dict):
-        return unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
+        return unreadable(run, None, ["missing-" + COMPLETE_EVENT])
     if not complete and record.get("stage") == COMPLETE_STAGE:
-        return unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    coverage = rebuild(readings, summarize)
-    if _sequence(run):
-        # Decided by the data alone; nothing was sampled.
-        decided = sequence_verdict(record)
-    else:
-        # Decide over the coverage the readings support, never the coverage
-        # the record claims.
-        if missing := missing_samples(record.get("coverage"), coverage):
-            return unreadable(run, record, [f"missing-samples:{missing}"], samples)
-        decided = verdict({**record, "coverage": coverage})
+        return unreadable(run, record, ["missing-" + COMPLETE_EVENT])
+    # Decided by the data alone.
+    decided = sequence_verdict(record)
     outcomes = record.get("outcomes")
     oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
     return {
@@ -120,8 +91,6 @@ def _verdict(run):
         "reasons": decided["reasons"],
         "problems": sorted(verdict_problems(record, decided, complete)),
         "oracles": oracles if isinstance(oracles, dict) else None,
-        "watermark_advanced": watermark_advanced(coverage),
-        "samples": samples,
     }
 
 
@@ -156,28 +125,25 @@ def render(assessments):
         "## Deployed Spanner runs",
         "",
         (
-            "A verdict recomputed from the exported evidence: the coverage and "
-            "the watermark's advance are rebuilt from the run's measurements; "
-            "the recoveries and the oracle reports are read from the record."
+            "A verdict recomputed from the exported evidence: the oracle reports "
+            "are read from the record."
         ),
         "",
         (
-            "| run | verdict | stored | samples | sink | sink extra executions | "
-            "change stream | replays | watermark advanced | batch | batch extra | "
-            "partitions | faults | reasons | problems |"
+            "| run | verdict | stored | sink | sink extra executions | "
+            "change stream | replays | batch | batch extra | partitions | faults | "
+            "reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracles = item.get("oracles")
         verdicts = {c: _figure(oracles, c, "verdict") for c in COMPONENTS}
-        advanced = item.get("watermark_advanced")
         lines.append(
             f"| {item['run_id']} | {item['verdict'] or '-'} | {item['stored'] or '-'} "
-            f"| {item['samples']} | {verdicts['sink']} | "
+            f"| {verdicts['sink']} | "
             f"{_figure(oracles, 'sink', 'executions', 'extra_executions')} | "
             f"{verdicts['change_stream']} | {_figure(oracles, 'change_stream', 'replays')} | "
-            f"{'-' if advanced is None else str(advanced).lower()} | "
             f"{verdicts['batch']} | {_figure(oracles, 'batch', 'extra_deliveries')} | "
             f"{_figure(oracles, 'batch', 'plan', 'partitions')} | {_faults(item)} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
@@ -186,28 +152,15 @@ def render(assessments):
         [
             "",
             (
-                "A usable single-fault verdict establishes that through both "
-                "recoveries every input record's key holds its sequence in "
+                "A usable `sequence` verdict (ADR-0204) establishes that through "
+                "the faults listed every input record's key holds its sequence in "
                 "`input`, every input key was relayed from the change stream at "
-                "least once with no commit after its end while the source's "
-                "watermark advanced after each recovery, and every seed row was "
+                "least once with no commit after its end, and every seed row was "
                 "copied with its value and no late row; extra executions, replays "
                 "and extra copies are reported, not failed, and the executions are "
-                "a lower bound."
+                "a lower bound. The run is judged by its data alone."
             ),
-            (
-                "For a single-fault run, each family is required in the "
-                + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
-                + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
-                + "only where a reading returned it."
-            ),
-            (
-                "A usable `sequence` verdict (ADR-0204) establishes the same of "
-                "the three tables through the faults listed, except the "
-                "watermark: the run is judged by its data alone, so it reads no "
-                "watermark and samples no window."
-            ),
+            SINGLE_FAULT_NOTE,
         ]
     )
-    lines.extend(render_timings(assessments))
     return "\n".join(lines) + "\n"

@@ -15,61 +15,18 @@
 """Whether a deployed Firestore run is a usable recovery trial, and why not."""
 
 from ..common import INCONCLUSIVE, USABLE
-from ..metrics import (
-    WINDOWS,
-    coverage_reasons,
-    families_read,
-    fold_coverage,
-    observed_families,
-    window_of,
-)
-from .observe import COMPONENTS, FAMILIES
 
-# The evidence event carrying the completed record and the event each
-# measurement emits. Both sides spell them from here: the exercise writes
-# them and the offline analyzer reads them.
+# The evidence event carrying the completed record. Both sides spell it from
+# here: the exercise writes it and the offline analyzer reads it.
 COMPLETE_STAGE = "complete"
 COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
-MEASUREMENT_EVENT = "firestore-measurement"
-# Every component's families and checkpoint share, and the job's memory. The
-# verdict says whether each was read, never what it read.
-OBSERVED = observed_families(FAMILIES)
-SAMPLED_STAGES = WINDOWS
-
-
-def summarize(previous, stage, reading):
-    """Fold one sample into its window's coverage, keeping what it ever read."""
-    return fold_coverage(
-        previous, window_of(reading, stage), families_read(reading, FAMILIES)
-    )
-
-
-def verdict(recovery):
-    """The run's verdict and the reasons behind it, from its recovery record.
-
-    `usable` says both recoveries proved, each component's oracle passed in
-    both databases, and every family was read in the baseline and in the
-    windows after each recovery. The offline analyzer recomputes it from the
-    exported record and measurements, which are untrusted JSON, so every
-    field is checked for its type before it is read.
-    """
-    record = recovery if isinstance(recovery, dict) else {}
-    outcomes = record.get("outcomes")
-    outcomes = outcomes if isinstance(outcomes, dict) else {}
-    reasons = []
-    if record.get("stage") != COMPLETE_STAGE:
-        reasons.append("recovery-incomplete")
-    for proof in ("upgrade", "failover"):
-        if proof not in outcomes:
-            reasons.append("missing-" + proof)
-    oracles = outcomes.get("oracles")
-    oracles = oracles if isinstance(oracles, dict) else {}
-    for component in COMPONENTS:
-        report = oracles.get(component)
-        if not isinstance(report, dict) or report.get("verdict") != "pass":
-            reasons.append(component + "-oracle-not-passed")
-    reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_STAGES, OBSERVED))
-    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+# The components the oracles judge, each by its own report under this name.
+COMPONENTS = (
+    "native_sink",
+    "datastore_sink",
+    "native_batch",
+    "datastore_batch",
+)
 
 
 def sequence_verdict(recovery):

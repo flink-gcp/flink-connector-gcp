@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND, rendered_parallelism
+from ..exercise import SEQUENCE_KIND, rendered_parallelism
 
 PROJECT = "flink-gcp"
 DATASET = "flink_gcp_tier3_bigquery"
@@ -100,21 +100,6 @@ class Trial:
             self.uploader and self.mode != "FILE_LOADS"
         ):
             raise ValueError("uploader must be a boolean, and true only for FILE_LOADS")
-
-    @property
-    def kind(self):
-        """The trial's kind, the sequence."""
-        return self.fault
-
-    @property
-    def failover(self):
-        """The exercise base's failover, which the sequence leaves unused."""
-        return FAULTS[DEFAULT_FAULT].failover
-
-    @property
-    def rescale(self):
-        """The exercise base's rescale, which the sequence leaves unused."""
-        return FAULTS[DEFAULT_FAULT].rescale
 
     def parallelism(self, phase):
         """The writers' parallelism, and TaskManager count, of `initial` or `upgrade`.

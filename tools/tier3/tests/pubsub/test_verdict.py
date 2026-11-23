@@ -14,36 +14,15 @@
 # limitations under the License.
 """What the Pub/Sub recovery verdict says, and what it refuses to say."""
 
-import copy
-
 import pytest
 from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.pubsub.verdict import (
+    COMPLETE_EVENT,
     COMPLETE_STAGE,
-    MEASUREMENT_EVENT,
-    OBSERVED,
-    SAMPLED_WINDOWS,
-    WINDOWS,
+    application_pods,
     sequence_verdict,
-    summarize,
-    verdict,
 )
 
-# One sample that returned every family: a vertex's backpressure level and one
-# returned id each from the source reader and the sink writer.
-FULL = {
-    "vertices": [
-        {
-            "id": "relay",
-            "backpressure": {"status": "ok", "backpressureLevel": "ok"},
-            "metrics": [
-                {"id": "Source__Pub_Sub_input.pendingAcks", "sum": 3},
-                {"id": "Sink__Writer.inFlightMessages", "sum": 0},
-            ],
-        }
-    ],
-    "backlog": {"requested": 20, "observed": 20, "outstanding": 0},
-}
 ORACLE = {
     "lines": 64,
     "rejected": None,
@@ -56,249 +35,19 @@ ORACLE = {
 }
 
 
-def covered():
-    coverage = {}
-    for stage in ("baseline", "after"):
-        coverage = summarize(coverage, stage, FULL)
-    return coverage
+def test_the_event_names_are_spelled_once_for_both_sides():
+    assert COMPLETE_EVENT == "recovery-" + COMPLETE_STAGE
 
 
-def complete(kind="jm-replacement", **overrides):
-    replacement = kind.endswith("replacement")
-    record = {
-        "stage": "complete",
-        "outcomes": {
-            "checkpoint": {"id": 3},
-            "fault": {"kind": kind},
-            "recovery": {
-                "replay": "observed" if replacement else "not-expected",
-                "expected_replay": 4 if replacement else 0,
-                "replayed": 4 if replacement else 0,
-                "replay_ids_preserved": True,
-            },
-            "after": {
-                "checkpoint": {"id": 5},
-                "replay_by_new_attempts": 4 if replacement else 0,
-                "replay_ids_preserved": True,
-            },
-        },
-        "coverage": covered(),
-        "oracle": dict(ORACLE),
-    }
-    record.update(overrides)
-    return record
+def test_the_sequence_holds_the_jobmanager_two_taskmanagers_and_a_replacement():
+    assert application_pods("sequence") == 4
 
 
-@pytest.mark.parametrize(
-    "kind", ["jm-replacement", "tm-replacement", "rescale-out", "rescale-in"]
-)
-def test_a_complete_trial_with_its_evidence_is_usable(kind):
-    assert verdict(complete(kind)) == {"verdict": USABLE, "reasons": []}
-
-
-def test_duplicate_populations_decide_nothing():
-    oracle = {
-        **ORACLE,
-        **{
-            name: 7
-            for name in (
-                "input_publication_duplicates",
-                "repeated_input_processing",
-                "output_publication_duplicates",
-                "repeated_output_delivery",
-            )
-        },
-    }
-    assert verdict(complete(oracle=oracle))["verdict"] == USABLE
-
-
-@pytest.mark.parametrize(
-    "change,reasons",
-    [
-        (lambda r: r.update(stage="after"), ["recovery-incomplete"]),
-        (lambda r: r["outcomes"].pop("after"), ["missing-after"]),
-        (lambda r: r["outcomes"].update(checkpoint=None), ["missing-checkpoint"]),
-        # Without the fault or the recovery the replay cannot be judged, and
-        # their absence is the reason.
-        (lambda r: r["outcomes"].pop("fault"), ["missing-fault"]),
-        (lambda r: r["outcomes"].update(recovery="observed"), ["missing-recovery"]),
-        (
-            lambda r: r["outcomes"]["recovery"].update(replay="unobserved"),
-            ["replay-unobserved"],
-        ),
-        (
-            lambda r: r["outcomes"]["recovery"].update(replay="not-expected"),
-            ["replay-unobserved"],
-        ),
-        (
-            lambda r: r["outcomes"]["recovery"].update(expected_replay=0, replayed=0),
-            ["replay-empty"],
-        ),
-        (
-            lambda r: r["outcomes"]["recovery"].update(expected_replay=True),
-            ["replay-empty"],
-        ),
-        (
-            lambda r: r["outcomes"]["recovery"].update(replayed=3),
-            ["replay-incomplete"],
-        ),
-        (
-            lambda r: r["outcomes"]["recovery"].update(
-                expected_replay=1, replayed=True
-            ),
-            ["replay-incomplete"],
-        ),
-        (
-            lambda r: r["outcomes"]["recovery"].update(replay_ids_preserved="true"),
-            ["replay-ids-not-preserved"],
-        ),
-        # A replay collected after recovery was proven counts too.
-        (
-            lambda r: r["outcomes"]["after"].update(replay_ids_preserved=False),
-            ["replay-ids-not-preserved"],
-        ),
-        (
-            lambda r: r["outcomes"]["after"].pop("replay_ids_preserved"),
-            ["replay-ids-not-preserved"],
-        ),
-        (lambda r: r["outcomes"]["fault"].update(kind="other"), ["unknown-trial"]),
-        (lambda r: r.pop("oracle"), ["oracle-missing"]),
-        (
-            lambda r: r["oracle"].update(rejected="Invalid output observation"),
-            ["oracle-rejected"],
-        ),
-        (lambda r: r["oracle"].pop("rejected"), ["oracle-rejected"]),
-        (lambda r: r["oracle"].update(missing_inputs=2), ["oracle-incomplete"]),
-        (lambda r: r["oracle"].pop("missing_inputs"), ["oracle-incomplete"]),
-        (lambda r: r["oracle"].update(missing_inputs=False), ["oracle-incomplete"]),
-    ],
-)
-def test_each_shortfall_is_inconclusive_with_its_reason(change, reasons):
-    record = complete()
-    change(record)
-    assert verdict(record) == {"verdict": INCONCLUSIVE, "reasons": reasons}
-
-
-@pytest.mark.parametrize("kind", ["rescale-out", "rescale-in"])
-def test_a_rescale_record_claiming_a_replay_contradicts_its_trial(kind):
-    """The exercise never writes this; a record that does was not written by it."""
-    record = complete(kind)
-    record["outcomes"]["recovery"]["replay"] = "observed"
-    assert verdict(record)["reasons"] == ["replay-unexpected"]
-
-
-@pytest.mark.parametrize("kind", ["rescale-out", "rescale-in"])
-@pytest.mark.parametrize("replayed", [4, None, True, "0"])
-def test_a_redelivery_after_a_savepoint_is_inconclusive_until_measured(kind, replayed):
-    """Whether the service redelivers after a savepoint is #1435's to measure."""
-    record = complete(kind)
-    record["outcomes"]["after"]["replay_by_new_attempts"] = replayed
-    assert verdict(record) == {
-        "verdict": INCONCLUSIVE,
-        "reasons": ["replay-after-savepoint"],
-    }
-
-
-def test_each_family_is_required_before_the_fault_and_after_recovery():
-    for window in SAMPLED_WINDOWS:
-        for family in OBSERVED:
-            record = complete()
-            observed = record["coverage"][window]["observed"]
-            observed.remove(family)
-            assert verdict(record)["reasons"] == [f"unobserved-{family}-in-{window}"]
-
-
-@pytest.mark.parametrize("attempts", [0, None, True, "1"])
-def test_a_window_that_took_no_sample_observed_nothing(attempts):
-    record = complete()
-    record["coverage"]["after"]["attempts"] = attempts
-    assert verdict(record)["reasons"] == [
-        "unsampled-after",
-        *(f"unobserved-{family}-in-after" for family in OBSERVED),
-    ]
-
-
-@pytest.mark.parametrize("value", [None, [], "complete", 1])
-def test_an_untyped_record_is_inconclusive_without_raising(value):
-    decided = verdict(value)
-    assert decided["verdict"] == INCONCLUSIVE
-    assert decided["reasons"][:2] == ["recovery-incomplete", "missing-checkpoint"]
-
-
-def test_malformed_fields_read_as_missing():
-    record = complete(outcomes=[], coverage=[], oracle="pass")
-    assert verdict(record)["reasons"] == [
-        "missing-checkpoint",
-        "missing-fault",
-        "missing-recovery",
-        "missing-after",
-        "oracle-missing",
-        *(
-            reason
-            for window in SAMPLED_WINDOWS
-            for reason in (
-                "unsampled-" + window,
-                *(f"unobserved-{family}-in-{window}" for family in OBSERVED),
-            )
-        ),
-    ]
-
-
-def test_coverage_credits_what_a_sample_returned():
-    assert summarize({}, "boundary", FULL)["before"]["observed"] == list(OBSERVED)
-    unavailable = {
-        "vertices": [
-            {
-                "id": "relay",
-                "backpressure": {"unavailable": "503"},
-                "metrics": {"unavailable": "no Pub/Sub connector metric is listed"},
-            }
-        ]
-    }
-    assert summarize({}, "after", unavailable) == {
-        "after": {"attempts": 1, "observed": []}
-    }
-    # Another operator's metric, an item without an id, and the listing's own
-    # shape, an id with no aggregate, which a skipped value query would leave.
-    other = copy.deepcopy(FULL)
-    other["vertices"][0]["metrics"] = [
-        {"id": "Source__x.numRecordsIn", "sum": 1},
-        {"sum": 1},
-        {"id": "Source__Pub_Sub_input.pendingAcks"},
-        {"id": "Sink__Writer.inFlightMessages"},
-    ]
-    assert summarize({}, "after", other)["after"]["observed"] == ["backpressure"]
-    # An aggregate key without a finite number is no reading either.
-    for value in (None, True, "3", float("nan"), float("inf"), [1]):
-        empty = copy.deepcopy(FULL)
-        for item in empty["vertices"][0]["metrics"]:
-            item["sum"] = value
-        assert summarize({}, "after", empty)["after"]["observed"] == ["backpressure"]
-    for broken in ({}, {"vertices": {"unavailable": "x"}}, {"vertices": [None, 1]}):
-        assert summarize({}, "after", broken)["after"]["observed"] == []
-
-
-def test_coverage_is_monotonic_within_a_window_and_never_crosses_one():
-    coverage = summarize({}, "baseline", FULL)
-    coverage = summarize(coverage, "checkpoint", {"vertices": []})
-    assert coverage == {"before": {"attempts": 2, "observed": list(OBSERVED)}}
-    coverage = summarize(coverage, "after", {})
-    assert coverage["after"] == {"attempts": 1, "observed": []}
-    # A stage no window names counts nowhere, recovery's included.
-    assert summarize(coverage, "recovering", FULL) == coverage
-    assert summarize(coverage, "complete", FULL) == coverage
-
-
-def test_windows_name_every_stage_before_the_fault_and_after_recovery():
-    assert WINDOWS == {
-        "baseline": "before",
-        "checkpoint": "before",
-        "boundary": "before",
-        "after": "after",
-    }
-    # Reasons are reported in this order.
-    assert SAMPLED_WINDOWS == ("before", "after")
-    assert MEASUREMENT_EVENT == "pubsub-measurement"
+@pytest.mark.parametrize("kind", ["jm-replacement", "rescale-out", None])
+def test_no_other_kind_is_sized(kind):
+    """Every trial runs the sequence (ADR-0204), so admission sizes no other."""
+    with pytest.raises(ValueError, match="Unknown Pub/Sub trial kind"):
+        application_pods(kind)
 
 
 def sequence_record(**overrides):
@@ -316,9 +65,9 @@ def test_a_complete_sequence_with_its_output_is_usable():
     assert sequence_verdict(sequence_record()) == {"verdict": USABLE, "reasons": []}
 
 
-def test_a_sequence_needs_no_window_outcome_or_replay():
-    # Coverage, recovery outcomes and duplicates decide nothing (ADR-0204).
-    record = sequence_record(coverage={}, outcomes={})
+def test_a_sequence_needs_no_recovery_outcome_or_replay():
+    # Recovery outcomes and duplicates decide nothing (ADR-0204).
+    record = sequence_record(outcomes={})
     record["oracle"]["repeated_input_processing"] = 900
     assert sequence_verdict(record)["verdict"] == USABLE
 
@@ -329,7 +78,13 @@ def test_a_sequence_needs_no_window_outcome_or_replay():
         ({"stage": "upgrade"}, ["recovery-incomplete"]),
         ({"oracle": None}, ["oracle-missing"]),
         ({"oracle": {"rejected": "Invalid output observation"}}, ["oracle-rejected"]),
+        # An absent refusal is not an acceptance.
+        (
+            {"oracle": {k: v for k, v in ORACLE.items() if k != "rejected"}},
+            ["oracle-rejected"],
+        ),
         ({"oracle": {**ORACLE, "missing_inputs": 3}}, ["oracle-incomplete"]),
+        ({"oracle": {**ORACLE, "missing_inputs": False}}, ["oracle-incomplete"]),
         ({"inputs": None}, ["inputs-missing"]),
         ({"inputs": {"unpublished": 1, "unreceipted": 0}}, ["input-ids-unpublished"]),
         ({"inputs": {"unpublished": 0, "unreceipted": 2}}, ["input-receipts-missing"]),

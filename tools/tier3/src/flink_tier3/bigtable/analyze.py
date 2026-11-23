@@ -14,10 +14,9 @@
 # limitations under the License.
 """Recompute a deployed Bigtable run's verdict from its exported evidence.
 
-The coverage is rebuilt from the measurements the run exported, and the
-recoveries and the three oracle reports are read from its record, so a reader
-holding only the downloaded evidence directory can check the stored verdict
-against them. The oracle reports are not rebuilt: the supervisor read the
+The three oracle reports are read from the run's record, so a reader holding
+only the downloaded evidence directory can check the stored verdict against
+them. The oracle reports are not rebuilt: the supervisor read the
 tables, which the instance's deletion removed, and exported only the reports.
 
 Every event name and stage comes from ``flink_tier3.bigtable.verdict``,
@@ -25,33 +24,29 @@ which the exercise writes from, so a rename cannot reach only one side.
 """
 
 from ..recovery_analysis import (
-    measurements,
-    missing_samples,
-    rebuild,
+    SINGLE_FAULT_NOTE,
+    malformed_records,
+    names_single_fault,
     recovery_record,
-    recovery_timings,
-    render_timings,
+    single_fault,
     unreadable,
     verdict_problems,
 )
-from .observe import COMPONENTS
-from .trial import SEQUENCE_KIND, Trial
+from .trial import Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
-    MEASUREMENT_EVENT,
-    SAMPLED_STAGES,
+    COMPONENTS,
     sequence_verdict,
-    summarize,
-    verdict,
 )
 
 SCENARIO = "bigtable-recovery"
+FIELD = "bigtable_trial"
 
 
 def _trial(run):
     approval = run.approval if isinstance(run.approval, dict) else {}
-    value = approval.get("bigtable_trial")
+    value = approval.get(FIELD)
     if not isinstance(value, dict):
         return None
     try:
@@ -61,53 +56,31 @@ def _trial(run):
 
 
 def assess(run):
-    """One Bigtable run's verdict, beside its recoveries' timing.
-
-    A fault-sequence run (ADR-0204) lists the faults it injected instead,
-    and has no recovery proofs to time.
-    """
+    """One Bigtable run's verdict, beside the faults it injected (ADR-0204)."""
     record = recovery_record(run, COMPLETE_EVENT)
-    if _sequence(run):
-        outcomes = record.get("outcomes") if isinstance(record, dict) else None
-        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-        return {
-            **_verdict(run),
-            "faults": faults if isinstance(faults, list) else [],
-            "recoveries": [],
-        }
-    return {**_verdict(run), "recoveries": recovery_timings(run, record)}
-
-
-def _sequence(run):
-    trial = _trial(run)
-    return trial is not None and trial.kind == SEQUENCE_KIND
+    outcomes = record.get("outcomes") if isinstance(record, dict) else None
+    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+    return {**_verdict(run), "faults": faults if isinstance(faults, list) else []}
 
 
 def _verdict(run):
-    readings, malformed = measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
-    samples = len(readings)
+    malformed = malformed_records(run, COMPLETE_EVENT)
+    if names_single_fault(run, FIELD):
+        return single_fault(run, recovery_record(run, COMPLETE_EVENT))
     if _trial(run) is None:
-        return unreadable(run, None, ["approval-without-bigtable-trial"], samples)
+        return unreadable(run, None, ["approval-without-bigtable-trial"])
     if not isinstance(run.result, dict):
-        return unreadable(run, None, ["missing-result.json"], samples)
+        return unreadable(run, None, ["missing-result.json"])
     if malformed:
-        return unreadable(run, None, [f"malformed-evidence:{malformed}"], samples)
+        return unreadable(run, None, [f"malformed-evidence:{malformed}"])
     complete = bool(run.events_of(COMPLETE_EVENT))
     record = recovery_record(run, COMPLETE_EVENT)
     if not isinstance(record, dict):
-        return unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
+        return unreadable(run, None, ["missing-" + COMPLETE_EVENT])
     if not complete and record.get("stage") == COMPLETE_STAGE:
-        return unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    if _sequence(run):
-        # Decided by the data alone; nothing was sampled.
-        decided = sequence_verdict(record)
-    else:
-        # Decide over the coverage the readings support, never the coverage
-        # the record claims.
-        coverage = rebuild(readings, summarize)
-        if missing := missing_samples(record.get("coverage"), coverage):
-            return unreadable(run, record, [f"missing-samples:{missing}"], samples)
-        decided = verdict({**record, "coverage": coverage})
+        return unreadable(run, record, ["missing-" + COMPLETE_EVENT])
+    # Decided by the data alone.
+    decided = sequence_verdict(record)
     outcomes = record.get("outcomes")
     oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
     return {
@@ -117,7 +90,6 @@ def _verdict(run):
         "reasons": decided["reasons"],
         "problems": sorted(verdict_problems(record, decided, complete)),
         "oracles": oracles if isinstance(oracles, dict) else None,
-        "samples": samples,
     }
 
 
@@ -150,23 +122,22 @@ def render(assessments):
         "## Deployed Bigtable runs",
         "",
         (
-            "A verdict recomputed from the exported evidence: the coverage is "
-            "rebuilt from the run's measurements; the recoveries and the oracle "
-            "reports are read from the record."
+            "A verdict recomputed from the exported evidence: the oracle reports "
+            "are read from the record."
         ),
         "",
         (
-            "| run | verdict | stored | samples | eo | alo | alo extra | relay | "
+            "| run | verdict | stored | eo | alo | alo extra | relay | "
             "relay replays | faults | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracles = item.get("oracles")
         verdicts = {c: _figure(oracles, c, "verdict") for c in COMPONENTS}
         lines.append(
             f"| {item['run_id']} | {item['verdict'] or '-'} | {item['stored'] or '-'} "
-            f"| {item['samples']} | {verdicts['eo']} | {verdicts['alo']} | "
+            f"| {verdicts['eo']} | {verdicts['alo']} | "
             f"{_figure(oracles, 'alo', 'extra_contributions')} | {verdicts['relay']} | "
             f"{_figure(oracles, 'relay', 'extra_deliveries')} | {_faults(item)} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
@@ -175,24 +146,14 @@ def render(assessments):
         [
             "",
             (
-                "A usable single-fault verdict establishes that through both "
-                "recoveries every input record reached `eo` exactly once with one "
-                "marker, reached `alo` at least once, and was relayed from `eo`'s "
-                "change stream at least once; extra `alo` contributions and relay "
-                "deliveries are reported, not failed."
+                "A usable `sequence` verdict (ADR-0204) establishes that through "
+                "the faults listed every input record reached `eo` exactly once "
+                "with one marker, reached `alo` at least once, and was relayed "
+                "from `eo`'s change stream at least once; extra `alo` "
+                "contributions and relay deliveries are reported, not failed. The "
+                "run is judged by its data alone."
             ),
-            (
-                "For a single-fault run, each family is required in the "
-                + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
-                + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
-                + "only where a reading returned it."
-            ),
-            (
-                "A usable `sequence` verdict (ADR-0204) establishes the same of "
-                "the three tables through the faults listed: the run is judged by "
-                "its data alone, so it samples no window."
-            ),
+            SINGLE_FAULT_NOTE,
         ]
     )
-    lines.extend(render_timings(assessments))
     return "\n".join(lines) + "\n"

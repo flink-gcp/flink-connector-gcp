@@ -12,225 +12,43 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Vertex discovery by name, the families and watermark a reading covers, and the verdict."""
+"""The verdict, and the analyzer's account of a run from its record."""
 
 import json
 
 import pytest
 from flink_tier3 import runs
 from flink_tier3.common import INCONCLUSIVE, USABLE
-from flink_tier3.metrics import metric_name
+from flink_tier3.recovery_analysis import (
+    SINGLE_FAULT,
+    SINGLE_FAULT_NOTE,
+)
 from flink_tier3.spanner import analyze, plan
-from flink_tier3.spanner.observe import (
-    CONNECTOR_METRICS,
-    FAMILIES,
-    observation,
-    vertices,
-)
-from flink_tier3.spanner.verdict import (
-    NO_WATERMARK,
-    OBSERVED,
-    SAMPLED_STAGES,
-    sequence_verdict,
-    summarize,
-    verdict,
-)
+from flink_tier3.spanner.verdict import sequence_verdict
 
 from ..test_analyze import write_run
 
-# The chained vertex names of the application's README.
-NAMES = {
-    "in": "Source: Spanner input -> Spanner input identity",
-    "sink": "Spanner input: Writer",
-    "cs": "Source: Spanner change stream -> Spanner relay delivery"
-    " -> Spanner relay: Writer",
-    "batch": "Source: Spanner seed -> Spanner seed pace -> Spanner seed delivery"
-    " -> Spanner batch copy: Writer",
-}
-# Each component's operators, as the query service prefixes their metric ids,
-# the one registering the connector's metrics first.
-OPERATORS = {
-    "sink": ["Spanner_input__Writer"],
-    "cs": ["Source__Spanner_change_stream", "Spanner_relay__Writer"],
-    "batch": ["Source__Spanner_seed", "Spanner_batch_copy__Writer"],
-}
-
-
-class Rest:
-    """The job's REST answers: every vertex lists and returns every metric asked for.
-
-    An operator's metrics read `watermarks[operator]`, or 0, and none of them
-    is returned where that is None.
-    """
-
-    def __init__(self, watermark=0):
-        self.watermarks = {"Source__Spanner_change_stream": watermark}
-
-    def job(self, path):
-        if path == "":
-            return {
-                "vertices": [
-                    {"id": vertex, "name": name} for vertex, name in NAMES.items()
-                ]
-            }
-        if path == "/checkpoints":
-            return {"latest": {"completed": {"id": 3}}}
-        if path.startswith("/checkpoints/details/"):
-            return {
-                "subtasks": [
-                    {
-                        "index": 0,
-                        "end_to_end_duration": 5,
-                        "checkpoint": {"sync": 1, "async": 2},
-                    }
-                ]
-            }
-        if "/jm-operator-metrics" in path:
-            if "?get=" in path:
-                return [{"id": path.split("?get=")[1], "value": "12"}]
-            return [{"id": "coordinator.enumerator.changeStreamPartitionsDiscovered"}]
-        vertex = path.split("/")[2]
-        if "?get=" in path:
-            values = {
-                metric: self.watermarks.get(metric.split(".")[0], 0)
-                for metric in path.split("?get=")[1].split("&")[0].split(",")
-            }
-            return [
-                {"id": metric, "min": value, "sum": 0}
-                for metric, value in values.items()
-                if value is not None
-            ]
-        component = {"cs": "change_stream"}.get(vertex, vertex)
-        names = [*CONNECTOR_METRICS.get(component, ()), "numRecordsIn", "inPoolUsage"]
-        first, *others = OPERATORS.get(vertex, ["x"])
-        # Every operator of the chain registers a watermark.
-        return [{"id": f"{first}.{name}"} for name in names] + [
-            {"id": f"{operator}.currentOutputWatermark"} for operator in others
-        ]
-
-    def root(self, path):
-        if path == "/taskmanagers":
-            return {"taskmanagers": [{"id": "tm"}]}
-        return [{"id": "Status.JVM.Memory.Heap.Used", "value": "1"}]
-
-
-def record(coverage, judged=True):
-    return {
-        "stage": "complete",
-        "outcomes": {
-            "upgrade": {},
-            "failover": {},
-            "oracles": {
-                "sink": {"verdict": "pass"},
-                "change_stream": {"verdict": "pass", "judged": judged},
-                "batch": {"verdict": "pass"},
-            },
+# The kinds the single-fault trials named, written out so that dropping one
+# from the analyzer's list fails a test here rather than shrinking it.
+ARCHIVED_KINDS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
+FAULTS = [{"kind": "upgrade", "at": "2026-11-16T02:00:00Z"}]
+RECORD = {
+    "stage": "complete",
+    "verdict": "usable",
+    "reasons": [],
+    "outcomes": {
+        "oracles": {
+            "sink": {"verdict": "pass"},
+            "change_stream": {"verdict": "pass", "judged": True},
+            "batch": {"verdict": "pass"},
         },
-        "coverage": coverage,
-    }
+        "faults": FAULTS,
+    },
+}
 
 
-def windows(watermarks):
-    """Coverage of one reading per window, each with the source's watermark given."""
-    coverage = {}
-    state = vertices(Rest())
-    for window, value in zip(SAMPLED_STAGES, watermarks, strict=True):
-        reading = observation(Rest(value), state)
-        coverage = summarize(coverage, window, {**reading, "window": window})
-    return coverage
-
-
-def test_the_four_vertices_are_found_by_name_and_every_family_is_read():
-    state = vertices(Rest())
-    assert state["vertices"] == {
-        "input": "in",
-        "sink": "sink",
-        "change_stream": "cs",
-        "batch": "batch",
-    }
-    coverage = windows([1, 2, 3])
-    assert all(
-        sorted(coverage[w]["observed"]) == sorted(OBSERVED) for w in SAMPLED_STAGES
-    )
-    assert coverage["finishing"]["maxima"] == {
-        "watermark": 3,
-        "partitions_reread": 0,
-        "partitions_discovered": 12,
-    }
-    assert verdict(record(coverage)) == {"verdict": USABLE, "reasons": []}
-    # A report that records no judgment is not one.
-    assert verdict(record(coverage, judged=None))["reasons"] == [
-        "change_stream-oracle-unjudged"
-    ]
-
-
-@pytest.mark.parametrize(
-    ("watermarks", "reason"),
-    [
-        # Each recovery must be followed by a greater watermark.
-        ([1, 2, 2], "change_stream-oracle-not-passed"),
-        ([1, 1, 2], "change_stream-oracle-not-passed"),
-        # Flink's none is not a watermark.
-        ([NO_WATERMARK, 2, 3], "change_stream-oracle-not-passed"),
-    ],
-)
-def test_the_watermark_must_advance_after_each_recovery(watermarks, reason):
-    assert verdict(record(windows(watermarks)))["reasons"] == [reason]
-
-
-def test_an_unread_watermark_leaves_the_change_stream_unjudged():
-    """Only the source's own gauge is its watermark; an absence never passes."""
-    coverage = windows([1, 2, 3])
-    del coverage["upgraded"]["maxima"]["watermark"]
-    assert verdict(record(coverage))["reasons"] == ["change_stream-oracle-unjudged"]
-    rest = Rest()
-    rest.watermarks = {
-        "Source__Spanner_change_stream": None,
-        "Spanner_relay__Writer": 5,
-    }
-    reading = observation(rest, vertices(rest))
-    assert "watermark" not in summarize({}, "baseline", reading)["baseline"]["maxima"]
-
-
-def test_a_component_family_never_read_leaves_the_run_unusable():
-    """A family is judged by component, so another's metrics do not stand in."""
-
-    class Partial(Rest):
-        def job(self, path):
-            answer = super().job(path)
-            if path.startswith("/vertices/batch/subtasks/metrics?get="):
-                connector = FAMILIES["batch"]["connector"]
-                return [m for m in answer if metric_name(m["id"]) not in connector]
-            return answer
-
-    coverage = {}
-    state = vertices(Rest())
-    for window, value in zip(SAMPLED_STAGES, [1, 2, 3], strict=True):
-        reading = observation(Partial(value), state)
-        coverage = summarize(coverage, window, {**reading, "window": window})
-    assert all("batch-connector" not in coverage[w]["observed"] for w in SAMPLED_STAGES)
-    result = verdict(record(coverage))
-    assert result["verdict"] != USABLE
-    assert result["reasons"] == [
-        f"unobserved-batch-connector-in-{window}" for window in SAMPLED_STAGES
-    ]
-
-
-def test_a_sequence_run_is_assessed_by_its_oracles_without_samples(tmp_path):
-    """A fault-sequence run (ADR-0204) samples nothing and lists its faults."""
-    record = {
-        "stage": "complete",
-        "verdict": "usable",
-        "reasons": [],
-        "outcomes": {
-            "oracles": {
-                "sink": {"verdict": "pass"},
-                "change_stream": {"verdict": "pass", "judged": True},
-                "batch": {"verdict": "pass"},
-            },
-            "faults": [{"kind": "upgrade", "at": "2026-11-16T02:00:00Z"}],
-        },
-    }
+def assessed(tmp_path, **trial):
+    """The analyzer's account of one run that wrote `RECORD`, under `trial`."""
     run_dir = write_run(
         tmp_path,
         run_id="sp-s1",
@@ -239,22 +57,64 @@ def test_a_sequence_run_is_assessed_by_its_oracles_without_samples(tmp_path):
             {
                 "event": "recovery-complete",
                 "at": "2026-11-16T02:30:00Z",
-                "payload": record,
+                "payload": RECORD,
             }
         ],
     )
     approval = json.loads((run_dir / "approval.json").read_text())
-    approval["spanner_trial"] = plan.trial("sequence", "2026-11-16T01:50:00Z")
+    approval["spanner_trial"] = {
+        **plan.trial("sequence", "2026-11-16T01:50:00Z"),
+        **trial,
+    }
     (run_dir / "approval.json").write_text(json.dumps(approval))
-    (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
-    assert assessed["verdict"] == USABLE
-    assert assessed["problems"] == []
-    assert assessed["faults"] == record["outcomes"]["faults"]
-    # The report lists the faults rather than claiming windows it never had.
-    [row] = [
-        line for line in analyze.render([assessed]).splitlines() if "sp-s1" in line
-    ]
+    (item,) = analyze.assess_runs([runs.Run(run_dir)])
+    return item
+
+
+def test_a_sequence_run_is_assessed_by_its_oracles_and_lists_its_faults(tmp_path):
+    """A fault-sequence run (ADR-0204) is decided by its oracles alone."""
+    item = assessed(tmp_path)
+    assert item["verdict"] == USABLE
+    assert item["problems"] == []
+    assert item["faults"] == FAULTS
+    rendered = analyze.render([item])
+    [row] = [line for line in rendered.splitlines() if "sp-s1" in line]
     assert "| upgrade |" in row
+    assert "watermark advanced" not in rendered
+
+
+@pytest.mark.parametrize("kind", ARCHIVED_KINDS)
+def test_a_single_fault_run_has_no_verdict_here(tmp_path, kind):
+    """Its approval names a kind the trial refuses; its stored verdict is kept."""
+    item = assessed(tmp_path, kind=kind)
+    assert (item["verdict"], item["stored"], item["problems"]) == (
+        None,
+        USABLE,
+        [SINGLE_FAULT],
+    )
+    rendered = analyze.render([item])
+    assert f"| {SINGLE_FAULT} |" in rendered
+    assert SINGLE_FAULT_NOTE in rendered
+
+
+@pytest.mark.parametrize(
+    "trial",
+    [
+        {"records": "many"},
+        # A kind no trial had is malformed, not an archived single fault.
+        {"kind": None},
+        {"kind": 3},
+        {"kind": []},
+        {"kind": ""},
+        {"kind": "sequnce"},
+    ],
+)
+def test_a_trial_the_approval_does_not_hold_readably_is_no_trial(tmp_path, trial):
+    item = assessed(tmp_path, **trial)
+    assert (item["verdict"], item["problems"]) == (
+        None,
+        ["approval-without-spanner-trial"],
+    )
 
 
 PASSED = {

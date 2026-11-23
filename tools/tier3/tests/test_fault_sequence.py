@@ -15,7 +15,6 @@
 """One run that injects every fault and waits out everything else (ADR-0204)."""
 
 import copy
-from typing import ClassVar
 
 import pytest
 from flink_tier3 import exercise as exercise_module
@@ -26,36 +25,38 @@ from flink_tier3.common import UNPLANNED_EVENT, ApiError, Failure, TransportErro
 from flink_tier3.exercise import (
     RECORD_SECONDS,
     SEQUENCE_PARALLELISM,
+    SHUTDOWN_MESSAGE,
     TIME_LIMIT_SECONDS,
     UNCONFIRMED,
     FaultSequence,
 )
 from flink_tier3.firestore.exercise import FirestoreSequenceExercise
+from flink_tier3.metrics import FlinkRest
+from flink_tier3.policy import MIB
 from flink_tier3.pubsub.exercise import PubSubSequenceExercise
 from flink_tier3.spanner.exercise import SpannerSequenceExercise
 
-from .test_exercise import LINEAGE, Exercise, World, preempted
-from .test_exercise import env as env  # noqa: PLC0414
-from .test_exercise import inputs as inputs  # noqa: PLC0414
-from .test_exercise import prepared as prepared  # noqa: PLC0414
-from .test_exercise import renderer as renderer  # noqa: PLC0414
+from .sequence_world import LINEAGE, Exercise, World, preempted
+from .sequence_world import env as env  # noqa: PLC0414
+from .sequence_world import inputs as inputs  # noqa: PLC0414
+from .sequence_world import prepared as prepared  # noqa: PLC0414
+from .sequence_world import renderer as renderer  # noqa: PLC0414
 from .test_lifecycle import rt
 
 
 class Sequenced(FaultSequence, Exercise):
-    timing: ClassVar[dict] = {**Exercise.timing, "visibility_seconds": 600}
+    pass
 
 
 class SequenceWorld(World):
-    """The shared world, with an Operator that moves a generation per patch.
+    """The sequence's world, whose Operator moves a generation per patch.
 
     A fault's recovery is a restore the job's statistics report, after which
     the job logs progress again; the stopped job may log before that.
     """
 
     def __init__(self, prepared, monkeypatch):
-        super().__init__(prepared, monkeypatch, exercise=Sequenced)
-        self.exercise.upgrade = self.upgrade
+        super().__init__(prepared, monkeypatch, Sequenced)
         self.emitted = []
         self.patch_errors = []
         # The state the job the Operator names reports on its own REST API,
@@ -141,9 +142,9 @@ class SequenceWorld(World):
             self.next_tm += 1
             self.pod(f"tm-{self.next_tm}", "taskmanager")
 
-    def flowing(self):
-        """The job logs progress on a TaskManager that reports the input."""
-        tm = next(n for n in self.pods if n.startswith("tm-"))
+    def flowing(self, tm=None):
+        """The job logs progress on `tm`, else the first TaskManager."""
+        tm = tm or next(n for n in self.pods if n.startswith("tm-"))
         self.advance(5)
         self.progress(tm, "upgrade")
 
@@ -663,6 +664,313 @@ def test_a_pod_replaced_between_two_polls_is_recorded(world):
     assert "Unplanned workload replacement" in world.exercise.outcomes["unplanned"]
 
 
+def node_event(world, reason, node, at, message):
+    """An event on a Node, as Kubernetes records it in `default`."""
+    name = f"{reason}-{node}-{at}"
+    world.env.kube.put(
+        {
+            "kind": "Event",
+            "apiVersion": "v1",
+            "metadata": {
+                "namespace": "default",
+                "name": name,
+                "uid": name + "-uid",
+                "resourceVersion": "1",
+            },
+            "involvedObject": {"kind": "Node", "name": node},
+            "reason": reason,
+            "message": message,
+            "lastTimestamp": at,
+        }
+    )
+
+
+def shutdown(world, seconds, node="spot-node", message=SHUTDOWN_MESSAGE):
+    """The kubelet's `Shutdown`, ``seconds`` after the poll that last saw the Pod."""
+    node_event(world, "Shutdown", node, rt.utc(world.env.clock() + seconds), message)
+
+
+def scale_down(world, seconds, node="spot-node"):
+    node_event(
+        world,
+        "ScaleDown",
+        node,
+        rt.utc(world.env.clock() + seconds),
+        "marked the node as toBeDeleted/unschedulable",
+    )
+
+
+def place(world, pod, node, bound=-3600):
+    """Binds a Pod to a node ``bound`` seconds from now; it was created three hours ago."""
+    now = world.env.clock()
+    world.pods[pod]["spec"] = {"nodeName": node}
+    world.pods[pod]["metadata"]["creationTimestamp"] = rt.utc(now - 10800)
+    world.pods[pod]["status"]["conditions"] = [
+        {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": rt.utc(now + bound),
+        }
+    ]
+
+
+def lose_tm2(world, bound=-3600):
+    """The poll that last sees a TaskManager on its node, then Flink's replacement of it.
+
+    After the last fault, so the Pods running are the stable set, and the
+    replacement is neither only Pods leaving nor only Pods arriving.
+    """
+    through(world, "rescale-out")
+    assert awaited(world) is None
+    lost = next(name for name in world.pods if name.startswith("tm-"))
+    place(world, lost, "spot-node", bound)
+    world.exercise.scheduling(copy.deepcopy(list(world.pods.values())))
+    del world.pods[lost]
+    world.pod("tm-99", "taskmanager")
+
+
+def recorded(world):
+    """What one poll's scheduling read recorded as the run's unplanned causes."""
+    world.exercise.scheduling(copy.deepcopy(list(world.pods.values())))
+    return world.exercise.outcomes.get("unplanned")
+
+
+INTERRUPTION = ["Unplanned workload interruption"]
+REPLACEMENT = ["Unplanned workload replacement"]
+
+
+def test_a_pod_replaced_after_its_node_shut_down_is_an_interruption(world):
+    lose_tm2(world)
+    shutdown(world, 16)
+    emitted = len(world.emitted)
+    # Flink has already replaced the Pod, so only the node's event shows the
+    # reclamation.
+    assert recorded(world) == INTERRUPTION
+    assert [
+        (event, [item["involvedObject"]["name"] for item in payload])
+        for event, payload in world.emitted[emitted:]
+        if event == "scheduling-events"
+    ] == [("scheduling-events", ["spot-node"])]
+
+
+def test_a_shutdown_a_long_poll_after_the_pod_is_still_an_interruption(world):
+    lose_tm2(world)
+    shutdown(world, 75)
+    assert recorded(world) == INTERRUPTION
+
+
+@pytest.mark.parametrize(
+    ("node", "marked"),
+    [
+        # Another node's removal.
+        ("other-node", 70),
+        # A removal marked more than ten minutes before the shutdown.
+        ("spot-node", 75 - 601),
+        # A mark recorded after the shutdown.
+        ("spot-node", 80),
+    ],
+)
+def test_a_scale_down_that_did_not_remove_the_node_vetoes_nothing(world, node, marked):
+    lose_tm2(world)
+    scale_down(world, marked, node=node)
+    shutdown(world, 75)
+    assert recorded(world) == INTERRUPTION
+
+
+@pytest.mark.parametrize(
+    ("node", "seconds", "scaled_down", "message"),
+    [
+        # An earlier life of the node name: after the Pod's creation, before its binding.
+        ("spot-node", -7200, False, SHUTDOWN_MESSAGE),
+        # The autoscaler removing the node, just after marking it.
+        ("spot-node", 75, True, SHUTDOWN_MESSAGE),
+        # Another node, which held none of the run's Pods.
+        ("other-node", 16, False, SHUTDOWN_MESSAGE),
+        # The kubelet cancelling a shutdown, under the same reason.
+        (
+            "spot-node",
+            16,
+            False,
+            "Shutdown manager detected shutdown cancellation event",
+        ),
+    ],
+)
+def test_a_shutdown_that_did_not_stop_the_pod_is_no_interruption(
+    world, node, seconds, scaled_down, message
+):
+    lose_tm2(world)
+    if scaled_down:
+        scale_down(world, seconds - 5, node=node)
+    shutdown(world, seconds, node=node, message=message)
+    assert recorded(world) == REPLACEMENT
+
+
+def test_a_mark_from_before_the_binding_still_vetoes(world):
+    # An in-flight binding can follow the autoscaler's mark, so the mark still
+    # counts, and the cause, if any, is the replacement's, not the platform's.
+    lose_tm2(world, bound=-300)
+    scale_down(world, -400)
+    shutdown(world, 75)
+    assert recorded(world) == REPLACEMENT
+
+
+def test_a_mark_published_while_the_shutdowns_are_read_still_vetoes(world, monkeypatch):
+    # The autoscaler marks the node just before it shuts it down, so a mark can
+    # land between two reads; the shutdowns are read first for that reason.
+    lose_tm2(world)
+    read = world.env.kube.node_events
+
+    def node_events(reason):
+        events = read(reason)
+        if reason == "Shutdown":
+            scale_down(world, 70)
+            shutdown(world, 75)
+            events = read(reason)
+        return events
+
+    monkeypatch.setattr(world.env.kube, "node_events", node_events)
+    assert recorded(world) == REPLACEMENT
+
+
+def test_a_node_shutdown_with_no_pod_lost_is_no_interruption(world):
+    through(world, "rescale-out")
+    assert awaited(world) is None
+    held = next(name for name in world.pods if name.startswith("tm-"))
+    place(world, held, "spot-node")
+    world.exercise.scheduling(copy.deepcopy(list(world.pods.values())))
+    shutdown(world, 16)
+    assert recorded(world) is None
+    # The same shutdown is an interruption once the Pod it held is replaced.
+    del world.pods[held]
+    world.pod("tm-99", "taskmanager")
+    assert recorded(world) == INTERRUPTION
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        # A kubelet eviction under resource pressure.
+        {"phase": "Failed", "reason": "Evicted"},
+        # The kubelet's own termination, which only the disruption marks.
+        {
+            "phase": "Running",
+            "conditions": [
+                {
+                    "type": "DisruptionTarget",
+                    "status": "True",
+                    "reason": "TerminationByKubelet",
+                }
+            ],
+        },
+    ],
+    ids=["evicted", "disruption-target"],
+)
+def test_an_eviction_is_recorded_and_waited_out(world, status):
+    """An eviction may be the job's own limits, so it is recorded, never a stop."""
+    world.start()
+    world.pods["tm-2"]["status"] = status
+    world.poll()
+    assert world.exercise.outcomes["unplanned"] == ["Unplanned workload eviction"]
+    world.pods["tm-2"]["status"] = {"phase": "Running"}
+    world.recover("upgrade")
+    assert awaited(world) == "jobmanager"
+
+
+def test_a_restarted_container_is_recorded_and_waited_out(world):
+    world.start()
+    world.pods["tm-2"]["status"]["containerStatuses"] = [{"restartCount": 1}]
+    world.poll()
+    assert "Unplanned container restart" in world.exercise.outcomes["unplanned"]
+    world.recover("upgrade")
+    assert awaited(world) == "jobmanager"
+
+
+def test_the_taskmanager_fault_waits_for_the_reporting_taskmanager_to_run(world):
+    """Only the TaskManager the latest input came from is the fault's target."""
+    through(world, "upgrade")
+    assert awaited(world) == "jobmanager"
+    reporter = next(n for n in world.pods if n.startswith("tm-"))
+    world.pods[reporter]["metadata"]["deletionTimestamp"] = rt.utc(world.env.clock())
+    world.pod("tm-extra", "taskmanager")
+    world.recover("jobmanager")
+    # The job runs again, but its latest input came from a TaskManager on its
+    # way out, so nothing is deleted yet.
+    assert awaited(world) is None and world.exercise.step == 2
+    del world.pods[reporter]["metadata"]["deletionTimestamp"]
+    world.poll()
+    assert awaited(world) == "taskmanager"
+    assert world.deleted[-1] == reporter
+
+
+def test_the_taskmanager_fault_waits_while_the_reporting_taskmanager_is_pending(world):
+    """A Pod that is not `Running` is not the fault's target yet."""
+    through(world, "upgrade")
+    reporter = next(n for n in world.pods if n.startswith("tm-"))
+    world.pods[reporter]["status"]["phase"] = "Pending"
+    world.pod("tm-extra", "taskmanager")
+    world.recover("jobmanager")
+    assert awaited(world) is None and world.exercise.step == 2
+    world.pods[reporter]["status"]["phase"] = "Running"
+    world.poll()
+    assert awaited(world) == "taskmanager"
+    assert world.deleted[-1] == reporter
+
+
+def test_running_again_needs_the_taskmanagers_to_be_running(world):
+    """A pending TaskManager does not count toward the parallelism."""
+    through(world, "rescale-in")
+    assert awaited(world) == "rescale-out"
+    world.advance(20)
+    world.deploy()
+    world.taskmanagers(2)
+    pending = [n for n in world.pods if n.startswith("tm-")][-1]
+    world.pods[pending]["status"]["phase"] = "Pending"
+    world.restore()
+    world.flowing()
+    world.poll()
+    assert awaited(world) == "rescale-out"
+    world.pods[pending]["status"]["phase"] = "Running"
+    world.poll()
+    assert awaited(world) is None
+
+
+def test_the_taskmanager_fault_deletes_the_latest_reporter(world):
+    """Of two TaskManagers that logged progress, the later one is the target."""
+    through(world, "upgrade")
+    assert awaited(world) == "jobmanager"
+    world.advance(20)
+    for name in [n for n in world.pods if n.startswith("jm-")]:
+        del world.pods[name]
+    world.pod("jm-2", "jobmanager")
+    world.deploy()
+    world.restore()
+    world.flowing("tm-1")
+    world.flowing("tm-2")
+    world.poll()
+    assert awaited(world) == "taskmanager"
+    assert world.exercise.outcomes["faults"][-1]["pod"]["name"] == "tm-2"
+    assert world.deleted[-1] == "tm-2"
+
+
+def test_the_rest_reader_reads_the_job_through_its_services_proxy(
+    prepared, monkeypatch
+):
+    environment = prepared[0]
+    calls = []
+
+    def request(method, path, *, limit):
+        calls.append((method, path, limit))
+        return {"state": "RUNNING"}
+
+    monkeypatch.setattr(environment.kube, "request", request)
+    rest = FlinkRest(environment, {"metadata": {"name": "run-rest"}}, "a" * 32)
+    assert rest.job("/checkpoints") == {"state": "RUNNING"}
+    service = environment.kube.path(
+        "Service", environment.approval.application_namespace, "run-rest:8081"
+    )
+    assert calls == [("GET", service + "/proxy/jobs/" + "a" * 32 + "/checkpoints", MIB)]
+
+
 def test_pods_only_leaving_are_no_replacement(world):
     through(world, "rescale-out")
     del world.pods[next(n for n in world.pods if n.startswith("tm-"))]
@@ -726,7 +1034,6 @@ def test_the_lineage_is_fixed_by_the_first_fault(world):
 
 def test_a_poll_without_checkpoint_statistics_is_waited_out(world):
     world.start()
-    assert world.exercise.rest_may_vanish()
     assert world.exercise.tolerate_rest(TransportError("GET proxy: reset"))
     world.exercise.restarts({})
     pods = copy.deepcopy(list(world.pods.values()))

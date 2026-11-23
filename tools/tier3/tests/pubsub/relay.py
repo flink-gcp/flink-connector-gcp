@@ -1,4 +1,3 @@
-#
 # Copyright 2026 The flink-gcp authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,29 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The supervised Pub/Sub recovery exercise over a simulated relay."""
+"""The Pub/Sub relay, its Operator and its service, simulated for the sequence tests."""
 
 import base64
 import json
 import uuid
 
 from flink_tier3.policy import PUBSUB, PUBSUB_STATE
-from flink_tier3.pubsub.observe import (
-    SINK_METRICS,
-    SOURCE_METRICS,
-)
 
-from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, rt
-from .test_actors import approval as approval  # noqa: PLC0414
-from .test_actors import prepared as prepared  # noqa: PLC0414
-from .test_admission import admitting as admitting  # noqa: PLC0414
 from .test_admission import supervisor_uid
 from .test_messages import Response
-from .test_plan import inputs as inputs  # noqa: PLC0414
-from .test_plan import renderer as renderer  # noqa: PLC0414
 
-RECORDS = 30
 INTERVAL = 120
 
 
@@ -46,46 +34,17 @@ class Relay:
     """The application, the Operator and the Pub/Sub service, simulated.
 
     Each input index is processed by one attempt; output is published at
-    once. A checkpoint is taken every ``interval`` seconds and acknowledges
+    once. A checkpoint is taken every `INTERVAL` seconds and acknowledges
     what it covers. A fault redelivers what the attempts it ends processed
     since the checkpoint the job restores: a JobManager loss restarts every
     attempt, a TaskManager loss only the attempt on that Pod, and a savepoint
     upgrade acknowledges everything before the job stops.
     """
 
-    def __init__(
-        self,
-        a,
-        monkeypatch,
-        *,
-        interval=INTERVAL,
-        redeliver=True,
-        tm_full=False,
-        new_ids=False,
-        restored_flag=True,
-        ignore_delete=False,
-        savepoint_acks=True,
-        pull_limit=None,
-        pace=None,
-    ):
+    def __init__(self, a, monkeypatch, *, pace=None):
         self.a, self.kube, self.clock = a, a.environment.kube, a.environment.clock
         self.approval = a.environment.approval
         self.run_id = self.approval.run_id
-        self.interval, self.redeliver = interval, redeliver
-        # A TaskManager's loss restarts every attempt rather than its region.
-        self.tm_full = tm_full
-        # Redelivery carries new input message IDs, as a duplicate publication.
-        self.new_ids = new_ids
-        # Attempts after a fault announce they restored state.
-        self.restored_flag = restored_flag
-        # The deleted Pod stays, and the job restarts in place anyway.
-        self.ignore_delete = ignore_delete
-        # A savepoint's acknowledgements reach the service; when they do not,
-        # what it covered is redelivered to the upgraded job.
-        self.savepoint_acks = savepoint_acks
-        # An immediate pull answers at most this many, as the service's
-        # answer holds what it has ready at once rather than the backlog.
-        self.pull_limit = pull_limit
         # How many waiting inputs each subtask processes a step, as the
         # relay's delay per record paces them; all of them without one.
         self.pace = pace
@@ -131,17 +90,8 @@ class Relay:
         self.events = []
         # Called at each step, after the simulated job has advanced.
         self.hooks = []
-        # The connector metric names the vertex lists once its operators open.
-        self.listed = (*SOURCE_METRICS, *SINK_METRICS)
-        # The vertex metrics endpoints alone answer 503.
-        self.metrics_down = False
         # The checkpoint statistics answer these statuses, one read each.
         self.checkpoint_failures = []
-        # The job plan answers 503 this many more times.
-        self.plan_down = 0
-        # The value query answers no id, as Flink's store does for metrics it
-        # does not hold yet.
-        self.values_held = True
         self.original_request = self.kube.request
         self.original_delete = self.kube.delete
         self.original_patch = self.kube.patch
@@ -192,7 +142,7 @@ class Relay:
         if self.pull_failures:
             self.pull_failures -= 1
             return Response({}, status=429)
-        size = min(kwargs["json"]["maxMessages"], self.pull_limit or len(self.output))
+        size = min(kwargs["json"]["maxMessages"], len(self.output))
         batch, self.output = self.output[:size], self.output[size:]
         self.delivered.extend(batch)
         return Response(
@@ -378,7 +328,7 @@ class Relay:
             app["status"]["jobStatus"].update(state="RUNNING", jobId="1" * 32)
             self.kube.put(app)
             self.started = now
-            self.next_trigger = now + self.interval
+            self.next_trigger = now + INTERVAL
             self.start_attempts(range(self.parallelism), restored=False)
             return
         if self.restart_at is not None:
@@ -395,19 +345,14 @@ class Relay:
             self.complete_checkpoint()
         if now >= self.next_trigger:
             self.trigger_checkpoint()
-            self.next_trigger += self.interval
+            self.next_trigger += INTERVAL
 
     # Faults.
 
     def requeue(self, attempts):
-        if not self.redeliver:
-            self.unacked = [item for item in self.unacked if item[1] not in attempts]
-            return
         kept = []
         for message, attempt in self.unacked:
             if attempt in attempts:
-                if self.new_ids:
-                    message = {**message, "id": uuid.uuid4().hex}
                 self.pending[message["index"]].append(message)
             else:
                 kept.append((message, attempt))
@@ -434,13 +379,11 @@ class Relay:
         if value["kind"] == "Pod" and component in ("jobmanager", "taskmanager"):
             self.events.append(("delete", component, value["metadata"]["name"]))
             current = self.kube.get("Pod", PUBSUB, value["metadata"]["name"])
-            if not self.ignore_delete:
-                # The Pod terminates until a step after the restart, as a
-                # graceful shutdown outlasting the replacement would.
-                current["metadata"]["deletionTimestamp"] = rt.utc(self.clock())
-                self.kube.put(current)
-                self.terminating.append((current, self.clock() + 45))
-            restored = self.restored_flag
+            # The Pod terminates until a step after the restart, as a
+            # graceful shutdown outlasting the replacement would.
+            current["metadata"]["deletionTimestamp"] = rt.utc(self.clock())
+            self.kube.put(current)
+            self.terminating.append((current, self.clock() + 45))
             if component == "jobmanager":
                 # The Operator has not noticed yet, and the REST API is gone
                 # with the JobManager.
@@ -449,11 +392,10 @@ class Relay:
 
                 def restart():
                     self.jm_down = False
-                    if not self.ignore_delete:
-                        self.pod("jobmanager")
+                    self.pod("jobmanager")
                     self.requeue(lost)
-                    self.restore(kept=self.ignore_delete)
-                    self.start_attempts(range(self.parallelism), restored=restored)
+                    self.restore()
+                    self.start_attempts(range(self.parallelism), restored=True)
 
             else:
                 index = next(
@@ -461,29 +403,14 @@ class Relay:
                     for i, attempt in self.attempts.items()
                     if self.attempt_pod(attempt) == value["metadata"]["uid"]
                 )
-                indices = range(self.parallelism) if self.tm_full else [index]
-                lost = {self.attempts[i] for i in indices}
+                lost = {self.attempts[index]}
 
                 def restart():
-                    replacement = (
-                        current if self.ignore_delete else self.pod("taskmanager")
-                    )
+                    replacement = self.pod("taskmanager")
                     self.requeue(lost)
                     self.restore(kept=True)
-                    for i in indices:
-                        # The replaced attempt starts on the new Pod, the
-                        # others where they ran.
-                        survivor = self.attempt_pod(self.attempts[i])
-                        pod = (
-                            replacement
-                            if i == index
-                            else next(
-                                p
-                                for p in self.managers()
-                                if p["metadata"]["uid"] == survivor
-                            )
-                        )
-                        self.start_attempts([i], restored=restored, managers=[pod])
+                    # Only the replaced attempt restarts, on the new Pod.
+                    self.start_attempts([index], restored=True, managers=[replacement])
 
             self.restart_at, self.restart = self.clock() + 30, restart
             return True
@@ -494,11 +421,6 @@ class Relay:
             if any(attempt in line for _, line in lines):
                 return uid
         return None
-
-    def running(self):
-        app = self.app()
-        app["status"]["jobStatus"]["state"] = "RUNNING"
-        self.kube.put(app)
 
     def patch(self, value, changes, subresource="", before_repeat=None):
         if value["kind"] != "FlinkDeployment":
@@ -522,8 +444,7 @@ class Relay:
         }
         self.next_id += 1
         lost = set(self.attempts.values())
-        if self.savepoint_acks:
-            self.unacked = []
+        self.unacked = []
         app["status"]["jobStatus"]["state"] = "FINISHED"
         app["status"]["reconciliationStatus"] = {"state": "UPGRADING"}
         self.kube.put(app)
@@ -576,39 +497,7 @@ class Relay:
                 "latest": {"completed": self.completed, "restored": self.restored},
                 "history": list(reversed(self.history[-10:])),
             }
-        if suffix.endswith("/backpressure"):
-            return {"status": "ok", "backpressureLevel": "ok", "subtasks": []}
-        if "/subtasks/metrics" in suffix and self.metrics_down:
-            raise rt.ApiError(503, method, path)
-        if suffix.endswith("/vertices/relay/subtasks/metrics"):
-            # The planner's operator names carry a prefix, and the vertex
-            # lists Flink's own task metrics beside the connector's.
-            return [
-                {"id": "numRecordsIn"},
-                *({"id": "Source__Pub_Sub_input." + name} for name in self.listed),
-            ]
-        if "/vertices/relay/subtasks/metrics?get=" in suffix:
-            ids = suffix.split("?get=")[1].split("&")[0].split(",")
-            values = {"pendingAcks": len(self.unacked)}
-            if not self.values_held:
-                return []
-            return [
-                {"id": i, "min": 0, "max": 0, "sum": values.get(i.rsplit(".")[-1], 0)}
-                for i in ids
-            ]
-        if "/" not in suffix and self.plan_down:
-            self.plan_down -= 1
-            raise rt.ApiError(503, method, path)
-        if "/" not in suffix:
-            return {
-                "vertices": [
-                    {
-                        "id": "relay",
-                        "name": "Source: Pub/Sub input",
-                        "parallelism": self.parallelism,
-                    }
-                ]
-            }
+        # Nothing else of the job is read.
         raise AssertionError(path)
 
 

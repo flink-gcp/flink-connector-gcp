@@ -630,8 +630,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 
 Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0165 before changing
 the CUE hierarchy or the OpenTofu/CUE ownership split, and ADR-0204 before changing how a trial
-runs or is judged: a scenario follows ADR-0204 once its issue under #2143 has moved it, and the
-README's scenario table says which have. A connector's Tier-3 files go where the README's
+runs or is judged: every scenario runs its fault sequence, and the analyzer reports an archived
+ADR-0165 single-fault run whose trial names a single-fault kind (for BigQuery, a single-fault
+fault or none) as `single-fault-trial`, without a verdict, rather than judging it by rules the
+rig no longer holds; any other trial, such as the kind-less first Cloud Tasks run's, is
+reported as malformed. A connector's Tier-3 files go where the README's
 "Layout per connector" section puts them; beyond them a change for one connector edits only its
 own entries in the shared files that name every connector, and code two scenarios share goes to
 the shared layers rather than into one connector's directory for another to import. Before changing the

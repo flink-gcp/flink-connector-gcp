@@ -21,7 +21,7 @@ import uuid
 
 from ..common import Failure
 from .handoff import AnsweredTransient
-from .messages import _encode, cohort_ranges
+from .messages import _encode
 
 PHASES = ("initial", "upgrade")
 # The event a refused pull writes, naming its batch, which the offline
@@ -121,13 +121,11 @@ class OutputCollector:
     two collectors collide only if their prefixes do.
     """
 
-    def __init__(self, handoff, *, retry_answered=False):
+    def __init__(self, handoff):
         self.handoff, self.env = handoff, handoff.env
-        # Whether a pull the service answered with a transient error is left
-        # for the next round rather than stopping the run (ADR-0204).
-        self.retry_answered = retry_answered
-        # The batches such a pull named, which hold an intent and no
-        # observations.
+        # The batches whose pull the service answered with a transient error,
+        # which hold an intent and no observations: each is left for the next
+        # round rather than stopping the run (ADR-0204).
         self.retried = []
         self.run_id = self.env.approval.run_id
         self.records = handoff.records_per_subscription
@@ -145,7 +143,7 @@ class OutputCollector:
         self.batches += 1
         batch = f"{self.prefix}-{self.batches:06d}"
         try:
-            result = self.handoff.collect(batch, retry_answered=self.retry_answered)
+            result = self.handoff.collect(batch)
         except AnsweredTransient as error:
             self.retried.append(batch)
             self.env.emit(RETRIED_EVENT, {"batch": batch, "cause": str(error)})
@@ -179,22 +177,3 @@ class OutputCollector:
                 break
             received += count
         return received
-
-    def processed(self, input_index, start, count, *, where=None):
-        """The sequences of one input range seen in output, optionally filtered."""
-        return {
-            item["sequence"]
-            for item in self.observations
-            if item["input_index"] == input_index
-            and start <= item["sequence"] < start + count
-            and (where is None or where(item))
-        }
-
-    def complete(self, name, *, where=None):
-        """Whether every sequence of a named cohort was seen on both inputs."""
-        cohort = cohort_ranges(self.records)[name]
-        return all(
-            len(self.processed(index, cohort["start"], cohort["count"], where=where))
-            == cohort["count"]
-            for index in range(2)
-        )

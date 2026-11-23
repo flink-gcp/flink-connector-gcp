@@ -21,19 +21,16 @@ from flink_tier3 import analyze as shared
 from flink_tier3.cloudtasks import analyze
 from flink_tier3.cloudtasks.oracle import assess, page
 from flink_tier3.cloudtasks.trial import Trial
-from flink_tier3.cloudtasks.verdict import (
-    COMPLETE_EVENT,
-    MEASUREMENT_EVENT,
-    PAGE_EVENT,
-    SAMPLED_STAGES,
-    sequence_verdict,
-    summarize,
-    verdict,
+from flink_tier3.cloudtasks.verdict import COMPLETE_EVENT, PAGE_EVENT, sequence_verdict
+from flink_tier3.recovery_analysis import (
+    SINGLE_FAULT,
+    SINGLE_FAULT_NOTE,
 )
 from flink_tier3.runs import discover_runs
 
-from .test_oracle import reading
-
+# The kinds the single-fault trials named, written out so that dropping one
+# from the analyzer's list fails a test here rather than shrinking it.
+ARCHIVED_KINDS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
 TRIAL = Trial("ct-analyze", 4, 1, "sequence")
 PREFIX = TRIAL.queue_path + "/tasks/"
 
@@ -68,14 +65,13 @@ def run_directory(
     stored_pages=None,
     attempt=2,
     complete=True,
-    readings=None,
     faults=None,
+    kind="sequence",
 ):
     """A completed run whose record names `attempt`, exporting `pages`.
 
-    It exported one full reading in each sampled window unless `readings`,
-    pairs of stage and reading, says otherwise. With `faults` it is a
-    fault-sequence run (ADR-0204), which proves no recovery and reads nothing.
+    Its approved trial is of `kind`, none when it is None, and its record
+    lists `faults` when it names any.
     """
     directory = tmp_path / TRIAL.run_id
     write(
@@ -87,7 +83,7 @@ def run_directory(
             "cloudtasks_trial": {
                 "records": 4,
                 "records_per_second": 1,
-                **({"kind": "sequence"} if faults is not None else {}),
+                **({"kind": kind} if kind is not None else {}),
             },
         },
     )
@@ -98,27 +94,11 @@ def run_directory(
         "queue_state": "PAUSED",
         "report": assess(TRIAL, items),
     }
-    outcomes = {"upgrade": {}, "failover": {}, "listing": listing}
+    outcomes = {"listing": listing}
     if faults is not None:
-        outcomes = {"faults": faults, "listing": listing}
-        readings = readings or []
-    if readings is None:
-        readings = [(stage, reading()) for stage in SAMPLED_STAGES]
-    coverage = {}
-    for index, (stage, value) in enumerate(readings):
-        value = {**value, "window": stage}
-        coverage = summarize(coverage, stage, value)
-        write(
-            directory,
-            f"supervisor/measurement-{index}.json",
-            {
-                "event": MEASUREMENT_EVENT,
-                "at": f"2026-10-13T00:00:{index:02d}Z",
-                "payload": {"stage": stage, **value},
-            },
-        )
-    record = {"stage": "complete", "outcomes": outcomes, "coverage": coverage}
-    record.update((verdict if faults is None else sequence_verdict)(record))
+        outcomes["faults"] = faults
+    record = {"stage": "complete", "outcomes": outcomes}
+    record.update(sequence_verdict(record))
     write(directory, "result.json", {"success": True, "idle": True, "recovery": record})
     for index, listed in enumerate(pages):
         write(
@@ -190,7 +170,6 @@ def test_unreadable_evidence_leaves_the_run_without_a_verdict(tmp_path):
     result = analyze.assess(run)
     assert result["verdict"] is None
     assert result["problems"] == ["malformed-pages:1"]
-    assert result["samples"] == 0
 
     approval = json.loads((directory / "approval.json").read_text())
     del approval["cloudtasks_trial"]
@@ -216,164 +195,20 @@ def test_a_page_beyond_the_recorded_count_is_reported(tmp_path):
     assert result["problems"] == ["extra-pages:1"]
 
 
-def checkpoint(number, triggered, acknowledged, **fields):
-    return {
-        "id": number,
-        "status": "COMPLETED",
-        "is_savepoint": False,
-        "trigger_timestamp": triggered,
-        "latest_ack_timestamp": acknowledged,
-        **fields,
-    }
-
-
-def with_recoveries(directory, upgrade, failover, polls):
-    """Give the run's record these proofs and export these checkpoint polls."""
-    for name in ("result.json", "supervisor/complete.json"):
-        path = directory / name
-        value = json.loads(path.read_text())
-        record = value["recovery"] if name == "result.json" else value["payload"]
-        record["outcomes"].update(upgrade=upgrade, failover=failover)
-        path.write_text(json.dumps(value))
-    for index, poll in enumerate(polls):
-        write(
-            directory,
-            f"supervisor/checkpoints-{index}.json",
-            {
-                "event": analyze.CHECKPOINTS_EVENT,
-                "at": f"2026-10-13T00:02:{index:02d}Z",
-                "payload": {"job_id": "1" * 32, **poll},
-            },
-        )
-
-
-@pytest.mark.parametrize(
-    "restored",
-    [
-        # No exported poll saw the restored checkpoint complete.
-        {"id": 9, "restore_timestamp": 300_000},
-        # Nothing was checkpointed after the restore.
-        {"id": 4, "restore_timestamp": 900_000},
-        {"id": [4], "restore_timestamp": 300_000},
-        {"id": 4, "restore_timestamp": "300000"},
-        {"id": 4},
-    ],
-)
-def test_a_replay_the_evidence_cannot_place_is_unreadable(tmp_path, restored):
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])])
-    with_recoveries(
-        directory,
-        upgrade="not a proof",
-        failover={"restored": restored},
-        polls=[{"history": [checkpoint(4, 180_000, 181_000)]}, {"history": 3}],
-    )
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["replay"] == {"failover": None}
-    assert f"| {TRIAL.run_id} | failover | unreadable |" in analyze.render([result])
-
-
-def test_the_recoveries_are_timed_with_their_faults(tmp_path):
-    """A rescale-in trial with a TaskManager replacement, its upgrade held."""
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])])
-    upgrade = {
-        "restored": {
-            "id": 2,
-            "is_savepoint": True,
-            "restore_timestamp": 1_760_000_040_000,
-        },
-        "checkpoint": {"id": 3, "latest_ack_timestamp": 1_760_000_070_000},
-        "rescale": {"direction": "in", "subtasks_before": 3, "subtasks_after": 2},
-    }
-    failover = {
-        "restored": {
-            "id": 8,
-            "is_savepoint": False,
-            "restore_timestamp": 1_760_000_420_000,
-        },
-        "checkpoint": {"id": 9, "latest_ack_timestamp": 1_760_000_460_000},
-        "replaced": {"uid": "tm-2-uid", "name": "tm-2"},
-    }
-    with_recoveries(directory, upgrade=upgrade, failover=failover, polls=[])
-    # The held upgrade's own stage record shares the prefix and is not a start.
-    for index, (stage, at) in enumerate(
-        [
-            ("upgrade", "2025-10-09T08:53:20Z"),
-            ("upgraded", "2025-10-09T08:54:30Z"),
-            ("failover", "2025-10-09T08:59:40Z"),
-        ]
-    ):
-        write(
-            directory,
-            f"supervisor/stage-{index}.json",
-            {
-                "event": "recovery-" + stage,
-                "at": at,
-                "payload": {"stage": stage, "at": at},
-            },
-        )
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["recoveries"]["upgrade"] == {
-        "fault": "rescale-in",
-        "began_at": "2025-10-09T08:53:20Z",
-        "restored_from": "savepoint",
-        "restored_id": 2,
-        "restored_ms": 40_000,
-        "checkpoint_id": 3,
-        "checkpoint_ms": 70_000,
-    }
-    assert result["recoveries"]["failover"]["fault"] == "tm-replacement"
-    assert result["recoveries"]["failover"]["restored_ms"] == 40_000
-    rendered = analyze.render([result])
-    assert f"| {TRIAL.run_id} | upgrade | rescale-in | " in rendered
-    assert f"| {TRIAL.run_id} | failover | tm-replacement | " in rendered
-
-
-def test_a_replay_window_reads_every_place_a_poll_holds_a_checkpoint(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])])
-    with_recoveries(
-        directory,
-        upgrade="not a proof",
-        failover={"restored": {"id": 4, "restore_timestamp": 300_000}},
-        polls=[
-            # The restored checkpoint only as the latest completed one.
-            {"latest": {"completed": checkpoint(4, 180_000, 181_000)}},
-            # Not acknowledged: its trigger time is not used.
-            {"history": [checkpoint(5, 300_000, None)]},
-            # Triggered at the restore instant itself, which the replay follows.
-            {"history": [checkpoint(6, 300_000, 301_000)]},
-            {"history": [checkpoint(7, 330_000, 331_000)]},
-        ],
-    )
-    [run] = discover_runs(directory)
-    assert analyze.assess(run)["replay"] == {
-        "failover": {
-            "restored_id": 4,
-            "first_checkpoint_id": 6,
-            "from_ms": 119_000,
-            "to_ms": 119_000,
-        }
-    }
-
-
 FAULTS = [
     {"kind": "upgrade", "at": "2026-10-13T00:00:10Z"},
     {"kind": "jobmanager", "at": "2026-10-13T00:00:20Z"},
 ]
 
 
-def test_a_sequence_run_is_assessed_by_its_listing_without_samples(tmp_path):
-    """A fault-sequence run (ADR-0204) samples nothing and lists its faults."""
+def test_a_sequence_run_is_assessed_by_its_listing_and_lists_its_faults(tmp_path):
+    """A fault-sequence run (ADR-0204) is decided by its listing alone."""
     directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
     [run] = discover_runs(directory)
     result = analyze.assess(run)
     assert (result["verdict"], result["stored"]) == ("usable", "usable")
     assert result["problems"] == []
-    assert result["samples"] == 0
     assert result["faults"] == FAULTS
-    assert result["recoveries"] == [] and result["replay"] == {}
-    # The report lists the faults rather than claiming windows it never had.
     [row] = [
         line for line in analyze.render([result]).splitlines() if "ct-analyze" in line
     ]
@@ -399,7 +234,7 @@ def test_a_sequence_runs_duplicate_task_is_recomputed_from_its_pages(tmp_path):
 def test_a_stopped_sequence_run_is_inconclusive_by_its_own_reasons(tmp_path):
     """A sequence run stopped before its listing names no single-fault reason."""
     directory = run_directory(tmp_path, [tasks([0, 1])], faults=FAULTS, complete=False)
-    record = {"stage": "faults", "outcomes": {"faults": FAULTS}, "coverage": {}}
+    record = {"stage": "faults", "outcomes": {"faults": FAULTS}}
     record.update(sequence_verdict(record))
     write(
         directory, "result.json", {"success": False, "idle": True, "recovery": record}
@@ -420,7 +255,9 @@ def test_the_report_table_keeps_its_columns_for_both_kinds(tmp_path):
     sequence = run_directory(
         tmp_path / "s", [tasks([0, 1]), tasks([2, 3])], faults=FAULTS
     )
-    single = run_directory(tmp_path / "f", [tasks([0, 1]), tasks([2, 3])])
+    single = run_directory(
+        tmp_path / "f", [tasks([0, 1]), tasks([2, 3])], kind="jm-replacement"
+    )
     results = [
         analyze.assess(run) for d in (sequence, single) for run in discover_runs(d)
     ]
@@ -434,13 +271,44 @@ def test_the_report_table_keeps_its_columns_for_both_kinds(tmp_path):
         "upgrade, jobmanager",
         "-",
     ]
-    assert any("samples no window" in line for line in lines)
+    assert any("judged by its data alone" in line for line in lines)
+    assert rows[1].split("|")[-2].strip() == SINGLE_FAULT
+
+
+@pytest.mark.parametrize("kind", ARCHIVED_KINDS)
+@pytest.mark.parametrize("complete", [True, False])
+def test_a_single_fault_run_has_no_verdict_here(tmp_path, complete, kind):
+    """Its approval names a kind the trial refuses; its record is still read."""
+    directory = run_directory(
+        tmp_path, [tasks([0, 1, 2, 3])], kind=kind, complete=complete
+    )
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert (result["verdict"], result["stored"], result["reasons"]) == (
+        None,
+        "usable",
+        [],
+    )
+    assert result["problems"] == [SINGLE_FAULT]
+    assert result["report"] is None
+    assert SINGLE_FAULT_NOTE in analyze.render([result])
+
+
+@pytest.mark.parametrize("kind", [None, 3, [], "", "sequnce", "reactive-scale-out"])
+def test_an_approval_without_a_known_kind_is_no_trial(tmp_path, kind):
+    """A trial naming no kind, as the first runs' did, or one no trial had.
+
+    Either is a malformed trial, not a single fault.
+    """
+    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])], kind=kind)
+    [run] = discover_runs(directory)
+    assert analyze.assess(run)["problems"] == ["approval-without-cloudtasks-trial"]
 
 
 def test_a_completed_record_without_a_listing_has_no_verdict(tmp_path):
     """A completed run is decided by its listing, which this export lacks."""
     directory = run_directory(tmp_path, [tasks([0, 1])], faults=FAULTS)
-    record = {"stage": "complete", "outcomes": {"faults": FAULTS}, "coverage": {}}
+    record = {"stage": "complete", "outcomes": {"faults": FAULTS}}
     record.update(sequence_verdict(record))
     write(
         directory, "result.json", {"success": False, "idle": True, "recovery": record}
