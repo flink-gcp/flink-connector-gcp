@@ -473,7 +473,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Every gRPC client holds a `GrpcEventLoops` lease** (`docs/adr/0208`): the emulator
   default-stream appender, `WriteClientBufferedStreamService`, `ReadClientSessionCreator` and
   `ReadClientRowStreamOpener` open a `LeasedClient`; the pooled default-stream appender holds a bare
-  lease. **`ReadClientSessionCreator` opens a client per `create` and closes it when the call
+  lease. The emulator arms of `BigQueryReadClients` and `BigQueryWriteClients` open a caller-owned
+  channel through `EmulatorChannels.openLeasedClient`, never `plaintextProvider` (`dns:///` and
+  client-certificate failures, #2267); a `StreamWriter` built on such a client shares its channel,
+  so close appenders before the client.
+  **`ReadClientSessionCreator` opens a client per `create` and closes it when the call
   returns** (JobManager: at the end of a job Flink does not wait for the enumerator's close before
   releasing the class loader); do not
   bring back a client held until `close()`. `BigQueryFullCacheInputFormat` runs `open()`, each

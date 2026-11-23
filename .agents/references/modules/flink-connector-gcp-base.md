@@ -281,7 +281,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `fixedProvider` where the caller does — and the ownership difference is load-bearing, so never
   unify them. A new emulator arm takes the caller-owned route: `plaintextProvider` hands the target
   to gax, which cannot dial a `dns:///` target and turns TLS under a client certificate
-  (`docs/adr/0208`); it stays only for BigQuery's and Datastore's arms until #2266/#2267. **Always
+  (`docs/adr/0208`); it stays only for Datastore's arm until #2266. **Always
   pass an API's own `defaultGrpcTransportProviderBuilder()`** (or the provider the SDK's builder
   uses), never a bare one, to either: the API's defaults include the inbound message limit, and
   losing it fails only on an emulator and only past 4 MiB.

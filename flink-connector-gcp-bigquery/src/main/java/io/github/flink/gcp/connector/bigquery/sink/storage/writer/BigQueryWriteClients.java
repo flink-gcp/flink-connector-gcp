@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
@@ -37,9 +38,11 @@ import java.io.IOException;
  * Storage Write API clients, shared by the two write paths that open one.
  *
  * <p>The production form optionally replaces ADC with runtime-loaded service-account credentials;
- * the emulator form always uses no credentials. Both open the client with {@link
- * GrpcEventLoops#open(GrpcEventLoops.ClientFactory)}, so its channels run on the connector's own
- * event-loop group and closing the returned holder releases that group after the client.
+ * the emulator form always uses no credentials. Either way the client's channels run on the
+ * connector's own event-loop group, and closing the returned holder releases that group after the
+ * client: the production form opens the client with {@link
+ * GrpcEventLoops#open(GrpcEventLoops.ClientFactory)}, and the emulator form with {@link
+ * EmulatorChannels#openLeasedClient}, whose holder also closes the emulator channel.
  */
 @Internal
 final class BigQueryWriteClients {
@@ -78,43 +81,37 @@ final class BigQueryWriteClients {
     }
 
     /**
-     * Opens a client talking plaintext to a BigQuery emulator with no credentials, with its
-     * channels on the connector's event-loop group.
+     * Opens a client talking plaintext to a BigQuery emulator with no credentials, on a channel of
+     * its own on the connector's event-loop group.
+     *
+     * <p>The channel is opened by {@link EmulatorChannels} rather than by gax from an instantiating
+     * provider, because gax parses the target as {@code host:port}, so a {@code dns:///} endpoint
+     * fails, and builds TLS credentials when a client certificate is configured, which a plaintext
+     * configurator cannot override ({@code docs/adr/0208}). The channel is built from {@link
+     * BigQueryWriteSettings#defaultGrpcTransportProviderBuilder()} rather than a bare provider
+     * builder so that the API's own maximum inbound message size of {@link Integer#MAX_VALUE}
+     * survives, where a bare one would leave gRPC's 4 MiB default. The SDK's {@code StreamWriter}
+     * builds its connection's client from this client's settings, so an appender opened from it
+     * runs on the same channel; close every appender before the returned holder, which closes the
+     * channel.
      *
      * @param endpoint the emulator's gRPC endpoint
-     * @return the client with its lease; the caller owns it and must close it
+     * @return the client with its channel and leases; the caller owns it and must close it
      * @throws IOException if the client cannot be created
      */
     static GrpcEventLoops.LeasedClient<BigQueryWriteClient> forEmulator(EmulatorEndpoint endpoint)
             throws IOException {
-        return GrpcEventLoops.open(
-                lease ->
-                        BigQueryWriteClient.create(
-                                lease.applyTo(emulatorSettings(endpoint).toBuilder()).build()));
+        return EmulatorChannels.openLeasedClient(
+                BigQueryWriteSettings.defaultGrpcTransportProviderBuilder(),
+                endpoint,
+                channel -> BigQueryWriteClient.create(emulatorSettings(channel)));
     }
 
-    /**
-     * Builds the settings behind {@link #forEmulator}.
-     *
-     * <p>The transport provider starts from {@link
-     * BigQueryWriteSettings#defaultGrpcTransportProviderBuilder()} rather than from a bare one so
-     * that the API's own defaults survive: it raises the maximum inbound message size to {@link
-     * Integer#MAX_VALUE}, and a provider built from scratch would run the emulator path at gRPC's 4
-     * MiB default instead. Nothing sets the endpoint on the settings as well: the provider carries
-     * it, and gax pushes the settings' endpoint onto a provider only when the provider has none.
-     *
-     * @param endpoint the emulator's gRPC endpoint
-     * @return the settings
-     * @throws IOException if the settings cannot be built
-     */
-    @VisibleForTesting
-    static BigQueryWriteSettings emulatorSettings(EmulatorEndpoint endpoint) throws IOException {
+    private static BigQueryWriteSettings emulatorSettings(TransportChannelProvider channel)
+            throws IOException {
         return BigQueryWriteSettings.newBuilder()
                 .setCredentialsProvider(NoCredentialsProvider.create())
-                .setTransportChannelProvider(
-                        EmulatorChannels.plaintextProvider(
-                                BigQueryWriteSettings.defaultGrpcTransportProviderBuilder(),
-                                endpoint))
+                .setTransportChannelProvider(channel)
                 .build();
     }
 }

@@ -22,6 +22,7 @@ limitations under the License.
   [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243),
   [#2262](https://github.com/flink-gcp/flink-connector-gcp/issues/2262),
   [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263),
+  [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269)
 - Modules: base, bigquery, cloudtasks, pubsub
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
@@ -103,6 +104,21 @@ releases the group's last lease shuts it down and waits for its threads.**
 - The default-stream appender on the emulator path, the buffered-stream service, the source's
   session creator (on the JobManager, and on a TaskManager for a full lookup cache load, ADR-0209)
   and its row-stream opener each open their client as a `LeasedClient`.
+- **On an emulator, those clients run on a caller-owned channel** (#2267, 2026-11-23), opened
+  with `EmulatorChannels.openLeasedClient` from the API's transport defaults, which keep the
+  maximum inbound message size at `Integer.MAX_VALUE`.
+  They used `EmulatorChannels.plaintextProvider`, and so carried the two failures recorded for
+  Cloud Tasks below; measured 2026-11-23, a `dns:///` endpoint failed client creation with
+  `IllegalArgumentException: Invalid host or port`.
+  The SDK's `StreamWriter` builds its connection's client from the given client's settings, so an
+  emulator appender now runs on its client's channel, where gax built one per connection; every
+  appender closes before the holder that closes that channel.
+  A default-stream appender opens a client, and so a channel, of its own; the appenders one
+  buffered-stream service opens all run on that service's channel.
+  Their `AppendRows` streams share its one HTTP/2 connection without queueing behind each other:
+  goccy/bigquery-emulator 0.8.1's gRPC server advertises no
+  `SETTINGS_MAX_CONCURRENT_STREAMS` (measured 2026-11-23; its `SETTINGS` frame carries only
+  `MAX_FRAME_SIZE`), which leaves the number of concurrent streams unlimited.
 - **The session creator closes its client as soon as each `CreateReadSession` call returns**,
   instead of holding it until the enumerator closes, and its `close()` cancels a call still in
   flight, scheduled retries included, before it closes that call's client.
@@ -313,10 +329,20 @@ writing jobs here were not traced.
   that misses a retry gax is starting waits like any other client close.
   gax passes each wait to every resource a client aggregates, so a client that will not stop can
   hold a close for a small multiple of that.
-  The pooled default-stream writer is the exception: `StreamWriter.close()` is the SDK's, and when
-  it closes a connection's last writer it joins the append thread without a bound, waits up to
-  150 s for the client and up to 3 min for its callback executor (google-cloud-bigquerystorage
-  3.38.0); the lease is released only after it returns.
+  An appender's close is the exception, because `StreamWriter.close()` is the SDK's: its
+  `ConnectionWorker.close()` joins the append thread without a bound, calls
+  `awaitTermination(150, SECONDS)` on the connection's client, which gax passes to each resource
+  the client aggregates in turn until one times out, and waits up to 3 min for its callback
+  executor (google-cloud-bigquerystorage 3.38.0).
+  An unpooled writer, which the buffered-stream path and the emulator's default stream use, runs
+  it at every close; the pooled default-stream writer runs it when it closes a connection's last
+  writer.
+  The appender releases what it holds in a `finally` around `StreamWriter.close()`, so only once
+  that close has returned or thrown: the pooled appender its bare lease, and the emulator's
+  default-stream appender its client's holder, which closes the client and then the emulator
+  channel and its lease.
+  A buffered-stream appender holds neither; its service keeps the client, and the writer closes
+  the service after every appender.
 - The Storage Write API's connection pool is JVM-static per class loader and keyed by location and
   credentials, and it builds every connection from the first writer's settings.
   If a job's own code also writes through that pool in the connector's class loader, its
