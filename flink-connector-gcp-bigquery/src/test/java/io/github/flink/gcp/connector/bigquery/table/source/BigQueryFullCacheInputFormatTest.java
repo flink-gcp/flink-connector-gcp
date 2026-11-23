@@ -28,6 +28,7 @@ import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
@@ -36,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.source.TestSources;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreatorFactory;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ScriptedReadSessionCreator;
+import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.grpc.Status;
@@ -124,6 +126,33 @@ class BigQueryFullCacheInputFormatTest {
         assertThat(LoadRowStreamOpener.events(OPENER))
                 .filteredOn("close opener"::equals)
                 .hasSize(2);
+    }
+
+    @Test
+    void everyCallThatCanReleaseAGrpcLeaseRunsWhereAnInterruptCanEndTheWaitForTheGroup()
+            throws Exception {
+        // Flink stops a load by interrupting it and gives it 10 s; a release of the last gRPC
+        // lease outside the scope would wait for the event-loop group up to 11 s whatever the
+        // interrupt says (#2269). The real clients release on the calling thread: the session
+        // creator inside create(), the opener's client on a failed creation inside open() and
+        // otherwise inside close(). The fakes record where the format makes those calls.
+        ScopeRecording.SEEN.clear();
+        BigQueryFullCacheInputFormat format =
+                format(
+                        new ScopeRecording.Sessions(),
+                        new ScopeRecording.Opener(opener(new int[] {0, 2})));
+
+        assertThat(readAll(format, format.createInputSplits(1))).containsExactly(0L, 1L);
+
+        assertThat(ScopeRecording.SEEN)
+                .containsExactly(
+                        "create session in scope: true",
+                        "release creator in scope: true",
+                        "open stream in scope: true",
+                        "release opener in scope: true");
+        assertThat(GrpcEventLoops.inInterruptibleReleases())
+                .as("the scope ended with each call of the load")
+                .isFalse();
     }
 
     @Test
@@ -483,6 +512,72 @@ class BigQueryFullCacheInputFormatTest {
                         .emulatorEndpoint("localhost:1");
         TestSources.withSeams(customizer.apply(builder), sessions, opener);
         return ((BigQueryStorageReadSource<RowData>) builder.build()).getConfig();
+    }
+
+    /**
+     * A session creator factory and an opener that record whether the load called them inside
+     * {@link GrpcEventLoops#interruptibleReleases()}.
+     */
+    private static final class ScopeRecording {
+
+        static final List<String> SEEN = new CopyOnWriteArrayList<>();
+
+        private static void record(String what) {
+            SEEN.add(what + " in scope: " + GrpcEventLoops.inInterruptibleReleases());
+        }
+
+        /** Mints creators of a one-stream session. */
+        private static final class Sessions implements ReadSessionCreatorFactory {
+
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public ReadSessionCreator create() {
+                ScriptedReadSessionCreator scripted = ScriptedReadSessionCreator.withStreams(1);
+                return new ReadSessionCreator() {
+                    @Override
+                    public ReadSession create(CreateReadSessionRequest request) throws IOException {
+                        record("create session");
+                        return scripted.create(request);
+                    }
+
+                    @Override
+                    public void close() {
+                        record("release creator");
+                        scripted.close();
+                    }
+                };
+            }
+        }
+
+        /** Delegates to an opener, recording where it opens a stream and where it is released. */
+        private static final class Opener implements RowStreamOpener {
+
+            private static final long serialVersionUID = 1L;
+
+            private final RowStreamOpener delegate;
+
+            private Opener(RowStreamOpener delegate) {
+                this.delegate = delegate;
+            }
+
+            @Override
+            public RowStream open(String streamName, long offset) throws IOException {
+                record("open stream");
+                return delegate.open(streamName, offset);
+            }
+
+            @Override
+            public void setRetryListener(Runnable onRetry) {
+                delegate.setRetryListener(onRetry);
+            }
+
+            @Override
+            public void close() throws IOException {
+                record("release opener");
+                delegate.close();
+            }
+        }
     }
 
     /** Mints creators that refuse to create a session, and records them. */

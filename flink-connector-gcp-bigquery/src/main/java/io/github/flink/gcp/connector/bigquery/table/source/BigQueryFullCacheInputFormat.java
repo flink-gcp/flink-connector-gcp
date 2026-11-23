@@ -29,6 +29,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
 import com.google.cloud.bigquery.storage.v1.ReadStream;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
@@ -81,6 +82,13 @@ import java.util.Set;
  * logs while keeping the rows; an unchecked one escaping its {@code finally} block would discard
  * them. No client metrics reach Flink, which configures and opens its copy with no runtime context;
  * each load logs what it read instead.
+ *
+ * <p>Opening, fetching and closing run inside {@link GrpcEventLoops#interruptibleReleases()}: Flink
+ * stops a load by interrupting it and fails the lookup's close when the load has not ended 10 s
+ * later ({@code CacheLoader.close()}, Flink 1.20.5, 2.2.1 and 2.3.0), so a release of the
+ * connector's last gRPC lease on an interrupted load stops waiting for the event-loop group once
+ * the wait's first second has passed (#2269). The read client is created lazily by the first fetch,
+ * and a creation that fails releases its lease there.
  */
 @Internal
 final class BigQueryFullCacheInputFormat extends GenericInputFormat<RowData> {
@@ -144,6 +152,13 @@ final class BigQueryFullCacheInputFormat extends GenericInputFormat<RowData> {
      */
     @Override
     public void open(GenericInputSplit split) throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            openLoad(split);
+        }
+    }
+
+    private void openLoad(GenericInputSplit split) throws IOException {
         super.open(split);
         // Transient fields start null in the copy Flink deserializes for each load.
         unfinished = new HashSet<>();
@@ -278,7 +293,8 @@ final class BigQueryFullCacheInputFormat extends GenericInputFormat<RowData> {
     public boolean reachedEnd() throws IOException {
         while (pending.isEmpty() && reader != null && !unfinished.isEmpty() && !stoppedReading) {
             RecordsWithSplitIds<GenericRecord> batch;
-            try {
+            try (GrpcEventLoops.InterruptibleReleases releases =
+                    GrpcEventLoops.interruptibleReleases()) {
                 batch = reader.fetch();
             } catch (IOException e) {
                 // The client library turns an interrupt of a waiting ReadRows call into a failure
@@ -353,6 +369,13 @@ final class BigQueryFullCacheInputFormat extends GenericInputFormat<RowData> {
 
     @Override
     public void close() throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            closeLoad();
+        }
+    }
+
+    private void closeLoad() throws IOException {
         BigQuerySplitReader openReader = reader;
         RowStreamOpener openOpener = opener;
         BigQuerySourceReaderMetrics loadMetrics = metrics;

@@ -29,6 +29,8 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.ArrayList;
@@ -48,6 +50,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * group running into the next test and hide a release that never happened.
  */
 class GrpcEventLoopsTest {
+
+    private static final long UNINTERRUPTIBLE_MILLIS =
+            TimeUnit.SECONDS.toMillis(GrpcEventLoops.GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS);
 
     @AfterEach
     void noLeaseIsLeftOpen() {
@@ -102,35 +107,78 @@ class GrpcEventLoopsTest {
 
     @Test
     void theLastReleaseWaitsForTheGroupToFinish() throws Exception {
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
-        CountDownLatch running = new CountDownLatch(1);
-        CountDownLatch finish = new CountDownLatch(1);
-        Thread closer = new Thread(lease::close, "lease-closer");
-        try {
-            // A task still running on a group thread is what a release that did not wait would
-            // leave behind; the release must not return before it has finished.
-            GrpcEventLoops.executeOnGroup(
-                    () -> {
-                        running.countDown();
-                        try {
-                            finish.await();
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    });
-            assertThat(running.await(10, TimeUnit.SECONDS)).isTrue();
-
-            closer.start();
-            closer.join(300);
-            assertThat(closer.isAlive())
-                    .as("the release returned while a group thread was still running a task")
-                    .isTrue();
-        } finally {
-            finish.countDown();
-            closer.join(TimeUnit.SECONDS.toMillis(15));
-            lease.close();
+        // A task still running on a group thread is what a release that did not wait would leave
+        // behind; the release must not return before it has finished.
+        Release release = Release.outsideTheScope(false);
+        try (release) {
+            release.thread.join(300);
+            release.assertWaiting(
+                    "the release returned while a group thread was still running a task");
         }
-        assertThat(closer.isAlive()).isFalse();
+        release.assertReturned();
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    void outsideTheScopeAnInterruptedReleaseStillWaitsForTheGroup() throws Exception {
+        // A task thread Flink interrupts to cancel the task, releasing outside its close.
+        Release release = Release.outsideTheScope(true);
+        try (release) {
+            release.thread.join(UNINTERRUPTIBLE_MILLIS + 500);
+            release.assertWaiting(
+                    "an interrupted release outside the scope stopped waiting for a busy group");
+        }
+        release.assertReturned();
+        assertThat(release.interruptedAfter).as("the interrupt was kept").isTrue();
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    void inTheScopeAnInterruptBeforeTheReleaseEndsTheWaitAfterTheFirstSecond() throws Exception {
+        try (Release release = Release.inTheScope(true)) {
+            // An absolute bound, well inside the 10 s Flink's full lookup cache gives an
+            // interrupted load, so it also holds the length of the part that ignores an interrupt.
+            release.thread.join(TimeUnit.SECONDS.toMillis(5));
+            release.assertReturned();
+            // Measured on the releasing thread, so a slow test thread cannot fake it, and against
+            // the documented first second rather than the constant, which a regression could zero.
+            assertThat(release.elapsedNanos)
+                    .as("the release waited through the first second despite the interrupt")
+                    .isGreaterThanOrEqualTo(TimeUnit.SECONDS.toNanos(1));
+            assertThat(release.interruptedAfter).as("the interrupt was restored").isTrue();
+        }
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("the group finished on its own threads once its task returned")
+                .isTrue();
+    }
+
+    @Test
+    void inTheScopeAnInterruptDuringTheWaitEndsIt() throws Exception {
+        try (Release release = Release.inTheScope(false)) {
+            release.thread.join(UNINTERRUPTIBLE_MILLIS + 500);
+            release.assertWaiting("the release returned before it was interrupted");
+
+            release.thread.interrupt();
+            release.thread.join(3000);
+            release.assertReturned();
+            assertThat(release.interruptedAfter).as("the interrupt was restored").isTrue();
+        }
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    void theScopeEndsWithItsBlockAndNests() {
+        assertThat(GrpcEventLoops.inInterruptibleReleases()).isFalse();
+        try (GrpcEventLoops.InterruptibleReleases outer = GrpcEventLoops.interruptibleReleases()) {
+            try (GrpcEventLoops.InterruptibleReleases inner =
+                    GrpcEventLoops.interruptibleReleases()) {
+                assertThat(GrpcEventLoops.inInterruptibleReleases()).isTrue();
+            }
+            assertThat(GrpcEventLoops.inInterruptibleReleases())
+                    .as("closing a nested scope ended the outer one")
+                    .isTrue();
+        }
+        assertThat(GrpcEventLoops.inInterruptibleReleases()).isFalse();
     }
 
     @Test
@@ -328,6 +376,94 @@ class GrpcEventLoopsTest {
         assertThatThrownBy(() -> lease.closeAfter(client))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    /**
+     * The release of the group's only lease on a thread of its own, started while a group task
+     * holds its thread. Closing it lets the task finish and waits for the release.
+     */
+    private static final class Release implements AutoCloseable {
+
+        private final CountDownLatch finish = new CountDownLatch(1);
+        private final Thread thread;
+        private volatile boolean interruptedAfter;
+        private volatile long elapsedNanos;
+        @Nullable private volatile Throwable thrown;
+
+        /** Releases outside the scope, on a thread interrupted first if {@code interruptFirst}. */
+        static Release outsideTheScope(boolean interruptFirst) throws InterruptedException {
+            return start(interruptFirst, false);
+        }
+
+        /** Releases inside the scope, on a thread interrupted first if {@code interruptFirst}. */
+        static Release inTheScope(boolean interruptFirst) throws InterruptedException {
+            return start(interruptFirst, true);
+        }
+
+        private static Release start(boolean interruptFirst, boolean inScope)
+                throws InterruptedException {
+            GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+            Release release = new Release(lease, interruptFirst, inScope);
+            CountDownLatch running = new CountDownLatch(1);
+            try {
+                GrpcEventLoops.executeOnGroup(() -> awaitQuietly(running, release.finish));
+                assertThat(running.await(10, TimeUnit.SECONDS)).isTrue();
+            } catch (Throwable e) {
+                release.finish.countDown();
+                lease.close();
+                throw e;
+            }
+            release.thread.start();
+            return release;
+        }
+
+        private Release(GrpcEventLoops.Lease lease, boolean interruptFirst, boolean inScope) {
+            this.thread =
+                    new Thread(
+                            () -> {
+                                try (GrpcEventLoops.InterruptibleReleases scope =
+                                        inScope ? GrpcEventLoops.interruptibleReleases() : null) {
+                                    if (interruptFirst) {
+                                        Thread.currentThread().interrupt();
+                                    }
+                                    long start = System.nanoTime();
+                                    lease.close();
+                                    elapsedNanos = System.nanoTime() - start;
+                                    interruptedAfter = Thread.currentThread().isInterrupted();
+                                } catch (Throwable t) {
+                                    thrown = t;
+                                }
+                            },
+                            "lease-release");
+        }
+
+        /** Asserts that the release is still waiting, naming what it threw if it is not. */
+        private void assertWaiting(String failure) {
+            assertThat(thrown).as("the release threw").isNull();
+            assertThat(thread.isAlive()).as(failure).isTrue();
+        }
+
+        /** Asserts that the release returned rather than threw or kept waiting. */
+        private void assertReturned() {
+            assertThat(thrown).as("the release threw").isNull();
+            assertThat(thread.isAlive()).as("the release is still waiting").isFalse();
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            finish.countDown();
+            thread.join(TimeUnit.SECONDS.toMillis(15));
+        }
+    }
+
+    /** A group task: signals that it runs, then holds its thread until {@code finish} opens. */
+    private static void awaitQuietly(CountDownLatch running, CountDownLatch finish) {
+        running.countDown();
+        try {
+            finish.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

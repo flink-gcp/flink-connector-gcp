@@ -154,7 +154,11 @@ Any other client a connector closes itself gets 5 seconds for its calls to finis
 are cancelled.
 A Storage Write API default-stream writer is closed by the client library instead, whose own waits
 can take minutes when it closes a connection's last writer.
-The last close also waits about 10 seconds at most for the group.
+The last close also waits up to 11 seconds for the group.
+When Flink interrupts a BigQuery full lookup cache load, which it gives 10 seconds to end, that
+wait ends after its first second.
+If an event loop is still busy then, the group's threads can outlive the job's class loader and
+fail as described above.
 If a job's own code uses the Storage Write API's connection pool in the same class loader as the
 connector, with the same location and credentials, the two share the pool's connections, and the
 connector stops the group when its last BigQuery client closes even if the job's writers are still

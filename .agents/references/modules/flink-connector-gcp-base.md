@@ -315,7 +315,14 @@ record — context, evidence, declined alternatives — is the named ADR under `
   every lease on one copy of `GrpcEventLoops` in a class loader (each SQL JAR relocates its own
   copy, so it has its own group) and refcounted, so a test opening leases closes every one in a `finally` (`GrpcEventLoopsTest`
   asserts it after each test). A module test observing the group's threads uses test-utils'
-  `GrpcEventLoopThreads`. **On the JobManager a client must close when its call returns**, not
+  `GrpcEventLoopThreads`. The last release waits up to 11 s for the group whatever the
+  interrupt says; only a thread inside `GrpcEventLoops.interruptibleReleases()` stops after the
+  first `GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS` (1 s, #2269; why it is opt-in: `docs/adr/0208`).
+  Open that scope only where Flink stops the thread by interrupt with a deadline (the full lookup
+  cache load: 10 s), around every call that can release a lease there, and keep the
+  uninterruptible part well under the deadline. A quiet-period-0 group terminates in
+  milliseconds, so a test of the wait blocks a group thread with a latch (`executeOnGroup`).
+  **On the JobManager a client must close when its call returns**, not
   when the enumerator closes: at the end of a job Flink 2.2.1 closes coordinators asynchronously and
   does not wait before releasing the job's class loader, and a client open then can exit a session
   cluster's JobManager under `FAIL`

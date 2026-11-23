@@ -21,7 +21,8 @@ limitations under the License.
 - Issues: [#2237](https://github.com/flink-gcp/flink-connector-gcp/issues/2237),
   [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243),
   [#2262](https://github.com/flink-gcp/flink-connector-gcp/issues/2262),
-  [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263)
+  [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263),
+  [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269)
 - Modules: base, bigquery, cloudtasks, pubsub
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -54,6 +55,16 @@ releases the group's last lease shuts it down and waits for its threads.**
   `acquire()` opens a lease and creates the group if none is open; closing the last lease shuts the
   group down (no quiet period, a 10 s bound) and waits for termination.
   A later lease creates a new group.
+- That wait, up to 11 s in all, ignores an interrupt, except on a thread inside
+  `GrpcEventLoops.interruptibleReleases()` (refined 2026-11-23, #2269).
+  There it ignores one for its first second only; after that, an interrupt ends the wait, the
+  releasing thread restores it, and the group finishes on its own threads.
+  Flink's full lookup cache stops a load by interrupting it and fails its close if the load has
+  not ended 10 s later (`CacheLoader.close()`, Flink 1.20.5, 2.2.1 and 2.3.0), so a wait of up to
+  11 s on the load's thread could outlast that budget; the BigQuery load opens, fetches and closes
+  inside the scope.
+  The first second keeps the guarantee for a shutdown that no busy event loop holds up, which
+  took milliseconds when measured (see Evidence).
 - A lease applies the group to a client's settings (`applyTo(ClientSettings.Builder)`) or to a
   transport provider builder, composing a channel configurator after the one the provider
   carries (such as `EmulatorChannels`' plaintext one).
@@ -240,6 +251,20 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   The JobManager did not exit on either arm; these trials cancel after the enumerator's startup
   calls have returned, so they do not exercise a cancellation while one is in flight.
 
+- **Releasing after an interrupt** (#2269), measured 2026-11-23 on a workstation with a unit-level
+  probe that closed the last leased client 20 times per case, interrupted and not.
+  The cases were a call still in flight on a local Netty gRPC server, a fake client whose
+  shutdown did nothing and whose termination wait returned `false` at once while its channel
+  stayed open on the group, and a connection still being opened to an unroutable address.
+  Every close took 9 to 25 ms on the code before this change and 10 to 26 ms on a first form of
+  it that cut every interrupted release short the way the scope now does (declined below), except
+  an uninterrupted close with a call in flight, which spent the client's 5 s waiting for the call
+  before it cancelled it.
+  For the fake client, that time is the group's shutdown closing the channel the client left
+  open, since its own waits returned at once.
+  None of these cases held the group's shutdown up; a task still running on a group thread
+  does, which a latch-blocked task in `GrpcEventLoopsTest` reproduces.
+
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
 shaded Netty allocator, reachable after six jobs, so that is unrelated to this change.
@@ -270,11 +295,20 @@ writing jobs here were not traced.
 - **A group per client.**
   It would multiply event-loop threads by the number of clients, where one shared group matches
   what gRPC itself does.
+- **Letting an interrupt end every release's wait after its first second** (#2269's first form).
+  A task thread can release the last lease outside its close, while Flink may still interrupt it
+  to cancel the task: a default-stream writer's checkpoint flush closes the appender of a
+  destination idle past its timeout.
+  Flink stops interrupting the task thread before it closes operators (`StreamTask`, Flink
+  2.2.1), but not before a flush, so a cutoff there could let a busy group's threads outlive the
+  class loader, the failure this decision removes.
+  The scope confines the cutoff to the thread that needs it.
 
 ## Consequences
 
 - Closing a reader or writer now waits for its client's channels to terminate, cancelling their
-  calls after 5 s, and the last close also waits for the group, up to about 10 s.
+  calls after 5 s, and the last close also waits for the group, up to 11 s; in a full lookup
+  cache load, once the first second has passed, an interrupt ends that wait.
   Closing the enumerator requests the cancellation of a session creation still in flight; one
   that misses a retry gax is starting waits like any other client close.
   gax passes each wait to every resource a client aggregates, so a client that will not stop can
