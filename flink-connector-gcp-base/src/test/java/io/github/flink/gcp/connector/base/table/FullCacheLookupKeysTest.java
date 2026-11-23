@@ -35,6 +35,9 @@ class FullCacheLookupKeysTest {
 
     private static final DataType[] ACCEPTED = {
         DataTypes.BOOLEAN(),
+        DataTypes.TINYINT(),
+        DataTypes.SMALLINT(),
+        DataTypes.INT(),
         DataTypes.BIGINT(),
         DataTypes.DECIMAL(10, 2),
         DataTypes.CHAR(3),
@@ -42,6 +45,8 @@ class FullCacheLookupKeysTest {
         DataTypes.BINARY(2),
         DataTypes.BYTES(),
         DataTypes.DATE(),
+        DataTypes.TIME(3),
+        DataTypes.TIMESTAMP(6),
         DataTypes.TIMESTAMP_LTZ(6),
     };
 
@@ -51,9 +56,9 @@ class FullCacheLookupKeysTest {
         DataTypes.ARRAY(DataTypes.STRING()),
         DataTypes.MAP(DataTypes.STRING(), DataTypes.BIGINT()),
         DataTypes.ROW(DataTypes.FIELD("a", DataTypes.STRING())),
+        DataTypes.MULTISET(DataTypes.STRING()),
         // Types no table produces: accepting one is the connector's decision to take.
-        DataTypes.INT(),
-        DataTypes.TIMESTAMP(6),
+        DataTypes.INTERVAL(DataTypes.DAY()),
     };
 
     private static RowType row(DataType... types) {

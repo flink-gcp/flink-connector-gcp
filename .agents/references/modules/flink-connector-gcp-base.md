@@ -184,9 +184,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   each connector, since it names the connector's own option, and keep PARTIAL's
   `DefaultLookupCache.fromConfig` mapping per connector.
 
-- `FullCacheLookupKeys` is the planning check of a FULL cache's lookup keys for Spanner, Firestore
-  and Datastore (#1847): at least one key, each top-level, of a type whose `GenericRowData.equals`
-  is SQL `=` (BOOLEAN, BIGINT, DECIMAL, CHAR, VARCHAR, BINARY, VARBINARY, DATE, TIMESTAMP_LTZ).
+- `FullCacheLookupKeys` is the planning check of a FULL cache's lookup keys for Spanner, Firestore,
+  Datastore and BigQuery (#1847, #1848): at least one key, each top-level, of a type whose
+  `GenericRowData.equals` is SQL `=` (BOOLEAN, TINYINT, SMALLINT, INTEGER, BIGINT, DECIMAL, CHAR,
+  VARCHAR, BINARY, VARBINARY, DATE, TIME, TIMESTAMP, TIMESTAMP_LTZ; the integer, TIME and TIMESTAMP
+  roots came with BigQuery, ADR-0209).
   Each connector passes its own requirement sentence and, optionally, its no-key detail. A new
   key type is accepted here only with the connector that produces it; Bigtable's FULL is
   row-key-only and does not call it.

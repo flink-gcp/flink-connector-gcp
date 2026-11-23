@@ -625,6 +625,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `<relocations>`, its surefire override and its dependencies. A change to the
   shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
 
+## Lookup (`docs/adr/0209`)
+
+- The table source serves a lookup join only under `lookup.cache = FULL`; refuse `NONE`, `PARTIAL`,
+  `scan.query`, `scan.materialize-views = true` and `scan.snapshot-time` in `getLookupRuntimeProvider`,
+  never in the factory, because the same DDL may be scanned. Do not add a per-row lookup function.
+- Build the load through `BigQueryDynamicSource#sourceBuilder(..., true)`, the scan's own builder,
+  so projection, filters, `scan.row-restriction`, parent project, fetch bounds and retries cannot
+  drift. The load differs only in carrying no snapshot time and asking for `maxStreamCount = 1`.
+- `BigQueryFullCacheInputFormat` returns one split and creates its read session in `open`, on the
+  copy Flink deserializes; never open a client in `createInputSplits`, which runs on a copy nobody
+  closes. More splits would expose Flink's shared-serializer `MAP` race (#2217).
+- Close the session creator as soon as the session exists, the split reader before its opener, and
+  report a release failure as an `IOException` so Flink keeps a completely read load.
+- The BigQuery emulator cannot read a `NULL` in a nullable column or any `DATETIME` value; keep
+  `BigQueryTableFullCacheITCase` data free of both and hold those keys at planning.
+
 ## Catalog (`docs/adr/0168`, `docs/adr/0169`)
 
 - The catalog is read-only and extends base's `AbstractReadOnlyCatalog`, which holds the lifecycle,

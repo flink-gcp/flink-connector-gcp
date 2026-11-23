@@ -301,8 +301,9 @@ To order the range, the lookup reads that part's sort direction from `INFORMATIO
 Binary values compare by content, and schema-marked values compare in their Flink carrier type: UUID and JSON strings, PROTO bytes, and ENUM integers.
 Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
 A null lookup key, an absent Spanner row, or a failed additional equality produces no joined row.
-In streaming mode, Flink offers a condition on the looked-up table to the source as it does for a scan, and exact pushed primary-key predicates then gate synchronous and asynchronous lookups before an RPC, while Flink evaluates any residual predicate normally.
-In batch mode the planner keeps every such condition on the join, so only the lookup keys narrow a point read (measured on Flink 2.2.1 and 1.20.5).
+In streaming mode, Flink offers a condition on the looked-up table that holds before the join, such as one in the `ON` clause, to the source as it does for a scan, and exact pushed primary-key predicates then gate synchronous and asynchronous lookups before an RPC, while Flink evaluates any residual predicate normally.
+A condition that holds only after the join, such as `o.customer IS NULL` in the `WHERE` clause of a left join, which a padded row satisfies, is evaluated after the join in either mode.
+In batch mode the planner keeps a condition that holds before the join on the join as well, so only the lookup keys narrow a point read (measured on Flink 2.2.1 and 1.20.5).
 `scan.index` does not change lookup keys or lookup access paths.
 The following example uses an `order_events` input with `event_id`, `order_id`, and processing-time `proc_time` columns, and the `orders` table declared above.
 
@@ -322,7 +323,7 @@ Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this opti
 `lookup.cache = FULL` loads the whole table into memory through the bounded scan and answers every lookup from that copy, so a cache hit costs no Spanner read.
 A load is one batch read: it plans the scan's partitions in a new read-only transaction at the `scan.timestamp-bound.*` bound, so all rows of one load come from one snapshot, and the next load reads a newer one.
 The load applies everything a bounded scan of the same table would: the projection, pushed filters, `scan.index`, the partition hints, `scan.data-boost-enabled`, and `scan.rpc-priority`.
-Filters reach a load only in streaming mode, where a condition on the looked-up table is pushed as for a scan; in batch mode the planner keeps it on the join, and every load reads the whole table.
+Filters reach a load only in streaming mode, where a condition on the looked-up table that holds before the join is pushed as for a scan, while one that holds only after it, such as `o.customer IS NULL` in the `WHERE` clause of a left join, is evaluated after the join; in batch mode the planner keeps a condition that holds before the join on the join as well, and every load reads the whole table.
 A `FULL` lookup join is rejected at planning when `scan.timestamp-bound.read-timestamp` is set, because a fixed timestamp would reload the same rows until it falls outside the database's version retention period and the load fails; a scan of the same table still accepts the option, and `scan.timestamp-bound.exact-staleness` is accepted for both.
 A load reads its partitions one after another at its snapshot's timestamp, so a load that runs longer than the version retention period fails on the partitions it reaches after that.
 

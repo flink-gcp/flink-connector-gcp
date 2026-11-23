@@ -455,6 +455,47 @@ clause or an `OPTIONS` hint its quotes are doubled:
 For `scan.query`, the configured query text is never rewritten; both explicit and generated
 restrictions apply only when Storage Read reads the materialized result table.
 
+## Lookup
+
+A `bigquery` table can be the dimension table of a lookup join (`JOIN dim FOR SYSTEM_TIME AS OF p.proc_time`) only under Flink's full cache, `lookup.cache = 'FULL'`.
+The Storage Read API has no point read, and a read session or a query per probe row would cost far more than the row is worth, so a lookup join over a table without `'FULL'`, the default `'NONE'` and `'PARTIAL'` included, is refused while the statement is planned, with a message naming `lookup.cache`.
+A scan of the same table ignores `lookup.cache`, although `'FULL'` still needs a valid reload schedule, which is checked when any statement over the table is planned.
+
+The full cache loads the table into memory through the scan's own read and answers every lookup from that copy, so a cache hit reads nothing from BigQuery.
+A load reads the columns the join uses and applies `scan.row-restriction`, `scan.parent-project`, `scan.max-records-per-fetch`, `scan.max-bytes-per-fetch` and `scan.retry.max-attempts` as a scan of the same table would.
+It reads a table's storage directly: a table that sets `scan.query`, or `scan.materialize-views` to `true`, is refused as a lookup table, because every reload would otherwise run the query, or check for a view and materialize it, again.
+A table that is not a view is looked up with `scan.materialize-views` left at `false` and without `scan.query-location`, `scan.query-result-dataset`, `scan.query-result-kms-key-name` and `scan.reuse-query-result-within`, which apply only to an explicit query or to view materialization and are refused on a direct table read.
+
+Each load creates one read session and reads it to the end, so every row of one load comes from one snapshot, the table as it was when the session was created, and the next load reads a newer one.
+`scan.snapshot-time` is refused with `'FULL'`: every load would read the same instant until it left the table's time travel window, and the load would then fail.
+A load asks for one read stream and reads it on one thread, whatever `scan.max-stream-count` and `scan.preferred-min-stream-count` ask of the scan, so a large table takes correspondingly long to load.
+A read session lives six hours from its creation; a load that outlives its session fails, which fails the lookups that follow until the job restarts and loads again with a new session.
+
+In streaming mode, a condition on the looked-up table that is not a lookup key and that holds before the join, such as a `WHERE` or `ON` condition of an inner join, reaches the source as it does for a scan, so a condition the [Source](#source) section translates narrows every load, and Flink still applies it to the cached rows.
+A condition that holds only after the join, such as `d.n IS NULL` in the `WHERE` clause of a left join, which a padded row satisfies, is evaluated after the join and does not narrow the load.
+In batch mode the planner keeps a condition that holds before the join on the join as well, so a load reads the whole table unless `scan.row-restriction` narrows it (both measured on Flink 2.2.1).
+A table that requires a partition filter is loaded only under a restriction on its partitioning column, as it is scanned; `scan.row-restriction` supplies one in both modes.
+
+Flink indexes the loaded rows by the join's lookup keys, so the table needs no primary key, and a key that matches several rows joins all of them.
+A key may be any top-level column of a type whose Flink value equality agrees with SQL `=`: `STRING`, `CHAR`, `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DECIMAL`, `BYTES`, `BINARY`, `DATE`, `TIME`, `TIMESTAMP` or `TIMESTAMP_LTZ`.
+A temporal key matches at its declared precision: a `DATETIME` stored as `12:34:56.123456` and read as `TIMESTAMP(3)` matches a probe of `12:34:56.123`, as it would in a regular join.
+`FLOAT` and `DOUBLE` keys are rejected at planning, because Java equality tells `-0.0` from `0.0` and matches `NaN` to itself, and so are `ARRAY`, `MAP`, `MULTISET` and `ROW` keys, whose binary and generic Flink forms do not compare equal.
+A column compared through a cast, such as one cast to another precision, is not a lookup key; a join whose every equality is such a column is rejected.
+A row with a null key value is never matched, as SQL equality requires.
+
+`lookup.full-cache.reload-strategy` selects `PERIODIC`, which needs `lookup.full-cache.periodic-reload.interval`, or `TIMED`, which needs `lookup.full-cache.timed-reload.iso-time`.
+
+The cost moves from lookups to loads.
+Each cache instance reads the projected table once when the job starts and once per reload, and BigQuery meters each load as a scan reads ([bytes-read accounting]({{< relref "docs/connectors/datastream/bigquery" >}}#source)): by the bytes its `ReadRows` calls scan, so the columns the join uses decide the cost, and a failed or cancelled load still pays for what it read before it stopped.
+Flink keeps one instance per lookup join on each TaskManager, shared by that join's subtasks, so a reload every ten minutes of a 2 GB projection joined on four TaskManagers reads about 1.15 TB a day.
+The loading TaskManagers create the read sessions, so their credentials need `bigquery.readsessions.create` on the `scan.parent-project` as well as read access to the table.
+While a reload builds its new copy, the old copy keeps serving lookups, so a reload briefly needs memory for both.
+The first load blocks lookups until it completes.
+If a load fails, Flink keeps no partial result and fails the lookups that follow, so the job restarts and loads again.
+After a failed first load, though, Flink can answer the lookups made in the moment before it records the failure from the still-empty cache, as no match: an inner join drops those rows and a left join pads them with NULL, without an error ([#2225](https://github.com/flink-gcp/flink-connector-gcp/issues/2225), measured on Flink 2.2.1 and 1.20.5).
+`FULL` pays off when the table is small enough to hold twice per TaskManager and its reload interval is long enough for the bytes it reads.
+The loader runs with no Flink metric group, so the scan's `rowsRead` and `bytesRead` counters report nothing for it; each load logs its read session, rows, bytes and retried attempts instead, and Flink's own cache metrics report the load count and the latest load time.
+
 ## Sink
 
 The non-CDC sink accepts insert-only input and writes one BigQuery table per Flink table.
@@ -914,6 +955,19 @@ or SDK already uses. The full list of defaults is in the
 | `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` |
 | `scan.retry.max-attempts` | Integer | `retryMaxAttempts(...)` |
 | `scan.parallelism` | Integer | The bounded source's parallelism (Flink's own option) |
+
+### Lookup options
+
+These are Flink's standard lookup options; a lookup join over the table needs `lookup.cache = 'FULL'` ([Lookup](#lookup)).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `lookup.cache` | `NONE` | Flink's standard lookup cache mode; a lookup join requires `FULL`. A scan ignores the option, but `FULL` still needs a valid reload schedule |
+| `lookup.full-cache.reload-strategy` | `PERIODIC` | Flink's standard full-cache reload strategy: `PERIODIC` or `TIMED` |
+| `lookup.full-cache.periodic-reload.interval` | *unset* | Interval between periodic full-cache loads; required by `PERIODIC`, and at least 1 ms, because Flink schedules it in whole milliseconds |
+| `lookup.full-cache.periodic-reload.schedule-mode` | `FIXED_DELAY` | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
+| `lookup.full-cache.timed-reload.iso-time` | *unset* | Local ISO time of a timed full-cache load; required by `TIMED` |
+| `lookup.full-cache.timed-reload.interval-in-days` | `1` | Days between timed full-cache loads |
 
 ### Sink options
 

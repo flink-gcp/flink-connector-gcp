@@ -32,10 +32,11 @@ import java.time.Instant;
  *
  * <p>Split out of the enumerator because it is the whole of the connector's push-down surface and
  * is pure: every builder knob that reaches BigQuery reaches it through this class, and a test of
- * the mapping needs no session, no client and no context.
+ * the mapping needs no session, no client and no context. The {@code bigquery} table's full lookup
+ * cache builds each load's session through it too, so a load requests what a scan would.
  */
 @Internal
-final class ReadSessionRequests {
+public final class ReadSessionRequests {
 
     private ReadSessionRequests() {}
 
@@ -49,7 +50,8 @@ final class ReadSessionRequests {
      * @param table the table to read — the configured one, or the one a query's result landed in
      * @return the request
      */
-    static CreateReadSessionRequest of(BigQuerySourceConfig<?> config, TableDestination table) {
+    public static CreateReadSessionRequest of(
+            BigQuerySourceConfig<?> config, TableDestination table) {
         ReadSession.TableReadOptions.Builder readOptions =
                 ReadSession.TableReadOptions.newBuilder()
                         .addAllSelectedFields(config.getSelectedFields());

@@ -50,7 +50,16 @@ class BigQueryConnectorOptionsTest {
 
     /** The Flink-owned keys the factory borrows rather than declaring itself. */
     private static final Set<String> FLINK_OWNED =
-            new HashSet<>(java.util.Arrays.asList("scan.parallelism", "sink.parallelism"));
+            new HashSet<>(
+                    java.util.Arrays.asList(
+                            "scan.parallelism",
+                            "sink.parallelism",
+                            "lookup.cache",
+                            "lookup.full-cache.reload-strategy",
+                            "lookup.full-cache.periodic-reload.interval",
+                            "lookup.full-cache.periodic-reload.schedule-mode",
+                            "lookup.full-cache.timed-reload.iso-time",
+                            "lookup.full-cache.timed-reload.interval-in-days"));
 
     private static List<ConfigOption<?>> declaredOptions() {
         List<ConfigOption<?>> options = new ArrayList<>();

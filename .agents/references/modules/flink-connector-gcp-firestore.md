@@ -275,7 +275,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   planned query serially through `FirestoreSplitReader` (a collection group at one partition).
   Never return several splits: Flink loads them on parallel threads through one shared
   `RowDataSerializer`, whose `MapDataSerializer.copy` is not thread-safe for `GenericMapData`.
-  Streaming mode pushes a condition on the looked-up table into the lookup source and so into the
+  Streaming mode offers a condition on the looked-up table that holds before the join (never a
+  post-join one such as a left join's `WHERE c.tier IS NULL`) to the lookup source as it offers a
+  scan's, so what filter pushdown accepts (never `ARRAY_CONTAINS`) narrows the
   load; batch mode does not (#2219). Document both; never call a load "every document" or
   "filtered" without the mode.
 - `FULL` keys are any top-level produced field, metadata included, whose `GenericRowData.equals`
@@ -520,8 +522,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   splittable: ONE split reading ONE key range, planned again in `createInputSplits` per load. The
   format refuses a configuration that would plan several ranges; never return several splits
   (shared `RowDataSerializer`, #2217). A load reads whole entities, so it joins on unindexed
-  properties. Streaming mode pushes a condition into the load (property filters only under
-  `scan.filter-push-down.enabled`, which then drops unindexed values as a scan does); batch mode
+  properties. Streaming mode offers a pre-join condition to the load as to a scan (property
+  filters only under `scan.filter-push-down.enabled`, which then drops unindexed values as a scan
+  does); batch mode
   does not (#2219). Keys: any top-level produced field, metadata included (`key-id`/`key-name`
   make a keyless table joinable), not DOUBLE, ARRAY or ROW, through
   `base.table.FullCacheLookupKeys`. `lookup.async` with `FULL` is refused in

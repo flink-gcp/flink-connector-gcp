@@ -95,10 +95,12 @@ Issue #518 makes a pushed source plan available to the FULL-cache loader without
 dropping its range intersection, projection or best-effort cell-existence predicate.
 In batch mode Flink keeps a scalar qualifier temporal-join predicate in `LookupJoin.where` and does
 not invoke `SupportsFilterPushDown` for it, nor for a row-key range. In streaming mode it invokes
-the ability for both, so a FULL-cache load skips the rows the range or the existence prefilter
-excludes, and an exact row-key range leaves no residual. Issue #2219 measured both modes on Flink
-2.2.1 and 1.20.5 with a row whose undecodable cell fails any load that reads it; this paragraph
-first described the batch plan as the planner's only behavior.
+the ability for both when the predicate holds before the join (one that holds only after a left
+join, such as `WHERE p.profile IS NULL`, stays above it), so a FULL-cache load skips the rows the
+range or the existence prefilter excludes, and an exact row-key range leaves no residual.
+Issue #2219 measured both modes on Flink 2.2.1 and 1.20.5 with a row whose undecodable cell fails
+any load that reads it; this paragraph first described the batch plan as the planner's only
+behavior.
 NONE, PARTIAL and FULL evaluate that same lookup residual and therefore expose the same rows, while
 configured scan ranges continue to constrain both point reads and FULL-cache contents.
 Point-range membership is distinct from split planning: a key equal to a closed start belongs to

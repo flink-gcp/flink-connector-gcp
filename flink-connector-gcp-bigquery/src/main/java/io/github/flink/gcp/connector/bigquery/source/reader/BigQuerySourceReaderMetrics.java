@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.source.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 
@@ -52,14 +53,53 @@ public final class BigQuerySourceReaderMetrics {
      * @param metricGroup the reader's metric group
      */
     public BigQuerySourceReaderMetrics(SourceReaderMetricGroup metricGroup) {
-        this.rowsRead =
-                metricGroup.counter(BigQueryMetricNames.ROWS_READ, new ThreadSafeSimpleCounter());
-        this.bytesRead =
-                metricGroup.counter(BigQueryMetricNames.BYTES_READ, new ThreadSafeSimpleCounter());
-        this.readRetries =
+        this(
+                metricGroup.counter(BigQueryMetricNames.ROWS_READ, new ThreadSafeSimpleCounter()),
+                metricGroup.counter(BigQueryMetricNames.BYTES_READ, new ThreadSafeSimpleCounter()),
                 metricGroup.counter(
-                        BigQueryMetricNames.READ_RETRIES, new ThreadSafeSimpleCounter());
-        this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
+                        BigQueryMetricNames.READ_RETRIES, new ThreadSafeSimpleCounter()),
+                metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED));
+    }
+
+    private BigQuerySourceReaderMetrics(
+            Counter rowsRead, Counter bytesRead, Counter readRetries, Counter recordsSkipped) {
+        this.rowsRead = rowsRead;
+        this.bytesRead = bytesRead;
+        this.readRetries = readRetries;
+        this.recordsSkipped = recordsSkipped;
+    }
+
+    /**
+     * Returns metrics registered nowhere, for a read that has no metric group: the {@code bigquery}
+     * table's full lookup cache, which Flink opens with no runtime context. They count all the
+     * same, so the load can log what it read.
+     *
+     * @return counters that only count
+     */
+    public static BigQuerySourceReaderMetrics unregistered() {
+        return new BigQuerySourceReaderMetrics(
+                new ThreadSafeSimpleCounter(),
+                new ThreadSafeSimpleCounter(),
+                new ThreadSafeSimpleCounter(),
+                new SimpleCounter());
+    }
+
+    /**
+     * Returns the serialized bytes of the response blocks counted so far.
+     *
+     * @return the byte count
+     */
+    public long getBytesRead() {
+        return bytesRead.getCount();
+    }
+
+    /**
+     * Returns the retried attempts counted so far.
+     *
+     * @return the retry count
+     */
+    public long getReadRetries() {
+        return readRetries.getCount();
     }
 
     /**

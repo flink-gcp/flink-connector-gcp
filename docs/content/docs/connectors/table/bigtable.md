@@ -444,9 +444,12 @@ The ranges configured by `scan.row-prefix`, `scan.row-range.*` and `scan.row-ran
 treated as one union, then intersected with the SQL ranges.
 The same final ranges and filters serve the bounded scan and a FULL-cache loader created from that
 filtered source plan.
-A condition on a looked-up table reaches that plan only in streaming mode; in batch mode the
-planner keeps it on the lookup join, so a FULL-cache load reads every row the configured ranges
-allow (measured on Flink 2.2.1 and 1.20.5).
+A condition on a looked-up table reaches that plan only in streaming mode, and only one that
+holds before the join: a condition that holds only after it, such as `p.profile IS NULL` in the
+`WHERE` clause of a left join, which a padded row satisfies, is evaluated after the join.
+In batch mode the planner keeps a condition that holds before the join on the lookup join as
+well, so a FULL-cache load reads every row in the configured ranges that the family projection
+returns (measured on Flink 2.2.1 and 1.20.5).
 
 | Row-key type | `=`, `<>`, `IN` | `<`, `<=`, `>`, `>=` | `IS NULL`, `IS NOT NULL` |
 |---|---|---|---|
@@ -958,9 +961,12 @@ In this example, `events.expected_profile` is `ROW<name STRING, email STRING>`, 
 
 {{< sql-snippet file="flink/BigtableTableReference.sql" tag="lookup-row-equality" >}}
 
-Scalar qualifier conditions such as `p.profile.name = 'Alice'` remain Flink residual predicates.
-Flink does not pass them through `SupportsFilterPushDown` for a temporal join, and NONE, PARTIAL and
-row-key-only FULL evaluate the same residual.
+Scalar qualifier conditions such as `p.profile.name = 'Alice'` remain Flink residual predicates in
+every cache mode.
+In streaming mode, Flink also passes such a condition that holds before the join through
+`SupportsFilterPushDown`, and a positive one such as that equality then prefilters point reads
+and FULL-cache loads by the qualifier's existence, as described under
+[Filter pushdown](#filter-pushdown); in batch mode it does not.
 Configured `scan.row-prefix`, `scan.row-range.*` and `scan.row-ranges` bounds still apply to point
 reads and FULL-cache contents.
 
