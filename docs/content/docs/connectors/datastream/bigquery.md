@@ -3189,9 +3189,11 @@ fills — as one deadline covering all of that wait's publishes. It bounds one w
 interval spends. On expiry the wait throws and the job fails, dropping nothing; the records behind
 the unpublished dead letters are replayed from the last completed checkpoint. A Pub/Sub disturbance
 longer than the budget therefore fails the job where the SDK's 600 s retry would have absorbed it,
-which is the trade the bound buys. `shutdownTimeout` (30 s by default) bounds the queue's own close, and
-it is spent *after* the sink's own teardown — so a sink that dead-letters should budget for the sum
-against Flink's `task.cancellation.timeout`. Full description on the
+which is the trade the bound buys. `shutdownTimeout` (30 s by default) bounds the queue's
+wait for its publisher when it closes; letting go of the connector's gRPC event-loop group afterwards
+can add up to 10 s against an emulator, for its channel, and up to 11 s more when the release leaves
+the group with no client. All of it adds to the sink's own teardown — so a sink that
+dead-letters should budget for the sum against Flink's `task.cancellation.timeout`. Full description on the
 [Pub/Sub page]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-lettering-to-a-pubsub-topic).
 
 The queue reports what it published, what it still holds and how long its waits take, on

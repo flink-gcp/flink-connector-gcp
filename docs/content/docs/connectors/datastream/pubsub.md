@@ -158,10 +158,13 @@ Their count is controlled jointly by `maxRecordsPerFetch`, the assigned-split co
 **The subscriber shutdown mode is fixed at `NACK_IMMEDIATELY`** and deliberately not a knob. The
 SDK's `WAIT_FOR_PROCESSING` default waits for acknowledgements that only arrive at checkpoint
 completion — which never happens during shutdown — so it would stall every close. Only
-`shutdownTimeout` is configurable, and it bounds a reader's whole close rather than each split's:
-the reader nacks every split's messages and asks every client to stop before it waits on any, so
-the waits overlap however many splits it owns. Keep it under Flink's `source.reader.close.timeout`
-(30 s by default). Whether the value is right for a deployment is what
+`shutdownTimeout` is configurable, and it bounds the reader's wait for its subscribers as a whole
+rather than each split's: the reader nacks every split's messages and asks every client to stop
+before it waits on any, so the waits overlap however many splits it owns.
+Each subscriber then lets go of the connector's gRPC event-loop group, which is not part of the
+budget: up to 10 s per subscriber against an emulator, for its channel, and up to 11 s more when
+that leaves the group with no client.
+Keep the sum under Flink's `source.reader.close.timeout` (30 s by default). Whether the value is right for a deployment is what
 [`subscriberShutdownsAbandoned`](#metrics) answers.
 
 **`parallelPullCount` cannot be combined with `orderingMode(PER_KEY)`** — the source builder
@@ -983,9 +986,13 @@ The replacement publisher is not opened until the selected publisher finishes it
 shutdown.
 The pinned SDK can strand its internal shutdown counter after an ordering-key cascade even after
 this connector has repaired and drained the destination.
-If shutdown work or resources are still alive when `shutdownTimeout` expires, the writer fails the
-running task before opening a replacement, so destination churn cannot accumulate abandoned
-threads and transport resources behind the active-publisher cap.
+If a publisher's shutdown is still running when the writer checks it after `shutdownTimeout` has
+expired, or the client library reports that its resources did not terminate within that budget (an
+*overrun*, as the rest of this page uses the word), the writer fails the running task before opening
+a replacement, so destination churn cannot pile abandoned publisher shutdowns up behind the
+active-publisher cap.
+A gRPC event-loop group that does not terminate within its 11 s wait is logged rather than counted,
+so this does not cover the group's own threads.
 A shutdown or close exception fails the running eviction for the same reason: the writer cannot
 establish that the old publisher's resources are safe to replace.
 Idle eviction uses the same clean-state test and runs only after `flush(false)` has successfully
@@ -999,7 +1006,7 @@ After that wait the released publishers let go of the connector's gRPC event-loo
 another, on the same thread, and that is not part of the budget.
 Against an emulator each one shuts its channel down and waits up to 10 s for it, so a release of
 several can add that once per publisher; a release that leaves the group with no client, for
-example the eviction of the only active publisher, also waits up to about 10 s for the group to
+example the eviction of the only active publisher, also waits up to 11 s for the group to
 stop ([gRPC threads and job shutdown]({{< relref "docs/connectors#grpc-threads-and-job-shutdown" >}})).
 That matters with dynamic destinations,
 where seven sequential 30 s waits would exceed Flink's `task.cancellation.timeout` (180 s) and make
@@ -1058,7 +1065,9 @@ The same teardown is what a `sendToDeadLetterQueue(...)` handler uses. It owns a
 own and is closed after the sink's, so it spends a second budget of the same shape —
 `PubSubDeadLetterQueue.builder().shutdownTimeout(...)`, 30 s by default. `shutdownTimeout` therefore
 bounds the sink's publishers and that one bounds the queue's; keep the **sum** under
-`task.cancellation.timeout`.
+`task.cancellation.timeout`, together with the event-loop group releases that follow each budget:
+up to 10 s per publisher against an emulator, for its channel, and up to 11 s each time a release
+leaves the group with no client.
 
 The dead-letter queue's shutdown budget is spent at *close*.
 The sink publisher budget is also spent when capacity or idle eviction releases publishers while a
@@ -1572,9 +1581,13 @@ longer disturbance, and keep it against the interval budget above rather than ag
 `execution.checkpointing.timeout` directly. There is no unbounded setting: a `Duration` longer than
 any disturbance you mean to survive says the same thing without making waiting forever a mode.
 
-`shutdownTimeout` (30 s by default) bounds the queue's own close, through the same two-phase
-teardown the sink's publishers get — see [Publisher lifecycle](#publisher-lifecycle) for why an SDK
-publisher's shutdown needs bounding at all. It is spent *after* the sink's, so budget for the sum.
+`shutdownTimeout` (30 s by default) bounds the queue's wait for its publisher when it closes, through
+the same two-phase teardown the sink's publishers get — see [Publisher lifecycle](#publisher-lifecycle)
+for why an SDK publisher's shutdown needs bounding at all.
+Letting go of the connector's gRPC event-loop group afterwards is not part of that budget, as for
+the sink's publishers: up to 10 s against an emulator, for its channel, and up to 11 s more when the
+release leaves the group with no client.
+All of it adds to the sink's own teardown, so budget for the sum.
 
 #### Dead-letter metrics
 
@@ -1672,8 +1685,8 @@ the cluster.
 
 **What it does and does not tell you.** It counts closes that *overran their budget*. It does not
 count teardowns still in flight: once the close gives up, the background thread exits as soon as the
-client's own shutdown returns, so a close that overran by a second leaves nothing behind and still
-increments this. Read a rising value as "closes are timing out", then use
+client's own shutdown and its termination wait return, so a close that overran by a second can
+leave nothing behind and still increments this, once per publisher however its resources end. Read a rising value as "closes are timing out", then use
 [Publisher lifecycle](#publisher-lifecycle) and a thread dump to see whether anything is still
 stranded.
 
