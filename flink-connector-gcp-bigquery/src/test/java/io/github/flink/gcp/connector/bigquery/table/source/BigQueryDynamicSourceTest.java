@@ -24,6 +24,7 @@ import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.types.DataType;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.table.BigQueryLookupConfig;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
@@ -256,6 +257,8 @@ class BigQueryDynamicSourceTest {
         varied.put("emulatorEndpoint", args -> args.emulatorEndpoint = "localhost:1");
         varied.put("emulatorRestEndpoint", args -> args.emulatorRestEndpoint = "localhost:2");
         varied.put("parallelism", args -> args.parallelism = 2);
+        varied.put(
+                "lookupConfig", args -> args.lookupConfig = BigQueryLookupSourceTest.fullCache());
         return varied;
     }
 
@@ -296,6 +299,7 @@ class BigQueryDynamicSourceTest {
         @Nullable String emulatorEndpoint;
         @Nullable String emulatorRestEndpoint;
         @Nullable Integer parallelism;
+        @Nullable BigQueryLookupConfig lookupConfig;
 
         BigQueryDynamicSource build() {
             return BigQueryDynamicSource.builder()
@@ -320,6 +324,7 @@ class BigQueryDynamicSourceTest {
                     .emulatorEndpoint(emulatorEndpoint)
                     .emulatorRestEndpoint(emulatorRestEndpoint)
                     .parallelism(parallelism)
+                    .lookupConfig(lookupConfig)
                     .build();
         }
     }

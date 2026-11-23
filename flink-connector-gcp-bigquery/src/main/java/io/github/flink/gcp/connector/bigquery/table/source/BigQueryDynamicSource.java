@@ -19,12 +19,19 @@ package io.github.flink.gcp.connector.bigquery.table.source;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
+import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
+import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.DataType;
@@ -32,12 +39,14 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.table.FullCacheLookupKeys;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder;
 import io.github.flink.gcp.connector.bigquery.source.BigQueryStorageReadSource;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.BigQueryLookupConfig;
 
 import javax.annotation.Nullable;
 
@@ -48,7 +57,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * A bounded Table API source mapped onto {@link BigQuerySource}.
+ * A bounded Table API source mapped onto {@link BigQuerySource}, and a lookup source served only by
+ * Flink's full cache, which loads the table through the same read ({@link
+ * BigQueryFullCacheInputFormat}).
  *
  * <p>Built through {@link #builder()} rather than a constructor, for the reason its sibling {@link
  * io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink the sink} states: the
@@ -58,7 +69,10 @@ import java.util.Objects;
  */
 @Internal
 public final class BigQueryDynamicSource
-        implements ScanTableSource, SupportsProjectionPushDown, SupportsFilterPushDown {
+        implements ScanTableSource,
+                LookupTableSource,
+                SupportsProjectionPushDown,
+                SupportsFilterPushDown {
 
     private final RowType physicalRowType;
     private final DataType physicalDataType;
@@ -82,6 +96,7 @@ public final class BigQueryDynamicSource
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String emulatorRestEndpoint;
     @Nullable private final Integer parallelism;
+    private final BigQueryLookupConfig lookupConfig;
 
     private DataType producedDataType;
     @Nullable private int[][] projectedFields;
@@ -112,6 +127,7 @@ public final class BigQueryDynamicSource
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
         this.parallelism = builder.parallelism;
+        this.lookupConfig = builder.lookupConfig;
         this.projectedFields = builder.projectedFields;
         this.filterState = builder.filterState;
     }
@@ -163,7 +179,102 @@ public final class BigQueryDynamicSource
 
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
-        TypeInformation<RowData> producedType = context.createTypeInformation(producedDataType);
+        Source<RowData, ?, ?> source =
+                sourceBuilder(context.createTypeInformation(producedDataType), false).build();
+        if (lineageTableName != null) {
+            source =
+                    ((BigQueryStorageReadSource<RowData>) source)
+                            .withTableLineage(lineageTableName);
+        }
+        return SourceProvider.of(source, parallelism);
+    }
+
+    /**
+     * Flink's full cache, loaded by the scan's own read of the produced columns and indexed by the
+     * planner's lookup keys, which may be any top-level field of the produced row of a type whose
+     * Java equality is SQL's. No other cache type is served: a lookup without a cache would read
+     * BigQuery once per probe row, which neither a read session nor a query is made for.
+     */
+    @Override
+    public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
+        if (lookupConfig.getCacheType() != LookupCacheType.FULL) {
+            throw new ValidationException(
+                    String.format(
+                            "A 'bigquery' table is looked up only through Flink's full cache, but"
+                                    + " '%s' is %s. Set '%s' = 'FULL' and a reload schedule"
+                                    + " through the '%s' options: a lookup per probe row would"
+                                    + " create a read session or run a query for every row.",
+                            LookupOptions.CACHE_TYPE.key(),
+                            lookupConfig.getCacheType(),
+                            LookupOptions.CACHE_TYPE.key(),
+                            "lookup.full-cache.*"));
+        }
+        if (table == null) {
+            throw new ValidationException(
+                    String.format(
+                            "A 'bigquery' lookup reads a table, so '%s' cannot be set on a table"
+                                    + " used in a lookup join: every load would run the query"
+                                    + " again. Write the query's result to a table and look that"
+                                    + " up.",
+                            BigQueryConnectorOptions.SCAN_QUERY.key()));
+        }
+        if (materializeViews) {
+            throw new ValidationException(
+                    String.format(
+                            "A 'bigquery' lookup reads a table's storage directly, so '%s' cannot"
+                                    + " be true on a table used in a lookup join: a load neither"
+                                    + " checks for a view nor materializes one, which every reload"
+                                    + " would otherwise repeat. Set it to false for a table, and"
+                                    + " write a view's result to a table to look that up.",
+                            BigQueryConnectorOptions.SCAN_MATERIALIZE_VIEWS.key()));
+        }
+        if (snapshotTime != null) {
+            throw new ValidationException(
+                    String.format(
+                            "'%s' cannot be set when '%s' is FULL: every full-cache load reads a"
+                                    + " fresh snapshot, and a fixed snapshot time would reload the"
+                                    + " same rows until the time leaves the table's time travel"
+                                    + " window and the load fails.",
+                            BigQueryConnectorOptions.SCAN_SNAPSHOT_TIME.key(),
+                            LookupOptions.CACHE_TYPE.key()));
+        }
+        // The planner passes no key when every equality compares a cast column.
+        FullCacheLookupKeys.check(
+                (RowType) producedDataType.getLogicalType(),
+                context.getKeys(),
+                FULL_CACHE_KEY_REQUIREMENT,
+                "No equality reached the source as a key; a column compared through a cast, such"
+                        + " as one cast to another precision, is not a key.");
+        BigQueryStorageReadSource<RowData> load =
+                (BigQueryStorageReadSource<RowData>)
+                        sourceBuilder(context.createTypeInformation(producedDataType), true)
+                                .build();
+        return FullCachingLookupProvider.of(
+                InputFormatProvider.of(new BigQueryFullCacheInputFormat(load.getConfig())),
+                lookupConfig.createFullReloadTrigger());
+    }
+
+    private static final String FULL_CACHE_KEY_REQUIREMENT =
+            "A BigQuery lookup with '"
+                    + LookupOptions.CACHE_TYPE.key()
+                    + "' = 'FULL' requires equality predicates on top-level columns of a type other"
+                    + " than FLOAT, DOUBLE, ARRAY, MAP, MULTISET and ROW, whose Flink equality"
+                    + " differs from SQL's.";
+
+    /**
+     * Returns the builder of the read both the scan and a full-cache load run.
+     *
+     * <p>A load differs in two ways. It reads the table as it is, so a snapshot time never reaches
+     * it ({@link #getLookupRuntimeProvider} refuses one). And it asks for one stream, because a
+     * load is one split that reads its streams one after another ({@link
+     * BigQueryFullCacheInputFormat}), which leaves {@code scan.max-stream-count} and {@code
+     * scan.preferred-min-stream-count} to the scan.
+     *
+     * @param producedType the type of the rows the read produces
+     * @param fullCacheLoad whether the read is a {@code FULL} cache's load rather than the scan
+     */
+    private BigQuerySourceBuilder<RowData> sourceBuilder(
+            TypeInformation<RowData> producedType, boolean fullCacheLoad) {
         BigQuerySourceBuilder<RowData> builder =
                 BigQuerySource.<RowData>builder()
                         .deserializer(
@@ -202,17 +313,21 @@ public final class BigQueryDynamicSource
         if (filterState.rowRestriction() != null) {
             builder.rowRestriction(combinedRowRestriction(filterState.rowRestriction()));
         }
-        if (snapshotTime != null) {
-            builder.snapshotTime(snapshotTime);
+        if (fullCacheLoad) {
+            builder.maxStreamCount(1);
+        } else {
+            if (snapshotTime != null) {
+                builder.snapshotTime(snapshotTime);
+            }
+            OptionSetters.accept(
+                    BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT.key(),
+                    maxStreamCount,
+                    builder::maxStreamCount);
+            OptionSetters.accept(
+                    BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT.key(),
+                    preferredMinStreamCount,
+                    builder::preferredMinStreamCount);
         }
-        OptionSetters.accept(
-                BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT.key(),
-                maxStreamCount,
-                builder::maxStreamCount);
-        OptionSetters.accept(
-                BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT.key(),
-                preferredMinStreamCount,
-                builder::preferredMinStreamCount);
         OptionSetters.accept(
                 BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH.key(),
                 maxRecordsPerFetch,
@@ -234,13 +349,7 @@ public final class BigQueryDynamicSource
         if (emulatorRestEndpoint != null) {
             builder.emulatorRestEndpoint(emulatorRestEndpoint);
         }
-        Source<RowData, ?, ?> source = builder.build();
-        if (lineageTableName != null) {
-            source =
-                    ((BigQueryStorageReadSource<RowData>) source)
-                            .withTableLineage(lineageTableName);
-        }
-        return SourceProvider.of(source, parallelism);
+        return builder;
     }
 
     private String combinedRowRestriction(String generated) {
@@ -286,6 +395,7 @@ public final class BigQueryDynamicSource
                 .emulatorEndpoint(emulatorEndpoint)
                 .emulatorRestEndpoint(emulatorRestEndpoint)
                 .parallelism(parallelism)
+                .lookupConfig(lookupConfig)
                 .producedDataType(producedDataType)
                 .projectedFields(projectedFields)
                 .filterState(filterState)
@@ -327,6 +437,7 @@ public final class BigQueryDynamicSource
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
+                && lookupConfig.equals(that.lookupConfig)
                 && producedDataType.equals(that.producedDataType)
                 && Arrays.deepEquals(projectedFields, that.projectedFields)
                 && filterState.equals(that.filterState);
@@ -356,6 +467,7 @@ public final class BigQueryDynamicSource
                 emulatorEndpoint,
                 emulatorRestEndpoint,
                 parallelism,
+                lookupConfig,
                 producedDataType,
                 Arrays.deepHashCode(projectedFields),
                 filterState);
@@ -398,6 +510,7 @@ public final class BigQueryDynamicSource
         @Nullable private String emulatorEndpoint;
         @Nullable private String emulatorRestEndpoint;
         @Nullable private Integer parallelism;
+        @Nullable private BigQueryLookupConfig lookupConfig;
         @Nullable private DataType producedDataType;
         @Nullable private int[][] projectedFields;
         private BigQueryFilterPushDown.State filterState = BigQueryFilterPushDown.State.empty();
@@ -629,6 +742,18 @@ public final class BigQueryDynamicSource
         }
 
         /**
+         * Sets the lookup options, or {@code null} for Flink's defaults, under which a lookup join
+         * is refused.
+         *
+         * @param lookupConfig the lookup options, or {@code null}
+         * @return this builder
+         */
+        public Builder lookupConfig(@Nullable BigQueryLookupConfig lookupConfig) {
+            this.lookupConfig = lookupConfig;
+            return this;
+        }
+
+        /**
          * Restores the produced type when a source is copied, or {@code null} to derive it from the
          * physical one as an uncopied source does.
          */
@@ -661,6 +786,9 @@ public final class BigQueryDynamicSource
                     (table == null) != (query == null),
                     "exactly one of table and query must be set");
             Preconditions.checkNotNull(parentProject, "parentProject must not be null");
+            if (lookupConfig == null) {
+                lookupConfig = BigQueryLookupConfig.from(new Configuration());
+            }
             return new BigQueryDynamicSource(this);
         }
     }

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.rpc.ApiException;
@@ -53,6 +54,10 @@ import java.util.concurrent.ExecutionException;
  * open until the enumerator closed). A session is created when the enumerator plans, which a
  * restore of a checkpoint that records an initialized session skips, so a client per call costs one
  * channel setup per plan.
+ *
+ * <p>A {@code bigquery} table's full lookup cache also mints a creator for each load that creates a
+ * session, on the TaskManager that loads, and closes it once the session exists or its creation
+ * fails; the rest of this description is about the enumerator's use.
  *
  * <p>One creator belongs to one enumerator: {@link DefaultReadSessionCreatorFactory} mints it, and
  * the source mints one per {@code createEnumerator} and {@code restoreEnumerator}. That is what
@@ -226,6 +231,23 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
                 + " a logical or materialized view has none — if that is what this names, read it"
                 + " with query(...) instead of table(...), for example"
                 + " query(\"SELECT * FROM `project.dataset.the_view`\").";
+    }
+
+    /**
+     * Returns whether a failure of {@link #create(CreateReadSessionRequest)} is BigQuery refusing
+     * to read a view, by the same match {@code viewHint} makes, whether the failure is the
+     * service's exception or the hint-carrying one {@code create} throws. Like that hint it may
+     * only decorate a failure that is thrown either way, never route one: the {@code bigquery}
+     * table's full lookup cache uses it to explain why the hint's advice does not apply to a
+     * lookup.
+     *
+     * @param failure a failure of {@link #create(CreateReadSessionRequest)}
+     * @return whether the failure names a read of a view
+     */
+    public static boolean refusedAsView(Throwable failure) {
+        return ExceptionUtils.findThrowable(failure, ApiException.class)
+                .map(ReadClientSessionCreator::viewHint)
+                .isPresent();
     }
 
     @Override

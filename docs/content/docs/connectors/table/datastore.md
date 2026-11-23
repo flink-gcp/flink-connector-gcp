@@ -276,9 +276,10 @@ The load reads whole entities, as the scan does, so it sees an unindexed propert
 It converts the columns the join uses, fills the metadata columns, and applies `type-mismatch-policy` and `scan.max-rows-per-fetch` as a scan of the same table would.
 A table with a PRIMARY KEY fails a load on an entity whose key has a parent or the other key form, as it fails a scan; a table without one reads every entity of the kind.
 
-In streaming mode, a `WHERE` or `ON` condition on the looked-up table that is not a lookup key reaches the source as it does for a scan, so a condition [Filter pushdown](#filter-pushdown) hands the service narrows every load, and Flink still applies it to the cached rows.
+In streaming mode, a condition on the looked-up table that is not a lookup key and that holds before the join, such as a `WHERE` or `ON` condition of an inner join, reaches the source as it does for a scan, so a condition [Filter pushdown](#filter-pushdown) hands the service narrows every load, and Flink still applies it to the cached rows.
 A predicate on a property reaches the service only under `scan.filter-push-down.enabled`, and then, as for a scan, an entity whose filtered value is unindexed is left out of the load.
-In batch mode the planner keeps such a condition on the join, so a load reads every entity of the kind, and a mismatched value in an entity the condition would exclude still fails the load under `type-mismatch-policy = 'fail'` (both measured on Flink 2.2.1 and 1.20.5).
+A condition that holds only after the join, such as `c.tier IS NULL` in the `WHERE` clause of a left join, which a padded row satisfies, is evaluated after the join and does not narrow the load.
+In batch mode the planner keeps a condition that holds before the join on the join as well, so a load reads every entity of the kind, and a mismatched value in an entity the condition would exclude still fails the load under `type-mismatch-policy = 'fail'` (both measured on Flink 2.2.1 and 1.20.5).
 A load reads the kind as one key range, its entities one page after another on one thread, whatever `scan.partition.max-partitions` asks of the scan, so a large kind takes correspondingly long to load.
 
 Each load reads at the service's current time, taken when the load starts, so every entity of one load comes from one snapshot and the next load reads a newer one.

@@ -248,8 +248,9 @@ An additional equality that fails follows the configured missing-key cache polic
 
 `lookup.cache = FULL` loads the table into memory through the bounded scan and answers every lookup from that copy, so a cache hit reads nothing from Firestore.
 The load reads the fields of the columns the join uses, fills the metadata columns, and applies `type-mismatch-policy` and `scan.max-rows-per-fetch` as a scan of the same table would.
-In streaming mode, a `WHERE` or `ON` condition on the looked-up table that is not a lookup key reaches the source as it does for a scan, so a condition [Filter pushdown](#filter-pushdown) hands the service narrows every load, and Flink still applies it to the cached rows.
-In batch mode the planner keeps such a condition on the join, so a load reads every document, and a mismatched value in a document the condition would exclude still fails the load under `type-mismatch-policy = 'fail'` (both measured on Flink 2.2.1 and 1.20.5).
+In streaming mode, a condition on the looked-up table that is not a lookup key and that holds before the join, such as a `WHERE` or `ON` condition of an inner join, reaches the source as it does for a scan, so a condition [Filter pushdown](#filter-pushdown) hands the service narrows every load, and Flink still applies it to the cached rows.
+A condition that holds only after the join, such as `c.tier IS NULL` in the `WHERE` clause of a left join, which a padded row satisfies, is evaluated after the join and does not narrow the load.
+In batch mode the planner keeps a condition that holds before the join on the join as well, so a load reads every document, and a mismatched value in a document the condition would exclude still fails the load under `type-mismatch-policy = 'fail'` (both measured on Flink 2.2.1 and 1.20.5).
 A collection-group table loads every collection of the group as one query, whatever `scan.partition.max-partitions` asks of its scan.
 A load reads its documents one page after another on one thread, so a large table takes correspondingly long to load.
 
