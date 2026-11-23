@@ -1159,6 +1159,9 @@ class FiniteInputExercise(RecoveryExercise):
             env.schedule.cleanup_at,
         )
 
+    def restored_after_input(self):
+        """Not tracked, so None: a single-fault trial judges its restores itself."""
+
     def progress(self, pod, text):
         super().progress(pod, text)
         lineage = self.env.refresh().lineage
@@ -1290,7 +1293,7 @@ class FaultSequence:
     Anything else is recorded and waited out, however often it happens: an
     interruption, a replacement, an eviction, a container restart, a restore,
     a patch that conflicted, a Pod already gone, or a REST or API failure.
-    Nothing judges restores, proves a recovery, samples metrics or opens a
+    Nothing judges a restore planned or unplanned, proves a recovery, samples metrics or opens a
     window; the base class's stage-machine state is unused. The run ends when
     the job has finished with its whole input after the last fault, and the
     scenario's `verdict` decides by the data; it stops abnormally when the job
@@ -1301,6 +1304,11 @@ class FaultSequence:
     measurement_event = None
     checks_restores = False
     records_lineage = False
+    # Whether the verdict reads the latest restore, so that only a poll whose
+    # checkpoint statistics answered may complete the run. Only a verdict
+    # that needs it may wait: BigQuery's FILE_LOADS check refuses a load
+    # still running when the job finished, which a later poll would miss.
+    reads_final_restore = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1325,6 +1333,18 @@ class FaultSequence:
     def rest_may_vanish(self):
         return True
 
+    def tolerate_rest(self, error):
+        """Whether a failed read of the job's REST API is waited out.
+
+        The Service proxy sends the read once, so a failure that says nothing
+        about the job is waited out here (ADR-0204): a transport failure, an
+        API server's 429 or a 500 from it or the JobManager, and the other
+        transient statuses, as well as a 404, which a fault that removes the
+        endpoint leaves. Any other failure stops the run.
+        """
+        self.check_open()
+        return transient(error) or (isinstance(error, ApiError) and error.status == 404)
+
     def check_open(self):
         """The base check, worded for the time limit that bounds the deadline."""
         self.env.require_running("Recovery exercise has been stopped")
@@ -1340,7 +1360,7 @@ class FaultSequence:
             self.env.emit(UNPLANNED_EVENT, {"stage": self.stage, "cause": cause})
 
     def restarts(self, rest):
-        """Record each restore the job's statistics show; none is judged."""
+        """Record each restore the job's statistics show, judged neither planned nor unplanned."""
         restored = (rest.get("latest") or {}).get("restored")
         at = restored.get("restore_timestamp") if restored else None
         if type(at) is not int or (
@@ -1410,6 +1430,29 @@ class FaultSequence:
         latest = max(self.samples.values(), key=lambda s: (s["at"], s["processed"]))
         return latest["processed"] == self.records
 
+    def input_finished_at(self):
+        """When the latest progress line showed the whole input.
+
+        A restore after an earlier completion may replay the input and finish
+        it again, writing its rows again, so the latest line is the one a
+        relay must have time for.
+        """
+        return max(sample["at"] for sample in self.samples.values())
+
+    def restored_after_input(self):
+        """Whether a restore followed the input's latest progress line.
+
+        Such a restore may commit staged writes its state carried without
+        logging a line, and its recorded time is when the JobManager assigned
+        the state, before the tasks that commit were deployed, so it cannot
+        bound when those writes landed. It is current only for a run that
+        sets `reads_final_restore`, which completes on a poll whose checkpoint
+        statistics answered.
+        """
+        return self.restored_at is not None and self.restored_at > (
+            self.input_finished_at()
+        )
+
     def ready_for_sequence(self):
         """Whether a scenario's own preparation lets the first fault go ahead."""
         return True
@@ -1457,12 +1500,18 @@ class FaultSequence:
             # The stopped job's FINISHED may still be reported while the next
             # one starts (ADR-0165), and a restore may replay the input before
             # it logs again: only a finished current job with the whole input
-            # read settles the run.
-            if not (complete and self.finished()):
+            # read settles the run, on a poll whose checkpoint statistics
+            # answered when the verdict reads the latest restore.
+            if not (
+                complete and (rest or not self.reads_final_restore) and self.finished()
+            ):
                 return False
             if self.awaiting is not None or self.step < len(SEQUENCE):
                 # No progress can follow, so the job could never be seen
-                # running again after the remaining faults.
+                # running again after the remaining faults. Unless the verdict
+                # reads the restore, a failed read does not delay this, so a
+                # run whose FILE_LOADS load outlived the job cannot reach a
+                # verdict on a later poll.
                 raise Failure(UNCONFIRMED)
             self.persist(COMPLETE_STAGE, processed=self.records)
             return True

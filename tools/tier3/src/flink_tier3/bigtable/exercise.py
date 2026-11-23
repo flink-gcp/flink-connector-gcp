@@ -112,9 +112,13 @@ class BigtableExercise(FiniteInputExercise):
                     break
         eo = checks[EXACTLY_ONCE_TABLE]
         finished = self.input_finished_at()
-        judged = finished + COMMIT_SECONDS <= timestamp(self.trial.change_stream_end)
+        restored = self.restored_after_input()
+        judged = not restored and (
+            finished + COMMIT_SECONDS <= timestamp(self.trial.change_stream_end)
+        )
         self.outcomes["oracles"] = {
             "input_finished_at": utc(finished),
+            "restored_after_input": restored,
             "change_stream_end": self.trial.change_stream_end,
             "eo": eo.report(),
             "alo": checks[AT_LEAST_ONCE_TABLE].report(),
@@ -136,21 +140,12 @@ class BigtableSequenceExercise(FaultSequence, BigtableExercise):
 
     The oracles are the same three, `eo` judged exactly once; no window
     samples the job. The relay is judged when the input's latest progress
-    line, the one that showed it whole, came the commit margin before the
-    change stream's end.
+    line came the commit margin before the change stream's end and no restore
+    followed that line.
     """
 
     verdict = staticmethod(sequence_verdict)
-
-    def input_finished_at(self):
-        """When the latest progress line showed the whole input.
-
-        A restore after an earlier completion may replay the input and finish
-        it again, and a row whose staged commit the restore discarded is
-        committed only then, so the latest line is the one the relay must
-        have time for.
-        """
-        return max(sample["at"] for sample in self.samples.values())
+    reads_final_restore = True
 
 
 def bigtable_exercise(env, upgrade, instance):

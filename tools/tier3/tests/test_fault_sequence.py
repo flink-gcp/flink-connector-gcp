@@ -19,13 +19,20 @@ from typing import ClassVar
 
 import pytest
 from flink_tier3 import exercise as exercise_module
+from flink_tier3.bigquery.exercise import BigQuerySequenceExercise
+from flink_tier3.bigtable.exercise import BigtableSequenceExercise
+from flink_tier3.cloudtasks.exercise import CloudTasksSequenceExercise
 from flink_tier3.common import UNPLANNED_EVENT, ApiError, Failure, TransportError
 from flink_tier3.exercise import (
     RECORD_SECONDS,
     SEQUENCE_PARALLELISM,
     TIME_LIMIT_SECONDS,
+    UNCONFIRMED,
     FaultSequence,
 )
+from flink_tier3.firestore.exercise import FirestoreSequenceExercise
+from flink_tier3.pubsub.exercise import PubSubSequenceExercise
+from flink_tier3.spanner.exercise import SpannerSequenceExercise
 
 from .test_exercise import LINEAGE, Exercise, World, preempted
 from .test_exercise import env as env  # noqa: PLC0414
@@ -317,6 +324,56 @@ def test_a_job_that_finishes_before_a_poll_saw_it_run_again_completes(world):
     world.job_state = "FINISHED"
     assert world.poll() is True
     assert "running_again_at" in world.exercise.outcomes["faults"][-1]
+
+
+@pytest.mark.parametrize("reads", [True, False], ids=["reads", "does-not-read"])
+def test_a_poll_whose_checkpoint_read_failed_completes_only_without_a_restore_read(
+    world, reads
+):
+    """A verdict that reads the latest restore waits for statistics that show it.
+
+    Any other completes at once: BigQuery's FILE_LOADS check refuses a load
+    still running when the job finished, which a later poll would miss.
+    """
+    world.exercise.reads_final_restore = reads
+    through(world, "rescale-out")
+    world.advance(5)
+    world.processed = world.exercise.records - 100
+    world.flowing()
+    world.advance(5)
+    world.restore()
+    world.state("FINISHED")
+    world.job_state = "FINISHED"
+    world.exercise.restarts({})
+    pods = copy.deepcopy(list(world.pods.values()))
+    completed = world.exercise.observe(copy.deepcopy(world.app), {}, pods)
+    assert completed is not reads
+    if reads:
+        assert world.exercise.stage != "complete"
+        assert world.poll() is True
+        assert world.exercise.restored_at == world.restored["restore_timestamp"] / 1000
+        assert world.exercise.restored_after_input()
+
+
+def test_a_finish_before_a_read_showed_the_restore_is_unconfirmed(world):
+    """The job ran again and finished between polls, and this poll's read failed.
+
+    The run does not wait for the next read, so a run whose BigQuery
+    FILE_LOADS load outlived the job cannot reach a verdict on a later poll.
+    """
+    through(world, "rescale-in")
+    world.advance(20)
+    world.deploy()
+    world.taskmanagers(2)
+    world.restore()
+    world.processed = world.exercise.records - 100
+    world.flowing()
+    world.state("FINISHED")
+    world.job_state = "FINISHED"
+    world.exercise.restarts({})
+    pods = copy.deepcopy(list(world.pods.values()))
+    with pytest.raises(Failure, match=UNCONFIRMED):
+        world.exercise.observe(copy.deepcopy(world.app), {}, pods)
 
 
 def test_input_finishing_before_the_last_fault_leaves_the_run_unconfirmed(world):
@@ -676,6 +733,25 @@ def test_a_poll_without_checkpoint_statistics_is_waited_out(world):
     assert world.exercise.observe(copy.deepcopy(world.app), {}, pods) is False
 
 
+@pytest.mark.parametrize(
+    "status,tolerated",
+    [
+        (404, True),
+        (408, True),
+        (429, True),
+        (500, True),
+        (503, True),
+        (401, False),
+        (403, False),
+    ],
+)
+def test_which_answers_of_a_rest_read_are_waited_out(world, status, tolerated):
+    """A missing endpoint and the transient statuses; nothing else."""
+    world.start()
+    error = ApiError(status, "GET", "checkpoints")
+    assert world.exercise.tolerate_rest(error) is tolerated
+
+
 def test_the_run_and_its_oracle_reads_end_within_the_time_limit(world):
     started = world.env.schedule.started
     assert world.exercise.deadline == min(
@@ -686,3 +762,19 @@ def test_the_run_and_its_oracle_reads_end_within_the_time_limit(world):
     world.env.clock.now = world.exercise.deadline
     with pytest.raises(Failure, match="time limit"):
         world.poll()
+
+
+@pytest.mark.parametrize(
+    "exercise,reads",
+    [
+        (SpannerSequenceExercise, True),
+        (BigtableSequenceExercise, True),
+        (FirestoreSequenceExercise, False),
+        (BigQuerySequenceExercise, False),
+        (CloudTasksSequenceExercise, False),
+        (PubSubSequenceExercise, False),
+    ],
+)
+def test_only_the_change_stream_verdicts_wait_for_a_restore_read(exercise, reads):
+    """BigQuery's FILE_LOADS check must run on the poll that saw the job finish."""
+    assert exercise.reads_final_restore is reads

@@ -124,6 +124,8 @@ When the job has finished after the last fault, with its whole input processed, 
 The Change Streams relay reads `eo`, so the exactly-once path runs in this scenario rather than in [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)'s.
 The relay is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end; a restore after the input finished can replay it and commit rows whose staged commit it discarded only then, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
+A restore after the input's latest progress line also leaves the relay unjudged: it can commit rows its state carried without logging a line, and its recorded time, when the JobManager assigned the state, precedes those commits by as long as the tasks take to deploy; such a run can run again as it is too.
+The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
 
 ### Trial and estimate

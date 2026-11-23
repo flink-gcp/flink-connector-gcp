@@ -211,7 +211,10 @@ class SpannerExercise(FiniteInputExercise):
                 if after is None:
                     break
         finished = self.input_finished_at()
-        judged = finished + COMMIT_SECONDS <= timestamp(self.trial.change_stream_end)
+        restored = self.restored_after_input()
+        judged = not restored and (
+            finished + COMMIT_SECONDS <= timestamp(self.trial.change_stream_end)
+        )
         relay = checks[RELAY_TABLE]
         stream = relay.report(judged)
         batch = checks[BATCH_TABLE].report(checks[SEED_TABLE].report())
@@ -231,6 +234,7 @@ class SpannerExercise(FiniteInputExercise):
         self.outcomes["oracles"] = {
             "read_timestamp": snapshot,
             "input_finished_at": utc(finished),
+            "restored_after_input": restored,
             "change_stream_end": self.trial.change_stream_end,
             "sink": checks[INPUT_TABLE].report(relay),
             "change_stream": stream,
@@ -263,25 +267,17 @@ class SpannerSequenceExercise(FaultSequence, SpannerExercise):
     The late seed rows are written before the first fault, as before the
     upgrade of a single-fault trial, and the oracles are the same three. No
     window samples the job, so the reports carry no watermark or partition
-    readings, and the relay is judged when the input's latest progress line,
-    the one that showed it whole, came the commit margin before the change
-    stream's end.
+    readings, and the relay is judged when the input's latest progress line
+    came the commit margin before the change stream's end and no restore
+    followed that line.
     """
 
     verdict = staticmethod(sequence_verdict)
+    reads_final_restore = True
 
     def ready_for_sequence(self):
         """The first fault waits for the late seed rows."""
         return self.late_seed_written()
-
-    def input_finished_at(self):
-        """When the latest progress line showed the whole input.
-
-        A restore after an earlier completion may replay the input and finish
-        it again, writing its rows again, so the latest line is the one the
-        relay must have time for.
-        """
-        return max(sample["at"] for sample in self.samples.values())
 
 
 def spanner_exercise(env, upgrade, instance):

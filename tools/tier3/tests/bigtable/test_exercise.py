@@ -240,3 +240,27 @@ def test_the_relay_is_judged_from_the_latest_progress_line(sequence):
     value.verify_tables()
     record = value.env.refresh().recovery
     assert record["reasons"] == ["relay-oracle-unjudged"]
+
+
+@pytest.mark.parametrize(
+    "restore,judged",
+    [(-1, True), (1, False), (COMMIT_SECONDS + 840, False)],
+    ids=["before-the-line", "just-after-the-line", "near-the-end"],
+)
+def test_a_restore_after_the_latest_progress_line_leaves_the_relay_unjudged(
+    sequence, restore, judged
+):
+    """Its recorded time precedes the commits its state carried, so it bounds nothing."""
+    value, _ = sequence
+    end = timestamp(value.trial.change_stream_end)
+    line = end - COMMIT_SECONDS - 900
+    finish(value, line)
+    value.restored_at = line + restore
+    value.env.clock = lambda: end
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    oracles = record["outcomes"]["oracles"]
+    assert oracles["input_finished_at"] == utc(line)
+    assert oracles["restored_after_input"] is not judged
+    assert oracles["relay"]["judged"] is judged
+    assert record["reasons"] == ([] if judged else ["relay-oracle-unjudged"])

@@ -83,6 +83,7 @@ No fault is aimed at the commit of BigQuery's, Bigtable's or Cloud Tasks' exactl
 Before each fault, and before completion, the rig waits until the job is running again, whatever caused the last restart: running, reconciled to the last change of the application, with a JobManager and the TaskManagers the run's parallelism needs, and logging progress after a restore that followed the fault, since the stopped job may still log for a while.
 The input and a batch read's seed are sized to outlast the fault sequence; an input that finishes before the job is running again after the last fault leaves the run unconfirmed.
 A change-stream source stops at an end the plan fixes from the window's start, and the job cannot finish before it, so that end leaves the input room to finish and its last commit room to be relayed; a run whose input finished too close to the end cannot judge its relay, which no commit after the end reaches, so it is not usable and can run again as it is.
+A restore after the input's latest progress also leaves the relay unjudged: the restored state may commit writes it carried without logging progress, and the restore's recorded time precedes those commits by as long as its tasks take to deploy, so it bounds nothing.
 The run records which faults it injected and when.
 
 Everything else is waited out at any stage and recorded, however often it happens: a preemption, a Spot reclamation, a node shutdown, an eviction, or a Pod, container or Flink job restart, whatever its cause.
