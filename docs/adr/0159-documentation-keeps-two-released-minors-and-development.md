@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0159: Documentation keeps two released minors and Development
 
 - Status: Accepted
-- Date: 2026-09-06
-- Issues: [#731](https://github.com/flink-gcp/flink-connector-gcp/issues/731)
+- Date: 2026-09-06; revised by [#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331) (2026-11-25: released lines skip the Maven enforcer)
+- Issues: [#731](https://github.com/flink-gcp/flink-connector-gcp/issues/731), [#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331)
 - Modules: docs, CI
 - Current behavior: [Documentation versions](../content/docs/versions.md)
 - Supersedes: ADR-0056's single unversioned publication; its API filtering and validation decisions continue below
@@ -70,6 +70,16 @@ For the existing 1.0.0 tag only, a checked bootstrap adapter replaces the old ho
 Its behavior text and snippet sources remain those of the tag.
 Released pages disable the main edit link and point source links to their exact commit.
 
+A released line builds with the Maven enforcer skipped ([#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331)): the documentation helper adds `-Denforcer.skip=true` to `MAVEN_ARGS` for every released line, so CI and a local reproduction run the same build.
+The enforcer guards dependency changes, and a tag's dependency declarations cannot change after it is cut; its source also selects the Maven and Java toolchain the other rules check.
+Development checked the same declarations before the release, so on a tag the enforcer would repeat that check and could fail a build that changed nothing.
+The docs-validation enforcer's dependency collection reaches a POM that no repository publishes, through BigQuery's provided Parquet and Hadoop dependencies.
+The resolver records the not-found, and on any later day asks each release repository on that path again, including the JBoss repositories that the Hadoop and wildfly-openssl parent POMs declare.
+A restored Maven cache does not prevent this, because its record keeps the day the entry was saved.
+A 503 or 429 that persists through the resolver's retries, from any of those repositories, means the POM can no longer be called missing, and the collection fails.
+The docs-validation module now excludes that POM, but on a tag cut before the exclusion the enforcer could still make the request if it ran.
+Development keeps the enforcer, because a pull request can change its dependencies.
+
 ADR-0056's other decisions remain in force: aggregate Javadoc includes every API tier, doclint stays off with warnings fatal, and runnable examples are checked against exact compiled regions.
 The API reference remains the default Flink 2.x build; source-level 1.20 compatibility does not add a second Javadoc build.
 
@@ -77,4 +87,5 @@ The API reference remains the default Flink 2.x build; source-level 1.20 compati
 
 - Keeping every patch as a separate site increases both the selector and the hosted output without serving the agreed minor-series policy.
 - A mutable documentation branch per release creates another backport workflow. Tags provide the behavior snapshot; a patch release updates a retained series.
+- Passing `--artifacts-update-policy never` to released lines would keep their enforcer: under Maven 3.10.0 it stops the re-check while the restored cache holds the not-found record ([#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331)). A run whose restored cache lacks that record still asks, whereas skipping the enforcer removes the request whatever the cache holds.
 - Keeping generated HTML on a publishing branch or as long-lived Actions artifacts introduces persistent archive state. Rebuilding at most two released lines plus Development keeps the complete output reproducible from source.
