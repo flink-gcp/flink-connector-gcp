@@ -14,6 +14,7 @@
 """Synthetic release inventories, source trees and published HTML."""
 
 import json
+import os
 import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
@@ -431,6 +432,47 @@ def test_bootstrap_adapter_checks_old_text_and_reversions_validation_reactor(
     assert "-Pdocs-snippets" in maven and "-DnewVersion=1.0.0" in maven
     with pytest.raises(ValueError, match="bootstrap adapter"):
         helper.prepare_source(source, version)
+
+
+@pytest.mark.parametrize(
+    ("name", "inherited", "expected"),
+    [
+        ("1.2", "--settings ci.xml", "--settings ci.xml -Denforcer.skip=true"),
+        ("1.2", None, "-Denforcer.skip=true"),
+        ("development", "--settings ci.xml", "--settings ci.xml"),
+        ("development", None, None),
+    ],
+)
+def test_only_released_lines_skip_the_maven_enforcer(
+    helper, tmp_path, manifest, monkeypatch, name, inherited, expected
+):
+    if inherited is None:
+        monkeypatch.delenv("MAVEN_ARGS", raising=False)
+    else:
+        monkeypatch.setenv("MAVEN_ARGS", inherited)
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(helper, "prepare_source", lambda *args: None)
+    calls = []
+
+    def record(*args, env=None, **kwargs):
+        # A call without env inherits the process environment, as run() does.
+        calls.append((args[-1], (os.environ if env is None else env).get("MAVEN_ARGS")))
+        return ""
+
+    monkeypatch.setattr(helper, "run", record)
+    # No recipe wrote a site, so the build stops after running every recipe.
+    with pytest.raises(ValueError, match="documentation or API reference missing"):
+        helper.build(manifest, name, source, tmp_path / "output")
+    assert calls == [
+        (recipe, expected)
+        for recipe in (
+            "docs-javadoc",
+            "check-doc-sql-snippets",
+            "test-java-snippet-shortcode",
+            "test-sql-snippet-shortcode",
+        )
+    ]
 
 
 def test_build_failure_does_not_produce_a_success_marker(

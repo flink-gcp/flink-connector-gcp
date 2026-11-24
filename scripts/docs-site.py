@@ -209,6 +209,12 @@ def build(manifest, name, source, destination):
     )
     if name != "development":
         env["HUGO_PARAMS_BOOKEDITLINK"] = ""
+        # A tag's dependencies cannot change, and tags cut before issue #2331
+        # make the enforcer request a POM that no repository publishes
+        # (ADR-0159). MAVEN_ARGS reaches every Maven call the recipes make.
+        env["MAVEN_ARGS"] = " ".join(
+            filter(None, [env.get("MAVEN_ARGS"), "-Denforcer.skip=true"])
+        )
     # Maven needs Java; each recipe activates its other tools from this source.
     # A bare mise entrypoint would also install unrelated linters and OpenTofu.
     run("mise", "x", "java", "--", "just", "docs-javadoc", cwd=source, env=env)
