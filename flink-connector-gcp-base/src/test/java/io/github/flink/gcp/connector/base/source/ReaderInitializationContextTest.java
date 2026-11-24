@@ -42,11 +42,10 @@ class ReaderInitializationContextTest {
 
         assertThat(initialization.getMetricGroup()).isSameAs(context.metricGroup());
         // Not asserted through asClassLoader(): every class in this build shares one loader under
-        // surefire, so an adapter that invented its own loader would compare equal. What does
-        // discriminate is where the returned wrapper came from — the reader context builds its own,
-        // as an anonymous class of its own.
-        assertThat(initialization.getUserCodeClassLoader().getClass().getEnclosingClass())
-                .isEqualTo(FakeSourceReaderContext.class);
+        // surefire, so an adapter that invented its own loader would compare equal. The reader
+        // context returns one wrapper instance, so identity discriminates.
+        assertThat(initialization.getUserCodeClassLoader())
+                .isSameAs(context.getUserCodeClassLoader());
     }
 
     @Test

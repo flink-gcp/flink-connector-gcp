@@ -53,6 +53,8 @@ public final class FakeSourceReaderContext implements SourceReaderContext {
     private final Configuration configuration;
     private final AtomicInteger splitRequests = new AtomicInteger();
     private final List<SourceEvent> sourceEvents = new ArrayList<>();
+    private final UserCodeClassLoader userCodeClassLoader =
+            new FakeUserCodeClassLoader(FakeSourceReaderContext.class.getClassLoader());
 
     public FakeSourceReaderContext(SourceReaderMetricGroup metricGroup) {
         this(metricGroup, new Configuration());
@@ -104,24 +106,10 @@ public final class FakeSourceReaderContext implements SourceReaderContext {
         sourceEvents.add(sourceEvent);
     }
 
-    /**
-     * Implemented here rather than through {@code SimpleUserCodeClassLoader.create(...)}: that
-     * factory is unannotated, and the interface it satisfies is {@code @PublicEvolving} with two
-     * methods, so writing them costs less than carrying an allowlist entry for a helper.
-     */
+    /** Returns the same loader on every call, so a test can assert that it was passed on. */
     @Override
     public UserCodeClassLoader getUserCodeClassLoader() {
-        return new UserCodeClassLoader() {
-            @Override
-            public ClassLoader asClassLoader() {
-                return FakeSourceReaderContext.class.getClassLoader();
-            }
-
-            @Override
-            public void registerReleaseHookIfAbsent(String releaseHookName, Runnable releaseHook) {
-                // Nothing here holds a class loader open, so there is nothing to release.
-            }
-        };
+        return userCodeClassLoader;
     }
 
     @Override

@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.api.core.ApiFunction;
 import com.google.api.gax.core.BackgroundResource;
@@ -73,13 +74,16 @@ import java.util.function.Function;
  *
  * <p>One group serves every lease in the class loader, the way gRPC's does: it is created by the
  * first lease and shut down by the release of the last one, and a later lease creates a new one. A
- * channel therefore has to close before the lease that covers it is released. A client that owns
- * its channels is opened with {@link #open(ClientFactory)}, or with {@link
+ * channel therefore has to close before the lease that covers it is released. Once {@link
+ * #pinTo(UserCodeClassLoader)} has pinned the group to the job's class loader, the release of the
+ * last lease leaves it running, and Flink's release of that loader shuts it down instead. A client
+ * that owns its channels is opened with {@link #open(ClientFactory)}, or with {@link
  * #openAutoCloseable(ClientFactory)} when it is not a gax {@link BackgroundResource}, and the
  * returned {@link LeasedClient#close()} does both in that order. A client whose settings take a
  * channel configurator instead of a transport provider composes {@link #channelConfigurator} into
- * them before the lease exists. A channel built while no lease is open falls back to gRPC's own
- * group, so a configurator that outlives its lease never hands a channel a terminated group.
+ * them before the lease exists. A channel built while the group is not running falls back to gRPC's
+ * own group, so a configurator that outlives its lease never hands a channel a terminated group;
+ * while a pinned group runs without a lease, such a channel goes on that group.
  *
  * <p>Like gRPC's group, it uses epoll where the shaded native transport loads and NIO otherwise,
  * with Netty's default thread count. The threads are daemons named {@code flink-gcp-grpc-elg-*}.
@@ -111,6 +115,16 @@ public final class GrpcEventLoops {
      */
     @VisibleForTesting static final long GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS = 1;
 
+    /**
+     * The name {@link #pinTo(UserCodeClassLoader)} registers its release hook under: this class's
+     * name, which a shaded copy carries relocated. Flink keeps one hook per name, so if two copies
+     * in one job loader each pinned, such as the connector's and a SQL connector JAR's relocated
+     * one, the second copy's hook would not be ignored as a duplicate of the first. (Flink's
+     * registry is an unsynchronized map, so registrations racing on two threads could still lose
+     * one.)
+     */
+    @VisibleForTesting static final String RELEASE_HOOK_NAME = GrpcEventLoops.class.getName();
+
     /** Set on a thread inside {@link #interruptibleReleases()}; absent otherwise. */
     private static final ThreadLocal<Boolean> INTERRUPTIBLE_RELEASES = new ThreadLocal<>();
 
@@ -123,10 +137,35 @@ public final class GrpcEventLoops {
     @GuardedBy("LOCK")
     private static int leases;
 
+    /**
+     * Whether a release hook on the job's class loader, rather than the release of the last lease,
+     * shuts the group down.
+     */
+    @GuardedBy("LOCK")
+    private static boolean pinned;
+
+    /**
+     * Counts the release hooks that have run. A lease counts towards {@code leases} only while it
+     * belongs to the current generation: the hook stops the group under any lease still open, and
+     * such a lease's later release must not keep a group created after the hook from stopping.
+     */
+    @GuardedBy("LOCK")
+    private static int generation;
+
+    /**
+     * The class loader whose release hook has run, which this copy does not pin to again: Flink has
+     * already run that loader's hooks and would not run a new one. The loader itself rather than
+     * the {@link UserCodeClassLoader}, because Flink hands each call to {@code
+     * getUserCodeClassLoader()} a new wrapper around the same loader.
+     */
+    @GuardedBy("LOCK")
+    @Nullable
+    private static ClassLoader releasedLoader;
+
     private GrpcEventLoops() {}
 
     /**
-     * Opens a lease on the group, creating the group if no lease is open.
+     * Opens a lease on the group, creating the group if it is not running.
      *
      * <p>For a client that owns its channels, {@link #open(ClientFactory)} is the safer form: it
      * releases the lease if the client cannot be created and orders the release after the client's
@@ -141,7 +180,7 @@ public final class GrpcEventLoops {
                 group = Group.create();
             }
             leases++;
-            return new Lease();
+            return new Lease(generation);
         }
     }
 
@@ -307,16 +346,182 @@ public final class GrpcEventLoops {
     }
 
     /**
+     * Keeps the group running until Flink releases the job's user-code class loader, if that loader
+     * is the one that defined this class.
+     *
+     * <p>From then on, the release of the last lease leaves the group running, and a release hook
+     * on the loader shuts it down and waits for its threads, which Flink runs before it closes the
+     * loader. For channels that outlive every lease but not the loader: the BigQuery Storage Write
+     * API's connection pool is static per class loader and builds every connection from the first
+     * writer's settings, so a job's own writer can run on connections the connector's settings put
+     * on the group, and the release of the connector's last lease would stop the group under them.
+     *
+     * <p>Where this class comes from a loader the job shares, such as one Flink never closes when
+     * the connector is in Flink's {@code lib/} directory or on the application class path, the
+     * group is shared with other jobs in the process, so this does nothing and the last lease's
+     * release keeps shutting the group down. Pinning again, from any writer of the same job, does
+     * nothing either, nor does pinning to a loader whose hook has already run.
+     *
+     * <p>The hook must run for the group to stop. Flink runs a loader's hooks once and keeps no
+     * record that it has, so a pin registered after that pass, which can happen only when Flink
+     * releases the loader without waiting for a task still creating its writer (a TaskManager
+     * shutting down or dropping the job), keeps the group's threads until the process exits.
+     *
+     * <p>Call it only where a client's channels can outlive the connector's last lease, from a
+     * writer's or reader's creation on a TaskManager, whose init context offers the loader.
+     * Everywhere else the lease rule already stops the group with its last channel, and a pin only
+     * moves that shutdown to the release of the loader, which Flink runs on the TaskManager's main
+     * thread while it holds its library cache's lock; the hook waits there for the group's shutdown
+     * however that thread is interrupted (ADR-0208).
+     *
+     * @param userCodeClassLoader the job's user-code class loader
+     */
+    public static void pinTo(UserCodeClassLoader userCodeClassLoader) {
+        Preconditions.checkNotNull(userCodeClassLoader, "userCodeClassLoader must not be null");
+        ClassLoader loader;
+        try {
+            loader = userCodeClassLoader.asClassLoader();
+            if (!isLoadedByJob(GrpcEventLoops.class, loader, ClassLoader.getSystemClassLoader())) {
+                return;
+            }
+        } catch (RuntimeException | LinkageError e) {
+            // The loaders could not be inspected, a security manager refusing getClassLoader, say;
+            // the pin is optional, so the writer goes on without it.
+            return;
+        }
+        pin(userCodeClassLoader, loader);
+    }
+
+    /**
+     * Pins the group to {@code userCodeClassLoader} without checking which loader defined this
+     * class, which in a test is never the job's.
+     */
+    @VisibleForTesting
+    static void pin(UserCodeClassLoader userCodeClassLoader) {
+        pin(userCodeClassLoader, userCodeClassLoader.asClassLoader());
+    }
+
+    /**
+     * Pins the group to {@code userCodeClassLoader}, whose class loader {@code loader} the caller
+     * has already read, so that it is read once.
+     */
+    private static void pin(UserCodeClassLoader userCodeClassLoader, ClassLoader loader) {
+        synchronized (LOCK) {
+            if (pinned || loader == releasedLoader) {
+                return;
+            }
+            userCodeClassLoader.registerReleaseHookIfAbsent(
+                    RELEASE_HOOK_NAME, () -> releasePin(loader));
+            pinned = true;
+        }
+    }
+
+    /**
+     * Returns whether {@code type} was defined by the job's own class loader, which Flink closes
+     * when the job leaves the process, rather than by one it shares with other jobs.
+     *
+     * <p>{@code userCode} can be Flink's wrapper around the loader that defines the job's classes,
+     * whose parent is the same as that loader's. So the check is that the job's loader resolves
+     * {@code type}'s name to {@code type} itself, that its parent does not, and that {@code type}'s
+     * loader is neither the system class loader nor one of its ancestors. A parent that resolves
+     * the same class shares it with every job whose loader has that parent: the connector in {@code
+     * lib/}, on the application class path, resolved parent-first, or reached through a parent that
+     * delegates to another loader. The system class loader is excluded because Flink's JobManager
+     * hands it to a job with no JARs or class paths of its own and never closes it.
+     *
+     * @param type the class whose loader is in question
+     * @param userCode the loader Flink gave the job
+     * @param system the system class loader
+     * @return whether the job's loader defined {@code type}
+     */
+    @VisibleForTesting
+    static boolean isLoadedByJob(Class<?> type, ClassLoader userCode, ClassLoader system) {
+        try {
+            ClassLoader loader = type.getClassLoader();
+            if (loader == null || isSelfOrAncestor(loader, system)) {
+                return false;
+            }
+            return !resolves(userCode.getParent(), type) && resolves(userCode, type);
+        } catch (RuntimeException | LinkageError e) {
+            // Inconclusive, so the pin, which is optional, is skipped: Flink's leak-check wrapper
+            // throws IllegalStateException once its loader has closed, and a parent's own copy
+            // can fail to load (a sealing violation, say) while the job's loads.
+            return false;
+        }
+    }
+
+    /**
+     * Returns whether {@code loader} resolves {@code type}'s name to {@code type} itself, or {@code
+     * false} if it cannot find the name; any other failure propagates.
+     */
+    private static boolean resolves(@Nullable ClassLoader loader, Class<?> type) {
+        if (loader == null) {
+            return false;
+        }
+        try {
+            return Class.forName(type.getName(), false, loader) == type;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    private static boolean isSelfOrAncestor(ClassLoader candidate, @Nullable ClassLoader loader) {
+        for (ClassLoader current = loader; current != null; current = current.getParent()) {
+            if (current == candidate) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The release hook {@link #pin(UserCodeClassLoader, ClassLoader)} registers: shuts the group
+     * down and waits for its threads, ignoring an interrupt, and returns the group to the lease
+     * rule.
+     *
+     * <p>A lease can still be open when it runs: Flink releases the loader without waiting for the
+     * job's tasks when the TaskManager shuts down or drops the job, and a client nothing closed
+     * holds its lease for good. The group stops under such a lease anyway, since its threads must
+     * not outlive the loader, and the lease leaves the count, so that its release, if it ever
+     * comes, neither stops nor holds up a group a later lease creates.
+     *
+     * @param loader the class loader whose hook this is, which this copy then does not pin to again
+     */
+    private static void releasePin(ClassLoader loader) {
+        Group toStop;
+        int open;
+        synchronized (LOCK) {
+            pinned = false;
+            releasedLoader = loader;
+            generation++;
+            open = leases;
+            leases = 0;
+            toStop = group;
+            group = null;
+        }
+        if (open > 0) {
+            LOG.warn(
+                    "The job's class loader is being released while {} gRPC event-loop lease(s)"
+                            + " are open, held by clients that have not closed; shutting the group"
+                            + " down under them",
+                    open);
+        }
+        if (toStop != null) {
+            toStop.shutdown(false);
+        }
+    }
+
+    /**
      * Returns a channel configurator that applies {@code existing} and then puts the channel on the
      * group, for a client whose settings take a configurator rather than a transport provider, such
      * as Spanner's {@code SpannerOptions}.
      *
      * <p>It is the configurator a lease's {@code applyTo} puts on a provider builder, offered as a
      * static method because such settings are usually assembled before the client is opened and its
-     * lease exists. Like that one, it reaches the group only while a lease is open, so the caller
-     * opens one before the client builds its first channel and releases it once the client's
-     * channels have terminated; a channel it configures while no lease is open runs on gRPC's own
-     * group.
+     * lease exists. Like that one, it reaches the group only while the group runs, so the caller
+     * opens a lease before the client builds its first channel and releases it once the client's
+     * channels have terminated; a channel it configures while the group is not running runs on
+     * gRPC's own group.
      *
      * @param existing the configurator to apply first, or {@code null}
      * @return the composed configurator
@@ -328,10 +533,25 @@ public final class GrpcEventLoops {
     }
 
     /**
-     * Returns whether the group is running, which it is exactly while a lease is open. For tests
-     * that check a client released its lease when they expect it to.
+     * Returns whether the group is pinned to a class loader. For tests that check a pin was
+     * released.
      *
-     * @return whether a lease is open
+     * @return whether a release hook, rather than the last lease, shuts the group down
+     */
+    @VisibleForTesting
+    static boolean isPinned() {
+        synchronized (LOCK) {
+            return pinned;
+        }
+    }
+
+    /**
+     * Returns whether the group is running, which it is while a lease opened since the last release
+     * hook is open and, once {@link #pinTo(UserCodeClassLoader)} has pinned it, until the job's
+     * class loader is released. For tests that check a client released its lease when they expect
+     * it to.
+     *
+     * @return whether the group is running
      */
     @VisibleForTesting
     public static boolean isRunning() {
@@ -351,7 +571,7 @@ public final class GrpcEventLoops {
 
     /**
      * Points a Netty channel builder at the group, or leaves it alone when it is not a Netty
-     * builder or no lease is open.
+     * builder or the group is not running.
      */
     private static ManagedChannelBuilder<?> configure(ManagedChannelBuilder<?> builder) {
         if (!(builder instanceof NettyChannelBuilder)) {
@@ -367,12 +587,17 @@ public final class GrpcEventLoops {
         }
     }
 
-    private static void release() {
+    private static void release(int leaseGeneration) {
         boolean interruptible = inInterruptibleReleases();
         Group toStop = null;
         synchronized (LOCK) {
+            if (leaseGeneration != generation) {
+                // Opened before a release hook ran, which stopped its group and dropped it from
+                // the count.
+                return;
+            }
             Preconditions.checkState(leases > 0, "No gRPC event-loop lease is open");
-            if (--leases == 0) {
+            if (--leases == 0 && !pinned) {
                 toStop = group;
                 group = null;
             }
@@ -423,15 +648,22 @@ public final class GrpcEventLoops {
     }
 
     /**
-     * A hold on the group. Closing the last open lease shuts the group down and waits for its
-     * threads, which an interrupt cuts short only inside {@link #interruptibleReleases()}; closing
-     * a lease twice does nothing.
+     * A hold on the group. Unless the group is pinned to the job's class loader, closing the last
+     * lease opened since the group started shuts it down and waits for its threads, which an
+     * interrupt cuts short only inside {@link #interruptibleReleases()}. A lease opened before a
+     * release hook ran no longer holds any group, and closing it does nothing; closing a lease
+     * twice does nothing either.
      */
     public static final class Lease implements AutoCloseable {
 
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Lease() {}
+        /** The release-hook generation the lease was opened in. */
+        private final int generation;
+
+        private Lease(int generation) {
+            this.generation = generation;
+        }
 
         /**
          * Puts the channels a client's settings build on the group, composed after any channel
@@ -496,7 +728,7 @@ public final class GrpcEventLoops {
          *
          * @param builder the channel builder
          * @return the same builder
-         * @throws IllegalStateException if this lease is closed, since the channel would then run
+         * @throws IllegalStateException if this lease is closed, since the channel could then run
          *     on a group no lease holds open
          */
         NettyChannelBuilder applyTo(NettyChannelBuilder builder) {
@@ -508,7 +740,7 @@ public final class GrpcEventLoops {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
-                release();
+                release(generation);
             }
         }
     }

@@ -493,7 +493,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Every gRPC client holds a `GrpcEventLoops` lease** (`docs/adr/0208`): the emulator
   default-stream appender, `WriteClientBufferedStreamService`, `ReadClientSessionCreator` and
   `ReadClientRowStreamOpener` open a `LeasedClient`; the pooled default-stream appender holds a bare
-  lease. The emulator arms of `BigQueryReadClients` and `BigQueryWriteClients` open a caller-owned
+  lease. `BigQueryDefaultStreamSink.createWriter` pins the group to the job's class loader
+  (`GrpcEventLoops.pinTo`, #2268), because the SDK's static pool can carry a job's own writers on
+  connections built from the connector's settings; do not add `pinTo` calls elsewhere without a
+  client that outlives its last lease (`docs/adr/0208`). The emulator arms of `BigQueryReadClients`
+  and `BigQueryWriteClients` open a caller-owned
   channel through `EmulatorChannels.openLeasedClient`, never `plaintextProvider` (`dns:///` and
   client-certificate failures, #2267); a `StreamWriter` built on such a client shares its channel,
   so close appenders before the client.
