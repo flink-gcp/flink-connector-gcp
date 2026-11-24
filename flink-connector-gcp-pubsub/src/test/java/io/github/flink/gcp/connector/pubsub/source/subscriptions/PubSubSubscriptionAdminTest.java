@@ -117,7 +117,7 @@ class PubSubSubscriptionAdminTest {
                             .isInstanceOf(ExecutionException.class)
                             .cause()
                             .isInstanceOf(IOException.class)
-                            .hasMessageContaining("cancelled; the source is shutting down");
+                            .hasMessageContaining("was closed while a call was in flight");
                     // The cancellation is what ends it. Without one the call would still end, but
                     // only when the client's close gave up waiting for it and forced the channel
                     // down, five seconds in (GrpcEventLoops' bounded close), or at

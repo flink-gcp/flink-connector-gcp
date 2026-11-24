@@ -34,7 +34,8 @@ import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
@@ -117,7 +118,8 @@ public class BigtableTableAdmin implements TableAdmin {
     @Override
     public EnsureResult ensureTable(TableDestination destination, TableCreateOptions options)
             throws IOException {
-        try (LeasedBigtableClient<BigtableTableAdminClient> leased = newClient(destination)) {
+        try (GrpcEventLoops.LeasedClient<BigtableTableAdminClient> leased =
+                newClient(destination)) {
             BigtableTableAdminClient client = leased.client();
             return ensureWith(
                     destination,
@@ -256,7 +258,8 @@ public class BigtableTableAdmin implements TableAdmin {
             Map<String, ColumnFamilyType> expected,
             boolean allowMissing)
             throws IOException {
-        try (LeasedBigtableClient<BigtableTableAdminClient> leased = newClient(destination)) {
+        try (GrpcEventLoops.LeasedClient<BigtableTableAdminClient> leased =
+                newClient(destination)) {
             BigtableTableAdminClient client = leased.client();
             ColumnFamilyTypes.check(
                     destination, expected, familyTypesOf(client, destination), allowMissing);
@@ -403,10 +406,10 @@ public class BigtableTableAdmin implements TableAdmin {
     }
 
     /** Opens a short-lived client, on the connector's gRPC event-loop group (ADR-0208). */
-    private LeasedBigtableClient<BigtableTableAdminClient> newClient(TableDestination destination)
-            throws IOException {
+    private GrpcEventLoops.LeasedClient<BigtableTableAdminClient> newClient(
+            TableDestination destination) throws IOException {
         try {
-            return LeasedBigtableClient.openTableAdmin(settingsBuilder(destination));
+            return BigtableClients.openTableAdmin(settingsBuilder(destination));
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Bigtable admin client", e);
         }

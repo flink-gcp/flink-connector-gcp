@@ -41,7 +41,9 @@ import javax.annotation.Nullable;
  *
  * <p>Only what every path shares lives here. Per-caller tuning — the sink's batch thresholds, and
  * whatever a source may one day need — is applied by the caller on top of the builder this hands
- * back, which is why the return type is the builder rather than the settings.
+ * back, which is why the return type is the builder rather than the settings. The client is then
+ * opened from that builder with {@link BigtableClients#openData(BigtableDataSettings.Builder)}, on
+ * the connector's event-loop group.
  *
  * <p>Retry settings are deliberately untouched, on every path. The client retries {@code
  * MutateRows} per entry, resumes a broken {@code ReadRows} stream from the last key it saw, and

@@ -22,12 +22,13 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
+import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 
@@ -124,10 +125,10 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
     }
 
     @VisibleForTesting
-    SpannerChangeStreamCoordinatorClient create(LeasedSpanner spanner) {
+    SpannerChangeStreamCoordinatorClient create(GrpcEventLoops.LeasedClient<Spanner> spanner) {
         try {
             DatabaseClient client =
-                    spanner.spanner()
+                    spanner.client()
                             .getDatabaseClient(
                                     DatabaseId.of(
                                             database.getProject(),

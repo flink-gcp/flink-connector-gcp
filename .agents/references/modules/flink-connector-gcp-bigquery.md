@@ -498,8 +498,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   client-certificate failures, #2267); a `StreamWriter` built on such a client shares its channel,
   so close appenders before the client.
   **`ReadClientSessionCreator` opens a client per `create` and closes it when the call
-  returns** (JobManager: at the end of a job Flink does not wait for the enumerator's close before
-  releasing the class loader); do not
+  returns**, through base's `PerCallClientRunner` (#2312; JobManager: at the end of a job Flink
+  does not wait for the enumerator's close before releasing the class loader); do not
   bring back a client held until `close()`. `BigQueryFullCacheInputFormat` runs `open()`, each
   `fetch()` and `close()` inside `GrpcEventLoops.interruptibleReleases()` (#2269); keep any new
   call that can release a lease there inside it too, and do not open the scope on a writer,

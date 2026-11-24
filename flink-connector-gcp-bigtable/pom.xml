@@ -120,9 +120,11 @@ limitations under the License.
             <artifactId>gax</artifactId>
         </dependency>
         <dependency>
-            <!-- InstantiatingGrpcChannelProvider, which LeasedBigtableClient puts every client's
-                 channels on the connector's event-loop group through (ADR-0208); the writer
-                 tests also build gax exceptions with a transport status code from it.
+            <!-- InstantiatingGrpcChannelProvider, which base's GrpcEventLoops.Lease.applyTo
+                 overloads name: BigtableClients calls one of them, so javac resolves the type
+                 when it compiles the module (ADR-0208). A test-scope declaration here would
+                 take it off the main compile classpath. The writer tests also build gax
+                 exceptions with a transport status code from it.
                  Version managed by the libraries BOM. -->
             <groupId>com.google.api</groupId>
             <artifactId>gax-grpc</artifactId>

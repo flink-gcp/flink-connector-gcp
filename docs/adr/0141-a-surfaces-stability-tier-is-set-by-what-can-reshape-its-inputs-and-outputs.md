@@ -140,7 +140,7 @@ trees, all internal calls under the fourth clause:
   still is. The `@ObsoleteApi` one is current again: google-cloud-bigtable 2.89.0
   ([#2319](https://github.com/flink-gcp/flink-connector-gcp/pull/2319)) marks the admin clients,
   their `create` factories and their settings classes, through which the module opens both admin
-  clients (`LeasedBigtableClient`, `BigtableCredentials`), until
+  clients (`BigtableClients`, `BigtableCredentials`), until
   [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322) moves to the V2 clients.
 - **spanner**: `com.google.cloud.ByteArray` and `com.google.cloud.Date` are class-level
   `@BetaApi` (`RowDataToSpannerValueConverter`, `DataChangeRecordToRowDataConverter`); every

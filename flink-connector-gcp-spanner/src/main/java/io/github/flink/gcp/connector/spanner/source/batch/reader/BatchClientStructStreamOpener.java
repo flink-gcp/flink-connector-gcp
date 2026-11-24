@@ -32,8 +32,8 @@ import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 
 import javax.annotation.Nullable;
@@ -67,7 +67,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      * because a reader's split fetchers open reads from their own threads while {@link #close()}
      * runs on the task thread once those fetchers are down.
      */
-    @Nullable private transient volatile LeasedSpanner spanner;
+    @Nullable private transient volatile GrpcEventLoops.LeasedClient<Spanner> spanner;
 
     /**
      * What the reader loaded and handed over, or {@code null} for application default credentials.
@@ -144,7 +144,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
 
     @Override
     public void close() throws IOException {
-        LeasedSpanner toClose;
+        GrpcEventLoops.LeasedClient<Spanner> toClose;
         ClientMetrics metrics;
         synchronized (this) {
             closed = true;
@@ -173,9 +173,9 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      * travel in the job graph.
      */
     private Spanner client() throws IOException {
-        LeasedSpanner existing = spanner;
+        GrpcEventLoops.LeasedClient<Spanner> existing = spanner;
         if (existing != null) {
-            return existing.spanner();
+            return existing.client();
         }
         synchronized (this) {
             if (closed) {
@@ -187,7 +187,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
             if (spanner == null) {
                 spanner = SpannerClients.open(database, settings());
             }
-            return spanner.spanner();
+            return spanner.client();
         }
     }
 

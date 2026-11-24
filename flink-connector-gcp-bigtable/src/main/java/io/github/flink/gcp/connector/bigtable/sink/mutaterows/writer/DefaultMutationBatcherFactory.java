@@ -33,9 +33,10 @@ import com.google.cloud.bigtable.data.v2.stub.BigtableBatchingCallSettings;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableClientReaper;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import org.slf4j.Logger;
@@ -227,9 +228,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             // Built, then put: a failure leaves no entry, so the next record retries the creation
             // rather than finding a half-built cache.
             try {
-                state =
-                        new ClientState(
-                                LeasedBigtableClient.openData(settingsBuilder(destination)));
+                state = new ClientState(BigtableClients.openData(settingsBuilder(destination)));
             } catch (IOException | RuntimeException | Error e) {
                 reaper.releaseUnusedSlot();
                 throw e;
@@ -363,11 +362,11 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     private static final class ClientState {
 
         /** The client and its event-loop lease, released when the client closes (ADR-0208). */
-        private final LeasedBigtableClient<BigtableDataClient> leased;
+        private final GrpcEventLoops.LeasedClient<BigtableDataClient> leased;
 
         private int liveBatchers;
 
-        private ClientState(LeasedBigtableClient<BigtableDataClient> leased) {
+        private ClientState(GrpcEventLoops.LeasedClient<BigtableDataClient> leased) {
             this.leased = leased;
         }
     }

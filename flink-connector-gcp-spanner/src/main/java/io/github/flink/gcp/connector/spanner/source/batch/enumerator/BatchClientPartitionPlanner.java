@@ -29,14 +29,15 @@ import com.google.cloud.spanner.Options.QueryOption;
 import com.google.cloud.spanner.Options.ReadOption;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
+import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
@@ -117,7 +118,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
 
     @GuardedBy("this")
     @Nullable
-    private LeasedSpanner spanner;
+    private GrpcEventLoops.LeasedClient<Spanner> spanner;
 
     /**
      * What the enumerator loaded and handed over, or {@code null} for application default
@@ -187,7 +188,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
         }
         Context previous = inFlight.context.attach();
         try {
-            LeasedSpanner opened = openClient();
+            GrpcEventLoops.LeasedClient<Spanner> opened = openClient();
             PartitionPlan plan;
             try {
                 plan =
@@ -218,7 +219,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     }
 
     private PartitionPlan planOn(
-            LeasedSpanner opened,
+            GrpcEventLoops.LeasedClient<Spanner> opened,
             SpannerReadOperation operation,
             TimestampBound bound,
             PartitionOptions partitionOptions,
@@ -228,7 +229,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
         DatabaseId databaseId =
                 DatabaseId.of(
                         database.getProject(), database.getInstance(), database.getDatabase());
-        BatchClient batchClient = opened.spanner().getBatchClient(databaseId);
+        BatchClient batchClient = opened.client().getBatchClient(databaseId);
         // The handle is closed with the call; cleanup() is not called (see the class javadoc).
         try (BatchReadOnlyTransaction txn = batchClient.batchReadOnlyTransaction(bound)) {
             // Only a deferred operation needs the database client, whose creation starts a
@@ -238,7 +239,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
                             ? operation
                             : SpannerReadOperationResolution.resolve(
                                     operation,
-                                    opened.spanner().getDatabaseClient(databaseId),
+                                    opened.client().getDatabaseClient(databaseId),
                                     txn.getReadTimestamp());
             List<Partition> partitions =
                     partition(txn, resolved, partitionOptions, dataBoostEnabled, rpcPriority);
@@ -338,11 +339,11 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      * enumerator, so the only contention is between that enumerator's planning call and its
      * teardown, and a separate lock would name nothing the object does not already name.
      */
-    private LeasedSpanner openClient() throws IOException {
+    private GrpcEventLoops.LeasedClient<Spanner> openClient() throws IOException {
         synchronized (this) {
             checkOpen();
         }
-        LeasedSpanner opened = SpannerClients.open(database, settings());
+        GrpcEventLoops.LeasedClient<Spanner> opened = SpannerClients.open(database, settings());
         synchronized (this) {
             if (!closed) {
                 spanner = opened;
@@ -355,7 +356,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     }
 
     /** Closes the handle {@link #openClient()} opened, or waits for {@link #close()} to. */
-    private void closeClient(LeasedSpanner opened) {
+    private void closeClient(GrpcEventLoops.LeasedClient<Spanner> opened) {
         synchronized (this) {
             if (spanner == opened) {
                 spanner = null;
@@ -415,7 +416,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     @Override
     public void close() {
         InFlight inFlight;
-        LeasedSpanner openSpanner;
+        GrpcEventLoops.LeasedClient<Spanner> openSpanner;
         synchronized (this) {
             closed = true;
             inFlight = call;

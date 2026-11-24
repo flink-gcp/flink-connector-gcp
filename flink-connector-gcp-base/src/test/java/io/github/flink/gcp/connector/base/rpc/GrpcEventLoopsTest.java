@@ -401,23 +401,21 @@ class GrpcEventLoopsTest {
     }
 
     @Test
-    void closeAfterCancelsAClientThatDoesNotStopAndStillReleases() {
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+    void aLeasedClientCancelsAClientThatDoesNotStopAndStillReleases() throws Exception {
         FakeClient client = new FakeClient(Termination.TIMES_OUT);
 
-        lease.closeAfter(client);
+        GrpcEventLoops.open(lease -> client).close();
 
         assertThat(client.calls)
                 .containsExactly("shutdown", "awaitTermination", "shutdownNow", "awaitTermination");
-        assertThat(GrpcEventLoops.isRunning()).isFalse();
     }
 
     @Test
-    void closeAfterRestoresAnInterruptAndStillReleases() {
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+    void aLeasedClientRestoresAnInterruptAndStillReleases() throws Exception {
         FakeClient client = new FakeClient(Termination.INTERRUPTED);
+        GrpcEventLoops.LeasedClient<FakeClient> leased = GrpcEventLoops.open(lease -> client);
         try {
-            lease.closeAfter(client);
+            leased.close();
 
             assertThat(Thread.currentThread().isInterrupted()).isTrue();
         } finally {
@@ -425,17 +423,55 @@ class GrpcEventLoopsTest {
             Thread.interrupted();
         }
         assertThat(client.calls).containsExactly("shutdown", "awaitTermination", "shutdownNow");
-        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    /**
+     * An interrupt that ended the wait comes back even when the forced shutdown that answers it
+     * fails, and the lease is still released.
+     */
+    @Test
+    void aLeasedClientRestoresAnInterruptEvenWhenShutdownNowThrows() throws Exception {
+        FakeClient client = new FakeClient(Termination.INTERRUPTED_THEN_SHUTDOWN_NOW_THROWS);
+        GrpcEventLoops.LeasedClient<FakeClient> leased = GrpcEventLoops.open(lease -> client);
+        try {
+            assertThatThrownBy(leased::close).hasMessage("shutdownNow failed");
+
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the interrupt was restored")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(client.calls).containsExactly("shutdown", "awaitTermination", "shutdownNow");
     }
 
     @Test
-    void closeAfterReleasesEvenWhenShutdownThrows() {
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
-        FakeClient client = new FakeClient(Termination.SHUTDOWN_THROWS);
+    void aLeasedClientReleasesEvenWhenShutdownThrows() throws Exception {
+        GrpcEventLoops.LeasedClient<FakeClient> leased =
+                GrpcEventLoops.open(lease -> new FakeClient(Termination.SHUTDOWN_THROWS));
 
-        assertThatThrownBy(() -> lease.closeAfter(client))
-                .isInstanceOf(IllegalStateException.class);
-        assertThat(GrpcEventLoops.isRunning()).isFalse();
+        assertThatThrownBy(leased::close).isInstanceOf(IllegalStateException.class);
+    }
+
+    /**
+     * The held-back close holds nothing back for a gax client: its bounded shutdown answers the
+     * interrupt with {@code shutdownNow()}, which skips none of its cleanup, rather than waiting
+     * out its bounds.
+     */
+    @Test
+    void aHeldBackCloseLetsAGaxClientAnswerTheInterrupt() throws Exception {
+        FakeClient client = new FakeClient(Termination.INTERRUPTIBLE);
+        GrpcEventLoops.LeasedClient<FakeClient> leased = GrpcEventLoops.open(lease -> client);
+        Thread.currentThread().interrupt();
+        try {
+            leased.closeWithInterruptHeldBack();
+
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        // The fake's wait throws on an interrupted thread only, so the interrupt reached it.
+        assertThat(client.calls).containsExactly("shutdown", "awaitTermination", "shutdownNow");
     }
 
     /**
@@ -543,6 +579,10 @@ class GrpcEventLoopsTest {
         TERMINATES,
         TIMES_OUT,
         INTERRUPTED,
+        /** Terminates, unless the waiting thread is interrupted, which the wait then throws on. */
+        INTERRUPTIBLE,
+        /** Throws an interrupt from the wait, and then fails the forced shutdown. */
+        INTERRUPTED_THEN_SHUTDOWN_NOW_THROWS,
         SHUTDOWN_THROWS
     }
 
@@ -583,15 +623,21 @@ class GrpcEventLoopsTest {
         @Override
         public void shutdownNow() {
             record("shutdownNow");
+            if (termination == Termination.INTERRUPTED_THEN_SHUTDOWN_NOW_THROWS) {
+                throw new IllegalStateException("shutdownNow failed");
+            }
         }
 
         @Override
         public boolean awaitTermination(long duration, TimeUnit unit) throws InterruptedException {
             record("awaitTermination");
-            if (termination == Termination.INTERRUPTED) {
+            if (termination == Termination.INTERRUPTED
+                    || termination == Termination.INTERRUPTED_THEN_SHUTDOWN_NOW_THROWS
+                    || (termination == Termination.INTERRUPTIBLE && Thread.interrupted())) {
                 throw new InterruptedException();
             }
-            return termination == Termination.TERMINATES;
+            return termination == Termination.TERMINATES
+                    || termination == Termination.INTERRUPTIBLE;
         }
 
         @Override

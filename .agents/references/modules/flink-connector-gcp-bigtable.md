@@ -14,7 +14,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the SDK does not know fails the whole read (ADR-0156). Since 2.89.0 the wrappers are marked
   too: both classes, their `create` factories, their settings classes and the consistency and
   restore-optimization waits are `@ObsoleteApi`, and the module still opens its admin clients
-  through those factories and settings (`LeasedBigtableClient`, `BigtableCredentials`);
+  through those factories and settings (`BigtableClients`, `BigtableCredentials`);
   `getBaseClient()` and `close` stay unmarked. Opening `BigtableTableAdminClientV2` and
   `BigtableInstanceAdminClientV2` from the `Base*AdminSettings` instead is #2322. Test harnesses
   build families with `BigtableAdminProtos`;
@@ -23,18 +23,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## gRPC event-loop group (`docs/adr/0208`, #2264)
 
-- **Every Bigtable client is opened through `LeasedBigtableClient`** (`openData`,
+- **Every Bigtable client is opened through `BigtableClients`** (`openData`,
   `openTableAdmin`, `openInstanceAdmin`), never `Bigtable*Client.create`. None of the three is a
-  gax `BackgroundResource`, so base's `LeasedClient` cannot hold them; the holder applies the lease
-  to the stub settings' instantiating provider and closes the client, then the lease. The
-  `open*` methods take the settings *builder*: a settings `toBuilder()` round trip is not
-  guaranteed to carry every field, which is why the general `open(Factory)` and `applyTo` stay
-  package-private. The emulator arms keep the SDK's
+  gax `BackgroundResource`, so they are held by base's `LeasedClient` from
+  `GrpcEventLoops.openAutoCloseable` (#2312), which closes the client with its own `close()` and
+  then the lease; the lease goes on the stub settings' instantiating provider through
+  `Lease.applyTo(TransportChannelProvider)`. The `open*` methods take the settings *builder*: a
+  settings `toBuilder()` round trip is not guaranteed to carry every field, which is why the stub
+  `applyTo` stays package-private. The emulator arms keep the SDK's
   `newBuilderForEmulator(host, port)`, whose own plaintext configurator the lease composes after.
-- **A JobManager-side client is opened per call through `PerCallClientRunner`**: the row-key sampler
+- **A JobManager-side client is opened per call through base's `PerCallClientRunner`**: the row-key sampler
   and the Change Streams coordinator (profile check, retention, partition listing incl. the 10 s
-  reconciliation scan). Every new JobManager call goes through `calls.call(<settings builder
-  supplier>, <the LeasedBigtableClient.open* matching those settings>, client -> <async
+  reconciliation scan). Every new JobManager call goes through `runner.call(<settings builder
+  supplier>, <the BigtableClients.open* matching those settings>, client -> <async
   callable>.futureCall(...))` (settings prepared under the runner's monitor, the client built
   outside it), never a synchronous SDK method;
   `close()` cancels the call in flight and does not wait for a client being built. An owner's `close()` closes its `PerCallClientRunner` *before* clearing its credentials,

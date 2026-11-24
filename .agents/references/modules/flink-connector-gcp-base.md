@@ -307,9 +307,15 @@ record — context, evidence, declined alternatives — is the named ADR under `
   rather than pairing a channel and a client by hand. The channel alone
   (`openLeasedPlaintextChannel`, a `LeasedClient` around a `GrpcTransportChannel` that
   `fixedProvider(LeasedClient)` hands to clients) is for a client that is not a
-  `BackgroundResource`. A client that is not a gax `BackgroundResource` (Pub/Sub's
-  `Publisher` and `Subscriber`) cannot be a `LeasedClient`: its owner holds the lease or the
-  channel holder beside it and releases it after the client's own bounded shutdown, on the
+  `BackgroundResource`. A client that is not a gax `BackgroundResource` but closes with one
+  `close()` (Bigtable's three clients, Spanner's `Spanner`) is opened with
+  `GrpcEventLoops.openAutoCloseable` (#2312): its `LeasedClient` calls that `close()` once,
+  restores an interrupt it consumed, and then releases the lease; never open a gax client that
+  way, which would skip the bounded wait. Settings that take a transport provider without
+  extending `ClientSettings` (Bigtable's stub settings) use the public
+  `Lease.applyTo(TransportChannelProvider)`. A client whose shutdown is a protocol of its own
+  (Pub/Sub's `Publisher` and `Subscriber`) cannot be a `LeasedClient`: its owner holds the lease
+  or the channel holder beside it and releases it after the client's own bounded shutdown, on the
   give-up path too (`PubSubTransports`). A client whose settings take a channel configurator
   rather than a provider (Spanner's `SpannerOptions`) composes
   `GrpcEventLoops.channelConfigurator(existing)`, which needs no lease to build and reaches the
@@ -332,8 +338,14 @@ record — context, evidence, declined alternatives — is the named ADR under `
   does not wait before releasing the job's class loader, and a client open then can exit a session
   cluster's JobManager under `FAIL`
   (measured 8 of 8 on BigQuery's source before #2237's fix), and its `close()` cancels a call in
-  flight through the call's `ApiFuture` before closing the client (`ReadClientSessionCreator`,
-  `PubSubSubscriptionAdmin`, Bigtable's `PerCallClientRunner`); a client whose synchronous calls
+  flight through the call's `ApiFuture` before closing the client. **Such a client goes through
+  `base.rpc.PerCallClientRunner`** (#2312; BigQuery's session creator, Pub/Sub's subscription
+  admin, Bigtable's sampler and coordinator), never a copy of it: it builds the client outside its
+  monitor and publishes it before its call starts, maps a cancellation to an `IOException`, holds
+  the thread's interrupt back while an `openAutoCloseable` client closes (only the closing thread;
+  an interrupt ends a waiter's wait, and a gax client's bounded close answers it at once), restores
+  it before the release, and logs an exception from the close after a successful call. A client whose
+  synchronous calls
   expose no `ApiFuture` (Spanner's) cancels through the gRPC `Context` the call runs in. BigQuery,
   Bigtable, Cloud Tasks, Pub/Sub and Spanner are migrated; Firestore is #2243's remaining
   sub-issue.

@@ -24,6 +24,7 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.DatabaseNotFoundException;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ResultSet;
+import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.Statement;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.DescriptorProtos.DescriptorProto;
@@ -31,7 +32,7 @@ import com.google.protobuf.DescriptorProtos.EnumDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FileDescriptorSet;
 import com.google.protobuf.InvalidProtocolBufferException;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.SpannerObjectName;
 
 import javax.annotation.Nullable;
@@ -43,9 +44,10 @@ import java.util.Map;
 import java.util.function.Function;
 
 /**
- * {@link SpannerCatalogClient} over one {@link LeasedSpanner} handle: the instance's database admin
- * client for databases, dialects and proto descriptors, and each database's data client for {@code
- * INFORMATION_SCHEMA}. The handle carries only the project; each call names its database.
+ * {@link SpannerCatalogClient} over one {@code GrpcEventLoops.LeasedClient} handle: the instance's
+ * database admin client for databases, dialects and proto descriptors, and each database's data
+ * client for {@code INFORMATION_SCHEMA}. The handle carries only the project; each call names its
+ * database.
  *
  * <p>The handle lives as long as the catalog, not one call, unlike the clients a source's
  * enumerator opens on the JobManager: the SQL Gateway and the SQL Client close a session's catalogs
@@ -58,11 +60,12 @@ import java.util.function.Function;
 @Internal
 final class SpannerServiceCatalogClient implements SpannerCatalogClient {
 
-    private final LeasedSpanner spanner;
+    private final GrpcEventLoops.LeasedClient<Spanner> spanner;
     private final String project;
     private final String instance;
 
-    SpannerServiceCatalogClient(LeasedSpanner spanner, String project, String instance) {
+    SpannerServiceCatalogClient(
+            GrpcEventLoops.LeasedClient<Spanner> spanner, String project, String instance) {
         this.spanner = spanner;
         this.project = project;
         this.instance = instance;
@@ -193,7 +196,7 @@ final class SpannerServiceCatalogClient implements SpannerCatalogClient {
     }
 
     private DatabaseAdminClient admin() {
-        return spanner.spanner().getDatabaseAdminClient();
+        return spanner.client().getDatabaseAdminClient();
     }
 
     private DatabaseId id(String database) {
@@ -202,7 +205,7 @@ final class SpannerServiceCatalogClient implements SpannerCatalogClient {
 
     private <T> T query(String database, Statement statement, Function<ResultSet, T> reader) {
         try (ResultSet rows =
-                spanner.spanner()
+                spanner.client()
                         .getDatabaseClient(id(database))
                         .singleUse()
                         .executeQuery(statement)) {

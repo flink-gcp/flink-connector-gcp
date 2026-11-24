@@ -201,7 +201,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   every reader's read if it released the session. Readers close their own transaction handle and
   never call it either. Against the pinned client it is a no-op (multiplexed session).
 - **Every Spanner client is opened through `SpannerClients.open`**, which holds a `GrpcEventLoops`
-  lease for the client's life and returns a `LeasedSpanner`; close the holder, never the
+  lease for the client's life and returns base's `GrpcEventLoops.LeasedClient<Spanner>` (from
+  `openAutoCloseable`, #2312); close the holder, never the
   `Spanner` inside it (`docs/adr/0208`). Settings come from `SpannerClients.settings` or, for a
   component that sets more, `settingsBuilder`: never from a `toBuilder()` copy of built settings,
   whose `build()` drops the event-loop configurator when an emulator host is set — `open` refuses

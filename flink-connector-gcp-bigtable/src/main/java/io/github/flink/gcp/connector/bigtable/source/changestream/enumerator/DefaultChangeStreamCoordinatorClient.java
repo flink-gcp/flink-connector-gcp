@@ -33,9 +33,9 @@ import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
-import io.github.flink.gcp.connector.bigtable.PerCallClientRunner;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.slf4j.Logger;
@@ -114,7 +114,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         Preconditions.checkArgument(!appProfileId.isBlank(), "appProfileId must not be blank");
         this.credentials = credentials;
-        this.runner = new PerCallClientRunner("Change Streams coordinator for " + table);
+        this.runner = new PerCallClientRunner("Bigtable Change Streams coordinator for " + table);
     }
 
     @Override
@@ -123,7 +123,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
                 () ->
                         runner.call(
                                 this::instanceAdminSettingsBuilder,
-                                LeasedBigtableClient::openInstanceAdmin,
+                                BigtableClients::openInstanceAdmin,
                                 client ->
                                         client.getBaseClient()
                                                 .getAppProfileCallable()
@@ -184,7 +184,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         Table description =
                 runner.call(
                         this::tableAdminSettingsBuilder,
-                        LeasedBigtableClient::openTableAdmin,
+                        BigtableClients::openTableAdmin,
                         client ->
                                 client.getBaseClient()
                                         .getTableCallable()
@@ -222,7 +222,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         List<ByteStringRange> discovered =
                 runner.call(
                         this::dataSettingsBuilder,
-                        LeasedBigtableClient::openData,
+                        BigtableClients::openData,
                         client ->
                                 client.generateInitialChangeStreamPartitionsCallable()
                                         .all()

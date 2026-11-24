@@ -273,8 +273,7 @@ class SpannerClientsTest {
         assertThat(ClientMetricsProbe.isOpen(metrics)).as("the probe on open metrics").isTrue();
         ClosingSpanner spanner = new ClosingSpanner(metrics);
 
-        SpannerClients.close(
-                new LeasedSpanner(spanner.spanner(), GrpcEventLoops.acquire()), metrics);
+        SpannerClients.close(TestLeasedSpanners.leased(spanner.spanner()), metrics);
 
         assertThat(spanner.closes()).isOne();
         assertThat(GrpcEventLoops.isRunning()).as("the handle's lease was released").isFalse();

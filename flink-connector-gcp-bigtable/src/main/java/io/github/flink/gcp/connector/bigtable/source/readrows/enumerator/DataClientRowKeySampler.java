@@ -26,9 +26,9 @@ import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
-import io.github.flink.gcp.connector.bigtable.PerCallClientRunner;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import javax.annotation.Nullable;
@@ -79,7 +79,7 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      * executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()}
      * runs on the coordinator thread.
      */
-    private final PerCallClientRunner runner = new PerCallClientRunner("row key sampler");
+    private final PerCallClientRunner runner = new PerCallClientRunner("Bigtable row key sampler");
 
     /** What the enumerator loaded and pushed in, or {@code null} for ADC; cleared on close. */
     @Nullable private volatile CredentialsProvider credentials;
@@ -108,7 +108,7 @@ public final class DataClientRowKeySampler implements RowKeySampler {
         List<KeyOffset> keyOffsets =
                 runner.call(
                         () -> settingsBuilder(table),
-                        LeasedBigtableClient::openData,
+                        BigtableClients::openData,
                         client -> client.sampleRowKeysAsync(TableId.of(table.getTable())));
         List<RowKeySample> samples = new ArrayList<>(keyOffsets.size());
         for (KeyOffset keyOffset : keyOffsets) {

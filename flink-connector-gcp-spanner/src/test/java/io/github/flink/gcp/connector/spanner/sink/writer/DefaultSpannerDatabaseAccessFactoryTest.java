@@ -30,7 +30,6 @@ import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
 import io.github.flink.gcp.connector.spanner.ClosedEmulator;
 import io.github.flink.gcp.connector.spanner.ClosingSpanner;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.TestLeasedSpanners;
@@ -220,7 +219,8 @@ class DefaultSpannerDatabaseAccessFactoryTest {
         assertThat(GrpcEventLoops.isRunning()).as("the handle's lease was released").isFalse();
     }
 
-    private static LeasedSpanner leased(com.google.cloud.spanner.Spanner spanner) {
+    private static GrpcEventLoops.LeasedClient<com.google.cloud.spanner.Spanner> leased(
+            com.google.cloud.spanner.Spanner spanner) {
         return TestLeasedSpanners.leased(spanner);
     }
 

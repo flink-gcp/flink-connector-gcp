@@ -30,7 +30,8 @@ import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 
@@ -62,11 +63,10 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
             throws IOException {
         // Each client holds its own lease on the event-loop group (ADR-0208), released after it
         // closes; the try closes the table client first, then the instance client.
-        try (LeasedBigtableClient<BigtableInstanceAdminClient> leasedInstances =
-                        LeasedBigtableClient.openInstanceAdmin(
-                                instanceSettingsBuilder(destination));
-                LeasedBigtableClient<BigtableTableAdminClient> leasedTables =
-                        LeasedBigtableClient.openTableAdmin(tableSettingsBuilder(destination))) {
+        try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClient> leasedInstances =
+                        BigtableClients.openInstanceAdmin(instanceSettingsBuilder(destination));
+                GrpcEventLoops.LeasedClient<BigtableTableAdminClient> leasedTables =
+                        BigtableClients.openTableAdmin(tableSettingsBuilder(destination))) {
             BigtableInstanceAdminClient instances = leasedInstances.client();
             BigtableTableAdminClient tables = leasedTables.client();
             String instance =
