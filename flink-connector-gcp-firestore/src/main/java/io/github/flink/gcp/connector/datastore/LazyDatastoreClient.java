@@ -21,10 +21,10 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.auth.Credentials;
-import com.google.cloud.datastore.Datastore;
-import com.google.cloud.datastore.DatastoreOptions;
-import com.google.cloud.datastore.spi.v1.DatastoreRpc;
+import com.google.cloud.datastore.v1.DatastoreClient;
+import com.google.cloud.datastore.v1.DatastoreSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 
 import javax.annotation.Nullable;
 
@@ -32,16 +32,16 @@ import java.io.IOException;
 import java.io.Serializable;
 
 /**
- * A Datastore client built on first use and closed once, held by a seam implementation of the
- * source: the enumerator's planner and the readers' page reader.
+ * A Datastore client built on first use and closed once, held by the readers' page reader.
  *
  * <p>The Firestore root's {@code LazyFirestoreClient} shape. The client is built under this
- * object's monitor, and a close is one-way: an {@link #rpc(DatabaseDestination)} that arrives after
- * it — a planning call still running on the enumerator's worker thread when the coordinator closes
- * the enumerator, or a fetcher that outlived the reader's close timeout — is refused rather than
- * building a client nothing would close.
+ * object's monitor, on the connector's gRPC event-loop group ({@link DatastoreClients#open}), and a
+ * close is one-way: a {@link #client(DatabaseDestination)} that arrives after it — a fetcher that
+ * outlived the reader's close timeout — is refused rather than building a client nothing would
+ * close.
  *
- * <p>The client keeps the library's retry settings: the source sends only queries, which are
+ * <p>The client keeps the retry settings the library's {@code Datastore} applied to every call
+ * ({@link DatastoreClients#libraryRetrySettings()}): the source sends only queries, which are
  * idempotent at a fixed read time.
  *
  * <p>The client and the credentials are {@code transient}: the page reader holding this travels in
@@ -55,7 +55,7 @@ public final class LazyDatastoreClient implements Serializable {
     private final String owner;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
-    @Nullable private transient volatile Datastore client;
+    @Nullable private transient volatile GrpcEventLoops.LeasedClient<DatastoreClient> client;
     @Nullable private transient volatile Credentials credentials;
     private transient volatile boolean closed;
 
@@ -71,17 +71,14 @@ public final class LazyDatastoreClient implements Serializable {
     }
 
     /**
-     * Returns the client's RPC object, building the client on first use.
-     *
-     * <p>The RPC object takes protobuf requests, which is the form a split's query is held in, and
-     * belongs to the client: closing this holder closes it.
+     * Returns the client, building it on first use.
      *
      * @param database the database the client reaches
-     * @return the client's RPC object
+     * @return the client, which this holder owns: closing this holder closes it
      * @throws IOException if the holder was closed, or the client cannot be created
      */
-    public DatastoreRpc rpc(DatabaseDestination database) throws IOException {
-        Datastore existing = client;
+    public DatastoreClient client(DatabaseDestination database) throws IOException {
+        GrpcEventLoops.LeasedClient<DatastoreClient> existing = client;
         if (existing == null) {
             synchronized (this) {
                 if (closed) {
@@ -93,21 +90,19 @@ public final class LazyDatastoreClient implements Serializable {
                                     + " was closed before use.");
                 }
                 if (client == null) {
-                    client = DatastoreClients.open(database, settings(database));
+                    client = DatastoreClients.open(database, emulatorEndpoint, settings());
                 }
                 existing = client;
             }
         }
-        return (DatastoreRpc) existing.getOptions().getRpc();
+        return existing.client();
     }
 
-    /**
-     * Returns the settings the client is built from: no call timeout, so the library's retry
-     * settings stay.
-     */
+    /** Returns the settings the client is built from: the library's retry settings. */
     @VisibleForTesting
-    DatastoreOptions settings(DatabaseDestination database) {
-        return DatastoreClients.settings(database, emulatorEndpoint, credentials, null);
+    DatastoreSettings.Builder settings() {
+        return DatastoreClients.settings(
+                emulatorEndpoint, credentials, DatastoreClients.libraryRetrySettings());
     }
 
     /**
@@ -124,12 +119,13 @@ public final class LazyDatastoreClient implements Serializable {
     }
 
     /**
-     * Closes the client if one was built, and refuses later use.
+     * Closes the client if one was built, within {@link GrpcEventLoops.LeasedClient}'s bounds, and
+     * refuses later use.
      *
      * @throws IOException if the client fails to close
      */
     public void close() throws IOException {
-        Datastore toClose;
+        GrpcEventLoops.LeasedClient<DatastoreClient> toClose;
         synchronized (this) {
             closed = true;
             toClose = client;
@@ -141,7 +137,7 @@ public final class LazyDatastoreClient implements Serializable {
         }
         try {
             toClose.close();
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             throw new IOException("Failed to close the Datastore " + owner + "'s client.", e);
         }
     }

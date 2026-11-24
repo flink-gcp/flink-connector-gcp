@@ -51,10 +51,10 @@ import java.util.Set;
  * chain's <em>first</em> classifiable status decides, so a data-shaped status buried under an
  * {@code INTERNAL} does not discard a record over a server-side failure.
  *
- * <p>A commit and a lookup go through the client's RPC object, which throws the gax {@code
- * ApiException} carrying the status; an id allocation goes through the client library, which throws
- * a {@code DatastoreException} with that exception as its cause. {@link StatusCodes#codeOf} reads
- * the status either way.
+ * <p>A commit, a lookup and an id allocation each go through the generated client, which throws the
+ * gax {@code ApiException} carrying the status; {@link StatusCodes#codeOf} also reads one a {@code
+ * DatastoreException} wraps, the form an id allocation took while it went through the client
+ * library's {@code Datastore}.
  */
 @Internal
 final class DatastoreErrorClassifier {

@@ -24,8 +24,9 @@ limitations under the License.
   [#1689] (a configured read time is truncated to the microsecond), and 2026-10-11 by [#1707]
   (the service's answers; a projection of properties read as one split) and [#1717] (the
   metadata kinds' refusal kept, on a corrected reason), and 2026-10-12 by [#1719] (the
-  statistics measured against a database that has them)
-- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707], [#1717], [#1719]
+  statistics measured against a database that has them), and 2026-11-25 by [#2329] (the readers
+  and the planner on the generated client, a client per plan)
+- Issues: [#1543], [#355], [#1546], [#1652], [#1690], [#1689], [#1707], [#1717], [#1719], [#2329]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `source`, `source.batch`, `source.serializer`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -62,7 +63,7 @@ Measured against the emulator:
 ## Decision
 
 - **The user hands the source a kind, a protobuf `Query` or a GQL string** (owner's decision, 2026-10-03). The protobuf `Query` is what the service and the splitter take, so nothing converts it, and a kind is the `Query` that names it. The high-level `EntityQuery` was declined because its only conversion to the wire form is package-private or `@InternalApi`, which production code here does not depend on (ADR-0173). A GQL query is parsed by the service at planning, with `LIMIT 0` appended so that nothing is read; a query that already ends in a `LIMIT` or `OFFSET` clause refuses the appended clause with `INVALID_ARGUMENT` and is then parsed by running it as written, which reads and bills its first batch. That is Beam's procedure.
-- **The splitter is called over its own HTTP client** (owner's decision, 2026-10-03), built through the factory `HttpDatastoreRpc` uses, on the JobManager only while a read is planned; closing the planner refuses later calls. An emulator endpoint is reached in plaintext whatever its address, as everywhere in this connector. Everything else, the readers included, goes through a gRPC client built by `DatastoreClients` as the sink's is, but keeping the client library's retry settings where the sink's makes one attempt per call.
+- **The splitter is called over its own HTTP client** (owner's decision, 2026-10-03), built through the factory `HttpDatastoreRpc` uses, on the JobManager only while a read is planned; closing the planner refuses later calls. An emulator endpoint is reached in plaintext whatever its address, as everywhere in this connector. Everything else, the readers included, goes through a gRPC client built by `DatastoreClients` as the sink's is, but keeping the client library's retry settings where the sink's makes one attempt per call. Since [#2329] that client is the generated `v1.DatastoreClient` with those retry settings restated, and the planner opens one for each plan, closed before the splitter runs ([ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md)).
 - **A query is cut into key ranges only when it names one kind and filters only with `EQUAL` and `HAS_ANCESTOR` under `AND`.** The source refuses more than the splitter does: a `limit`, an `offset` and cursors name positions in the whole result, not in a key range; `!=` and `NOT_IN` are inequalities that the range's `__key__` inequality would meet; `IN` and `OR` are disjunctions the range would have to distribute over; `DISTINCT ON` has no meaning per range; and a filter of no type is one the splitter refuses. Any other query is one split, and the plan logs why. A `splitCount` on a query that cannot be split is refused when the source is built, or for a GQL query when it is planned.
 - **The split count, when not configured, is Beam's estimate with the parallelism as a further floor**: the kind's `entity_bytes` in the latest statistics, one split per 64 MiB, at least 12 and at least the source's parallelism, at most 50,000. The floor is this source's addition: statistics are absent for a new kind, and Beam's floor of 12 alone would leave every subtask past the twelfth of a wide job without a range. The latest statistics time is read from `__Stat_Total__` first and the kind's entry matched on it, because ordering `__Stat_Kind__` by time for one kind needs a composite index. Outside the default namespace the namespace's own statistics kinds are read. A failure reading the statistics fails planning with a message naming `splitCount` as the way around it, rather than falling back to the floor with a warning, as Beam does: the same identity has just read the query, so a failure here is not the missing-statistics case.
 - **The option is named `splitCount`** (owner's decision, 2026-10-03), after the splitter's query splits, as the Native-mode `partitionCount` is named after `PartitionQuery`'s partitions. A shared name was declined because Datastore has no partition in that sense: its `PartitionId` names a namespace.
@@ -160,7 +161,7 @@ A `Lookup` by key found `__Stat_Kind__`'s entity named for a kind, `__Stat_Total
 ## Consequences
 
 - A planning call reaches the service over HTTP as well as gRPC, so a network policy that admits only one of them to the JobManager breaks a split read. The readers are gRPC only.
-- A page call runs for up to the 50-second retry budget and does not answer an interrupt; a reader that closes meanwhile waits for its fetcher up to `source.reader.close.timeout`, after which the call fails against the closed client.
+- A page call runs for up to the 50-second retry budget, and a reader that closes meanwhile waits for its fetcher up to `source.reader.close.timeout`. Before [#2329] the call did not answer an interrupt and, after that timeout, failed against the closed client; since then a page waits on a future derived from the generated client's, which an interrupt or the page reader's close ends at once ([ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md)).
 - A projection of properties is read by one subtask whatever the parallelism, because its key ranges need a composite index the query alone does not (measured above).
 - A query the source does not split is read by one subtask, whatever the parallelism; the plan's log line names the reason.
 - Planning costs a probe read, two statistics reads when the split count is estimated, the splitter's sampling, and for a GQL query a parse that reads its first batch when it ends in its own `LIMIT` or `OFFSET`.
@@ -178,7 +179,7 @@ A `Lookup` by key found `__Stat_Kind__`'s entity named for a kind, `__Stat_Total
 - **Beam's floor of 12 alone.** See the split-count decision.
 - **Passing projected values as the service returns them, documented.** A deserializer calling `getTimestamp` on a projected property would fail with `ClassCastException`, and the reading rule it would need is the library's, not the user's.
 - **Resolving an `offset` into a cursor at planning**, as the Native-mode source does. The reason there was the library's mid-stream retry, which a unary call does not have, and the emulator answers an offset-only batch without the cursor the resolution would need.
-- **The GAPIC `DatastoreClient` for the readers, for an interruptible future call.** It would mean building and configuring a second kind of client, endpoint, credentials and emulator channel included, beside the one `DatastoreClients` builds for both directions, for a call bounded at 50 seconds.
+- **The GAPIC `DatastoreClient` for the readers, for an interruptible future call.** It would mean building and configuring a second kind of client, endpoint, credentials and emulator channel included, beside the one `DatastoreClients` builds for both directions, for a call bounded at 50 seconds. [#2329] made the generated client the only one, for the event-loop group, and a reader now waits on a future derived from its call's, so that the page reader's close can end a page in flight.
 - **Keeping the splitter's range order**, as Beam does. It reads the entities between two misordered boundaries twice.
 
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355
@@ -191,4 +192,5 @@ A `Lookup` by key found `__Stat_Kind__`'s entity named for a kind, `__Stat_Total
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1717]: https://github.com/flink-gcp/flink-connector-gcp/issues/1717
 [#1719]: https://github.com/flink-gcp/flink-connector-gcp/issues/1719
+[#2329]: https://github.com/flink-gcp/flink-connector-gcp/issues/2329
 [#1548]: https://github.com/flink-gcp/flink-connector-gcp/issues/1548

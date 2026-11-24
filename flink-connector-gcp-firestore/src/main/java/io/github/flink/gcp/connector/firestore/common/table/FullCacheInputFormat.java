@@ -29,6 +29,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.Timestamp;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,6 +68,12 @@ import java.util.Set;
  * rows; an unchecked one escaping its {@code finally} block would discard them. An {@code Error}
  * that is the first failure is thrown as itself. No client metrics reach Flink, which configures
  * and opens its copy with no runtime context; each load logs what it read instead.
+ *
+ * <p>Planning, opening, fetching and closing run inside {@link
+ * GrpcEventLoops#interruptibleReleases()}: Flink stops a load by interrupting it and fails the
+ * lookup's close when the load has not ended 10 s later ({@code CacheLoader.close()}, Flink 1.20.5,
+ * 2.2.1 and 2.3.0), so a release of the connector's last gRPC lease on an interrupted load stops
+ * waiting for the event-loop group once the wait's first second has passed (ADR-0208, #2269).
  *
  * @param <E> the record the split reader fetches
  * @param <S> the split reader's split
@@ -169,7 +176,11 @@ public abstract class FullCacheInputFormat<
     @Override
     @SuppressWarnings("unchecked")
     public final L[] createInputSplits(int minNumSplits) throws IOException {
-        L load = planLoad();
+        L load;
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            load = planLoad();
+        }
         LOG.info(
                 "Planned a full lookup cache load of {} at read time {}.",
                 describe(load),
@@ -188,6 +199,13 @@ public abstract class FullCacheInputFormat<
      */
     @Override
     public final void open(GenericInputSplit split) throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            openLoad(split);
+        }
+    }
+
+    private void openLoad(GenericInputSplit split) throws IOException {
         Preconditions.checkArgument(
                 loadSplitType.isInstance(split), "not a split of a full-cache load: %s", split);
         super.open(split);
@@ -219,7 +237,11 @@ public abstract class FullCacheInputFormat<
     @Override
     public final boolean reachedEnd() throws IOException {
         while (pending.isEmpty() && reader != null && !unfinished.isEmpty()) {
-            RecordsWithSplitIds<E> batch = reader.fetch();
+            RecordsWithSplitIds<E> batch;
+            try (GrpcEventLoops.InterruptibleReleases releases =
+                    GrpcEventLoops.interruptibleReleases()) {
+                batch = reader.fetch();
+            }
             try {
                 while (batch.nextSplit() != null) {
                     E record;
@@ -244,6 +266,13 @@ public abstract class FullCacheInputFormat<
 
     @Override
     public final void close() throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            closeLoad();
+        }
+    }
+
+    private void closeLoad() throws IOException {
         List<AutoCloseable> open = new ArrayList<>();
         open.add(reader);
         if (resources != null) {

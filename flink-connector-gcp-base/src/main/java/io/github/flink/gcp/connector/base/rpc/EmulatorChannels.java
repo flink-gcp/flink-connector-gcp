@@ -26,7 +26,6 @@ import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 
 import java.io.IOException;
@@ -44,19 +43,17 @@ import java.util.concurrent.TimeUnit;
  * it lives on {@code ClientSettings.Builder}, {@code Publisher.Builder} and {@code
  * Subscriber.Builder}, three types that share no supertype to write one signature against.
  *
- * <p>Which method a caller wants is decided by who owns the channel, and that is a real difference
- * rather than a spelling. {@link #plaintextProvider(InstantiatingGrpcChannelProvider.Builder,
- * EmulatorEndpoint)} yields an instantiating provider, which the client creates a channel from and
- * closes with itself. {@link #openLeasedPlaintextChannel(InstantiatingGrpcChannelProvider.Builder,
- * EmulatorEndpoint)} plus {@link #fixedProvider(GrpcEventLoops.LeasedClient)} hand the client a
- * channel the caller made, on {@link GrpcEventLoops}' group (ADR-0208), which the client does
- * <em>not</em> close, so a caller taking that route owns the shutdown; {@link
- * #openLeasedClient(InstantiatingGrpcChannelProvider.Builder, EmulatorEndpoint,
- * EmulatorClientFactory)} takes it for a gax client and closes the two in order. The second route
- * is the one to take. The first hands the target to gax, which parses it as {@code host:port}, so a
- * {@code dns:///} target fails, and builds TLS credentials when a client certificate is configured,
- * which the plaintext configurator cannot override (ADR-0208); it stays only for the Datastore
- * emulator arm until that moves (#2266).
+ * <p>The channel is the caller's. {@link #openLeasedPlaintextChannel(
+ * InstantiatingGrpcChannelProvider.Builder, EmulatorEndpoint)} plus {@link
+ * #fixedProvider(GrpcEventLoops.LeasedClient)} hand the client a channel the caller made, on {@link
+ * GrpcEventLoops}' group (ADR-0208), which the client does <em>not</em> close, so a caller taking
+ * that route owns the shutdown; {@link #openLeasedClient(InstantiatingGrpcChannelProvider.Builder,
+ * EmulatorEndpoint, EmulatorClientFactory)} takes it for a gax client and closes the two in order.
+ * An instantiating provider pointed at the emulator, which the client would build its channel from,
+ * is not offered: gax parses its target as {@code host:port}, so a {@code dns:///} target fails,
+ * and builds TLS credentials when a client certificate is configured, which a plaintext
+ * configurator cannot override (ADR-0208). Its last caller, the Datastore lookup's emulator arm,
+ * moved to a caller-owned channel in #2329.
  *
  * <p>Nothing here reaches a client library, so one signature covers Pub/Sub, BigQuery, Cloud Tasks,
  * Bigtable's admin clients and whatever arrives next. A client whose SDK offers its own emulator
@@ -68,30 +65,6 @@ import java.util.concurrent.TimeUnit;
 public final class EmulatorChannels {
 
     private EmulatorChannels() {}
-
-    /**
-     * Points an API's own transport provider at an emulator, over plaintext.
-     *
-     * <p>The builder is a parameter rather than something built here because each API seeds its own
-     * with defaults a bare {@code InstantiatingGrpcChannelProvider.newBuilder()} does not have:
-     * BigQuery Storage raises the maximum inbound message size to {@link Integer#MAX_VALUE} and
-     * Pub/Sub's subscriber stub to 20 MiB, so building one from scratch would silently run the
-     * emulator path at gRPC's 4 MiB default. Pass {@code
-     * <Api>Settings.defaultGrpcTransportProviderBuilder()}.
-     *
-     * @param providerBuilder the API's default gRPC transport provider builder
-     * @param endpoint the emulator to dial
-     * @return the provider, built; the client it is given to creates and closes the channel
-     */
-    public static InstantiatingGrpcChannelProvider plaintextProvider(
-            InstantiatingGrpcChannelProvider.Builder providerBuilder, EmulatorEndpoint endpoint) {
-        Preconditions.checkNotNull(providerBuilder, "providerBuilder must not be null");
-        Preconditions.checkNotNull(endpoint, "endpoint must not be null");
-        return providerBuilder
-                .setEndpoint(endpoint.getTarget())
-                .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
-                .build();
-    }
 
     /**
      * Creates a client on a plaintext channel to an emulator, both on the connector's gRPC
@@ -133,12 +106,12 @@ public final class EmulatorChannels {
      * caller that owns the channel itself, carrying over the API's own channel defaults.
      *
      * <p>The channel takes the maximum inbound message and metadata sizes and the keep-alive
-     * settings the API's provider builder carries, for the reason {@link
-     * #plaintextProvider(InstantiatingGrpcChannelProvider.Builder, EmulatorEndpoint)} takes the
-     * builder: Pub/Sub's subscriber stub raises the inbound limit to 20 MiB and BigQuery Storage to
-     * {@link Integer#MAX_VALUE}, and a channel built without them would run the emulator path at
-     * gRPC's 4 MiB default. Its endpoint, pool and configurator are not read: the target is the
-     * emulator's, the caller owns exactly one channel, and the group is applied here.
+     * settings the API's provider builder carries, which is why the builder is a parameter rather
+     * than something built here: Pub/Sub's subscriber stub raises the inbound limit to 20 MiB and
+     * BigQuery Storage and Datastore to {@link Integer#MAX_VALUE}, and a channel built without them
+     * would run the emulator path at gRPC's 4 MiB default. Its endpoint, pool and configurator are
+     * not read: the target is the emulator's, the caller owns exactly one channel, and the group is
+     * applied here.
      *
      * <p>The returned holder covers the channel with a lease: closing it shuts the channel down,
      * waits for it to terminate and then releases the lease. Close the clients using the channel

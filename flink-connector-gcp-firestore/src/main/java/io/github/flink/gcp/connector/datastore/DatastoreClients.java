@@ -17,43 +17,54 @@
 package io.github.flink.gcp.connector.datastore;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.Credentials;
-import com.google.cloud.NoCredentials;
-import com.google.cloud.datastore.Datastore;
-import com.google.cloud.datastore.DatastoreOptions;
+import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.ServiceOptions;
+import com.google.cloud.datastore.v1.DatastoreClient;
 import com.google.cloud.datastore.v1.DatastoreSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Locale;
 
 /**
- * Builds the Datastore client every direction of the Datastore-mode connector opens.
+ * Opens the Datastore client every direction of the Datastore-mode connector uses: the generated
+ * {@code v1.DatastoreClient}, on the connector's gRPC event-loop group (ADR-0208).
  *
- * <p><b>The host is always set</b>, to the emulator endpoint or to the service's own, so the client
- * library never takes its endpoint from {@code DATASTORE_EMULATOR_HOST}: this connector reaches an
- * emulator only through the builder's {@code emulatorEndpoint(...)} (ADR-0064). An emulator is
- * reached over plaintext with no credentials: the library switches to a plaintext channel when the
- * credentials are {@link NoCredentials}, whatever the host.
+ * <p><b>The generated client, not the library's {@code Datastore}.</b> On an emulator, {@code
+ * Datastore} builds a plaintext channel of its own and ignores any transport it is given, whenever
+ * its credentials are {@code NoCredentials} or its host is a loopback address ({@code
+ * GrpcDatastoreRpc} and {@code DatastoreUtils.isEmulator}, google-cloud-datastore 3.11.0), so that
+ * channel ran on gRPC's shared event-loop group; its host check also could not read a {@code
+ * dns:///} target. Its close waits up to six minutes for its channel without cancelling what it
+ * carries. The generated client is a gax {@code BackgroundResource}: {@link #open} opens it with a
+ * lease, and closing the holder bounds its close. Its calls return futures, which a JobManager-side
+ * owner cancels when it closes.
  *
- * <p><b>The sink's client makes exactly one attempt per call.</b> The library applies the client's
- * retry settings both around each call and to every generated call setting, so a single-attempt
- * setting turns off both layers, and the timeout given here bounds each call; the sink owns its
- * retry loop. The source's reads are idempotent at a fixed read time, so it passes no timeout and
- * keeps the library's retry settings instead.
+ * <p><b>The endpoint is always chosen here</b>: the generated client's default endpoint, or an
+ * emulator's caller-owned channel ({@link EmulatorChannels#openLeasedClient}), built from the
+ * endpoint's gRPC target, a resolver scheme such as {@code dns:///} included and an {@code http://}
+ * or {@code https://} one removed ({@link #withoutHttpScheme(EmulatorEndpoint)}), with the API's
+ * channel defaults, such as its unbounded inbound message size. The client never reads {@code
+ * DATASTORE_EMULATOR_HOST}: this connector reaches an emulator only through the builder's {@code
+ * emulatorEndpoint(...)} (ADR-0064), over plaintext with no credentials.
  *
- * <p><b>The table lookup reads through the generated client</b> ({@link
- * #lookupSettings(EmulatorEndpoint, Credentials)}), the one whose {@code Lookup} returns a future:
- * the library's {@code Datastore} and its RPC object only block. The generated client keeps its own
- * retry settings for {@code Lookup}, and never reads {@code DATASTORE_EMULATOR_HOST} either.
+ * <p><b>Retry settings are each caller's.</b> The sink's client makes exactly one attempt per call,
+ * bounded by its request timeout ({@link #singleAttempt(Duration)}): the sink owns its retry loop.
+ * The source's reads are idempotent at a fixed read time, so they keep the settings the library's
+ * {@code Datastore} applied to every call ({@link #libraryRetrySettings()}). The table lookup keeps
+ * the generated client's own settings for {@code Lookup}.
  */
 @Internal
 public final class DatastoreClients {
@@ -61,92 +72,137 @@ public final class DatastoreClients {
     private DatastoreClients() {}
 
     /**
-     * Builds client settings.
+     * Builds a client's settings, without its transport, which {@link #open} chooses.
      *
-     * @param database the database the client will reach
      * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
      * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
      *     ADC
-     * @param callTimeout the bound on each call, which then makes exactly one attempt; or {@code
-     *     null} to keep the library's retry settings
-     * @return the settings
+     * @param retrySettings the retry settings every unary call takes, or {@code null} to keep the
+     *     generated client's own for each method
+     * @return the settings builder
      */
-    public static DatastoreOptions settings(
-            DatabaseDestination database,
+    public static DatastoreSettings.Builder settings(
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride,
-            @Nullable Duration callTimeout) {
-        Preconditions.checkArgument(
-                emulatorEndpoint == null || credentialsOverride == null,
-                "credentialsOverride cannot be combined with an emulator endpoint");
-        DatastoreOptions.Builder settings =
-                DatastoreOptions.newBuilder()
-                        .setProjectId(database.getProject())
-                        .setDatabaseId(database.getDatabaseId());
-        if (callTimeout != null) {
-            settings.setRetrySettings(singleAttempt(callTimeout));
-        }
-        if (emulatorEndpoint != null) {
-            settings.setHost(emulatorEndpoint.getTarget())
-                    .setCredentials(NoCredentials.getInstance());
-        } else {
-            settings.setHost(DatastoreSettings.getDefaultEndpoint());
-            if (credentialsOverride != null) {
-                settings.setCredentials(credentialsOverride);
-            }
-        }
-        return settings.build();
-    }
-
-    /**
-     * Opens a client from settings already assembled by the owning runtime component.
-     *
-     * @param database the database to reach, for the failure message
-     * @param settings the settings to open the client from
-     * @return the client, which the caller owns and must close
-     * @throws IOException if the client cannot be created
-     */
-    public static Datastore open(DatabaseDestination database, DatastoreOptions settings)
-            throws IOException {
-        try {
-            return settings.getService();
-        } catch (RuntimeException e) {
-            throw new IOException("Failed to create the Datastore client for " + database + ".", e);
-        }
-    }
-
-    /**
-     * Builds the generated client's settings for the table lookup: the service's endpoint with the
-     * given or application-default credentials, or an emulator over plaintext without credentials.
-     * The library's retry settings for {@code Lookup} stay.
-     *
-     * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
-     * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
-     *     ADC
-     * @return the settings
-     * @throws IOException if the settings cannot be built
-     */
-    public static DatastoreSettings lookupSettings(
-            @Nullable EmulatorEndpoint emulatorEndpoint, @Nullable Credentials credentialsOverride)
-            throws IOException {
+            @Nullable RetrySettings retrySettings) {
         Preconditions.checkArgument(
                 emulatorEndpoint == null || credentialsOverride == null,
                 "credentialsOverride cannot be combined with an emulator endpoint");
         DatastoreSettings.Builder settings = DatastoreSettings.newBuilder();
         if (emulatorEndpoint != null) {
-            settings.setCredentialsProvider(NoCredentialsProvider.create())
-                    .setTransportChannelProvider(
-                            EmulatorChannels.plaintextProvider(
-                                    DatastoreSettings.defaultGrpcTransportProviderBuilder(),
-                                    emulatorEndpoint));
+            settings.setCredentialsProvider(NoCredentialsProvider.create());
         } else if (credentialsOverride != null) {
-            settings.setCredentialsProvider(FixedCredentialsProvider.create(credentialsOverride));
+            settings.setCredentialsProvider(
+                    FixedCredentialsProvider.create(withJwtAccess(credentialsOverride)));
         }
-        return settings.build();
+        if (retrySettings != null) {
+            settings.applyToAllUnaryMethods(
+                    method -> {
+                        method.setRetrySettings(retrySettings);
+                        return null;
+                    });
+        }
+        return settings;
     }
 
-    /** One attempt, bounded by the timeout; the multipliers are irrelevant past one attempt. */
-    private static RetrySettings singleAttempt(Duration callTimeout) {
+    /**
+     * Returns service-account credentials that sign their own scoped JWT rather than exchange an
+     * assertion for an access token, as the library's {@code Datastore} sent them ({@code
+     * ServiceOptions.getScopedCredentials()} with its default {@code useJwtAccessWithScope},
+     * google-cloud-core 2.81.0), so these clients reach Datastore without reaching the OAuth token
+     * endpoint (the planner's HTTP splitter does not use them); other credentials as they are.
+     */
+    private static Credentials withJwtAccess(Credentials credentials) {
+        if (credentials instanceof ServiceAccountCredentials) {
+            return ((ServiceAccountCredentials) credentials).createWithUseJwtAccessWithScope(true);
+        }
+        return credentials;
+    }
+
+    /**
+     * Opens a client on the connector's gRPC event-loop group: the service through the settings'
+     * own transport provider, or an emulator through a plaintext channel the returned holder owns.
+     * Closing the holder closes the client within {@link GrpcEventLoops.LeasedClient}'s bounds,
+     * then any emulator channel.
+     *
+     * @param database the database the client reaches, for the failure message
+     * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service; the same
+     *     one the settings were built for
+     * @param settings the settings from {@link #settings(EmulatorEndpoint, Credentials,
+     *     RetrySettings)}
+     * @return the client with its lease, which the caller owns and must close
+     * @throws IOException if the client cannot be created
+     * @throws IllegalArgumentException if an emulator is given with settings that carry
+     *     credentials, which a plaintext channel would send in the clear
+     */
+    public static GrpcEventLoops.LeasedClient<DatastoreClient> open(
+            DatabaseDestination database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            DatastoreSettings.Builder settings)
+            throws IOException {
+        Preconditions.checkNotNull(database, "database must not be null");
+        Preconditions.checkNotNull(settings, "settings must not be null");
+        Preconditions.checkArgument(
+                emulatorEndpoint == null
+                        || settings.getCredentialsProvider() instanceof NoCredentialsProvider,
+                "settings for an emulator must carry no credentials; build them with the same"
+                        + " emulator endpoint");
+        try {
+            if (emulatorEndpoint == null) {
+                return GrpcEventLoops.open(
+                        lease -> DatastoreClient.create(lease.applyTo(settings).build()));
+            }
+            return EmulatorChannels.openLeasedClient(
+                    DatastoreSettings.defaultGrpcTransportProviderBuilder(),
+                    withoutHttpScheme(emulatorEndpoint),
+                    channel ->
+                            DatastoreClient.create(
+                                    settings.setTransportChannelProvider(channel).build()));
+        } catch (IOException | RuntimeException e) {
+            throw new IOException("Failed to create the Datastore client for " + database + ".", e);
+        }
+    }
+
+    /**
+     * Returns the endpoint without a leading {@code http://} or {@code https://}, which the
+     * library's {@code Datastore} removed before it dialled an emulator ({@code
+     * DatastoreUtils.removeScheme}, google-cloud-datastore 3.11.0), and which gRPC would take for a
+     * name-resolver scheme it does not have. A {@code dns:///} target, which gRPC resolves itself,
+     * is kept.
+     */
+    @VisibleForTesting
+    static EmulatorEndpoint withoutHttpScheme(EmulatorEndpoint endpoint) {
+        String target = endpoint.getTarget();
+        String lower = target.toLowerCase(Locale.ROOT);
+        for (String scheme : new String[] {"http://", "https://"}) {
+            if (lower.startsWith(scheme)) {
+                return EmulatorEndpoint.parse(
+                        target.substring(scheme.length()), "emulatorEndpoint");
+            }
+        }
+        return endpoint;
+    }
+
+    /**
+     * Returns the retry settings the library's {@code Datastore} gave every call by default ({@code
+     * ServiceOptions.getDefaultRetrySettings()}, which {@code GrpcDatastoreRpc} applied to each
+     * unary method), for the source's reads.
+     *
+     * @return the settings
+     */
+    public static RetrySettings libraryRetrySettings() {
+        return ServiceOptions.getDefaultRetrySettings();
+    }
+
+    /**
+     * Returns retry settings that make exactly one attempt, bounded by the timeout; the multipliers
+     * are irrelevant past one attempt.
+     *
+     * @param callTimeout the bound on each call
+     * @return the settings
+     */
+    public static RetrySettings singleAttempt(Duration callTimeout) {
+        Preconditions.checkNotNull(callTimeout, "callTimeout must not be null");
         return RetrySettings.newBuilder()
                 .setMaxAttempts(1)
                 .setTotalTimeoutDuration(callTimeout)

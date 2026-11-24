@@ -90,8 +90,8 @@ public class DatastoreSourceReader<T>
     @Override
     public void close() throws Exception {
         // The page reader is closed after super.close() has waited for the fetchers, up to Flink's
-        // source.reader.close.timeout; a page call still running past it, which an interrupt does
-        // not end, then fails against the closed client.
+        // source.reader.close.timeout, without interrupting them; its close then ends the wait of a
+        // page still in flight, whatever that page's call is doing.
         Closers.closeAll(super::close, pageReader);
     }
 }

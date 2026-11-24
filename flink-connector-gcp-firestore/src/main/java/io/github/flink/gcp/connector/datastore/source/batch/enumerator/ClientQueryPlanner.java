@@ -24,7 +24,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.auth.Credentials;
 import com.google.cloud.Timestamp;
-import com.google.cloud.datastore.spi.v1.DatastoreRpc;
+import com.google.cloud.datastore.v1.DatastoreSettings;
 import com.google.datastore.v1.Entity;
 import com.google.datastore.v1.GqlQuery;
 import com.google.datastore.v1.PartitionId;
@@ -41,9 +41,10 @@ import com.google.datastore.v1.client.DatastoreHelper;
 import com.google.protobuf.Int32Value;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
-import io.github.flink.gcp.connector.datastore.LazyDatastoreClient;
+import io.github.flink.gcp.connector.datastore.DatastoreClients;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceBuilder;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceConfig;
 import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
@@ -58,8 +59,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Plans a read through a {@code google-cloud-datastore} client and, to cut key ranges, the client
- * library's {@code QuerySplitter}.
+ * Plans a read through the generated Datastore client and, to cut key ranges, the client library's
+ * {@code QuerySplitter}.
  *
  * <p>Planning is four steps, in this order:
  *
@@ -90,6 +91,14 @@ import java.util.List;
  *       nothing is lost without it, because the ranges tile the key space and every entity of the
  *       snapshot falls in exactly one of them. Any other query is one split.
  * </ol>
+ *
+ * <p><b>Each plan opens its own gRPC client and closes it before it returns</b> (ADR-0208): the
+ * first three steps run as one {@link PerCallClientRunner} session, and the splitter's HTTP calls
+ * after it. The planner runs on the JobManager for a source's enumerator, where Flink closes the
+ * enumerator on a thread it does not wait for, so a client kept until then could outlive the job's
+ * class loader; {@link #close()} cancels the step in flight through its future and closes the
+ * client, and a plan that has not started its session yet is refused. The splitter's client is
+ * closed by {@link #close()}; it uses no gRPC channel.
  */
 @Internal
 public class ClientQueryPlanner implements QueryPlanner {
@@ -105,8 +114,10 @@ public class ClientQueryPlanner implements QueryPlanner {
     /** The kind size each estimated split stands for: 64 MiB, Beam's bundle size. */
     static final long BYTES_PER_SPLIT = 64L * 1024 * 1024;
 
-    private final LazyDatastoreClient client;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final PerCallClientRunner runner;
     private final SplitterClient splitterClient;
+    @Nullable private volatile Credentials credentials;
 
     /**
      * Creates the planner.
@@ -114,21 +125,21 @@ public class ClientQueryPlanner implements QueryPlanner {
      * @param emulatorEndpoint the emulator endpoint, or {@code null} for the real service
      */
     public ClientQueryPlanner(@Nullable EmulatorEndpoint emulatorEndpoint) {
-        this.client = new LazyDatastoreClient("query planner", emulatorEndpoint);
+        this.emulatorEndpoint = emulatorEndpoint;
+        this.runner = new PerCallClientRunner("Datastore query planner");
         this.splitterClient = new SplitterClient(emulatorEndpoint);
     }
 
     @Override
     public void useCredentials(@Nullable Credentials credentials) {
-        client.useCredentials(credentials);
         splitterClient.useCredentials(credentials);
+        this.credentials = credentials;
     }
 
     @Override
     public QueryPlan plan(DatastoreSourceConfig<?> config, int parallelism) throws IOException {
         Preconditions.checkNotNull(config, "config must not be null");
         DatabaseDestination database = config.getDatabase();
-        DatastoreRpc rpc = client.rpc(database);
         PartitionId partition =
                 PartitionId.newBuilder()
                         .setProjectId(database.getProject())
@@ -141,12 +152,52 @@ public class ClientQueryPlanner implements QueryPlanner {
                         .setDatabaseId(database.getDatabaseId())
                         .setPartitionId(partition)
                         .build();
+        Probed probed =
+                runner.session(
+                        // Read under the runner's monitor, which close() takes first, so nothing
+                        // is built from credentials after the planner closed.
+                        this::settings,
+                        settings -> DatastoreClients.open(database, emulatorEndpoint, settings),
+                        session ->
+                                probe(
+                                        request ->
+                                                session.call(
+                                                        client ->
+                                                                client.runQueryCallable()
+                                                                        .futureCall(request)),
+                                        config,
+                                        base,
+                                        parallelism));
+        if (probed.unsplittable != null || probed.splitCount == 1) {
+            return new QueryPlan(probed.readTime, List.of(probed.request), probed.unsplittable);
+        }
+        Query query = probed.request.getQuery();
+        List<RunQueryRequest> requests = new ArrayList<>();
+        for (Query range : KeyRanges.retile(query, split(query, partition, probed.splitCount))) {
+            requests.add(base.toBuilder().setQuery(range).build());
+        }
+        return new QueryPlan(probed.readTime, requests, null);
+    }
+
+    /** The settings each plan's client is built from: the library's retry settings. */
+    @VisibleForTesting
+    DatastoreSettings.Builder settings() {
+        return DatastoreClients.settings(
+                emulatorEndpoint, credentials, DatastoreClients.libraryRetrySettings());
+    }
+
+    /**
+     * Runs the plan's steps that need the service: the query, the read time and the split count.
+     */
+    private static Probed probe(
+            Queries queries, DatastoreSourceConfig<?> config, RunQueryRequest base, int parallelism)
+            throws IOException {
         Query query =
                 config.getQuery() != null
                         ? config.getQuery()
-                        : parseGql(rpc, base, config.getGqlQuery());
+                        : parseGql(queries, base, config.getGqlQuery());
         RunQueryRequest request = base.toBuilder().setQuery(query).build();
-        Timestamp readTime = readTime(rpc, request, config.getReadTime());
+        Timestamp readTime = readTime(queries, request, config.getReadTime());
 
         String reason = SplittableQueries.whyNotSplittable(query);
         if (reason != null) {
@@ -158,21 +209,52 @@ public class ClientQueryPlanner implements QueryPlanner {
                                 + reason
                                 + ". Remove splitCount, or write a query that can be split.");
             }
-            return new QueryPlan(readTime, List.of(request), reason);
+            return new Probed(request, readTime, reason, 1);
         }
         int splitCount =
                 config.getSplitCount() != null
                         ? config.getSplitCount()
                         : estimateSplitCount(
-                                rpc, base, SplittableQueries.kindOf(query), parallelism);
-        if (splitCount == 1) {
-            return new QueryPlan(readTime, List.of(request), null);
+                                queries, base, SplittableQueries.kindOf(query), parallelism);
+        return new Probed(request, readTime, null, splitCount);
+    }
+
+    /** What the session's steps found, which the key ranges are cut from. */
+    private static final class Probed {
+
+        private final RunQueryRequest request;
+        private final Timestamp readTime;
+        @Nullable private final String unsplittable;
+        private final int splitCount;
+
+        private Probed(
+                RunQueryRequest request,
+                Timestamp readTime,
+                @Nullable String unsplittable,
+                int splitCount) {
+            this.request = request;
+            this.readTime = readTime;
+            this.unsplittable = unsplittable;
+            this.splitCount = splitCount;
         }
-        List<RunQueryRequest> requests = new ArrayList<>();
-        for (Query range : KeyRanges.retile(query, split(query, partition, splitCount))) {
-            requests.add(base.toBuilder().setQuery(range).build());
-        }
-        return new QueryPlan(readTime, requests, null);
+    }
+
+    /**
+     * Runs one query of the plan on the session's client, through the runner, which cancels it if
+     * the planner closes while it runs.
+     */
+    @VisibleForTesting
+    @FunctionalInterface
+    interface Queries {
+
+        /**
+         * Runs the query and waits for its answer.
+         *
+         * @param request the request
+         * @return the answer
+         * @throws IOException if the planner was closed, or the wait was interrupted
+         */
+        RunQueryResponse run(RunQueryRequest request) throws IOException;
     }
 
     /**
@@ -212,7 +294,7 @@ public class ClientQueryPlanner implements QueryPlanner {
      * the source cannot read ({@link SplittableQueries#whyNotReadable(Query)}). The builder refuses
      * such a query given directly; a GQL query is known only once it is parsed here.
      *
-     * @param rpc the client's RPC object
+     * @param queries runs a query on the plan's client
      * @param base the request naming the database and namespace, without a query
      * @param gql the GQL query
      * @return the parsed query
@@ -220,9 +302,9 @@ public class ClientQueryPlanner implements QueryPlanner {
      *     the source cannot read
      */
     @VisibleForTesting
-    static Query parseGql(DatastoreRpc rpc, RunQueryRequest base, @Nullable String gql)
+    static Query parseGql(Queries queries, RunQueryRequest base, @Nullable String gql)
             throws IOException {
-        Query query = parse(rpc, base, gql);
+        Query query = parse(queries, base, gql);
         String unreadable = SplittableQueries.whyNotReadable(query);
         if (unreadable != null) {
             throw new IOException(
@@ -233,11 +315,11 @@ public class ClientQueryPlanner implements QueryPlanner {
         return query;
     }
 
-    private static Query parse(DatastoreRpc rpc, RunQueryRequest base, @Nullable String gql)
+    private static Query parse(Queries queries, RunQueryRequest base, @Nullable String gql)
             throws IOException {
         Preconditions.checkNotNull(gql, "a configuration without a query carries a GQL query");
         try {
-            return rpc.runQuery(gqlRequest(base, gql + " LIMIT 0")).getQuery().toBuilder()
+            return queries.run(gqlRequest(base, gql + " LIMIT 0")).getQuery().toBuilder()
                     .clearLimit()
                     .build();
         } catch (RuntimeException e) {
@@ -250,7 +332,7 @@ public class ClientQueryPlanner implements QueryPlanner {
                             + " as written.");
         }
         try {
-            return rpc.runQuery(gqlRequest(base, gql)).getQuery();
+            return queries.run(gqlRequest(base, gql)).getQuery();
         } catch (RuntimeException e) {
             throw new IOException(gqlFailure(gql), e);
         }
@@ -278,7 +360,7 @@ public class ClientQueryPlanner implements QueryPlanner {
      * Probes the query for one entity, at the configured read time when there is one, and returns
      * the read time the plan is pinned to.
      *
-     * @param rpc the client's RPC object
+     * @param queries runs a query on the plan's client
      * @param request the query to probe
      * @param configured the configured read time, or {@code null} to take the service's
      * @return the read time
@@ -286,7 +368,7 @@ public class ClientQueryPlanner implements QueryPlanner {
      */
     @VisibleForTesting
     static Timestamp readTime(
-            DatastoreRpc rpc, RunQueryRequest request, @Nullable Instant configured)
+            Queries queries, RunQueryRequest request, @Nullable Instant configured)
             throws IOException {
         RunQueryRequest.Builder probe = request.toBuilder();
         probe.getQueryBuilder().setOffset(0).setLimit(Int32Value.of(1));
@@ -299,7 +381,7 @@ public class ClientQueryPlanner implements QueryPlanner {
         }
         QueryResultBatch batch;
         try {
-            batch = rpc.runQuery(probe.build()).getBatch();
+            batch = queries.run(probe.build()).getBatch();
         } catch (RuntimeException e) {
             throw new IOException(
                     configured == null
@@ -329,7 +411,7 @@ public class ClientQueryPlanner implements QueryPlanner {
     /**
      * Estimates the split count from the database's statistics.
      *
-     * @param rpc the client's RPC object
+     * @param queries runs a query on the plan's client
      * @param base the request naming the database and namespace, without a query
      * @param kind the kind to estimate for
      * @param parallelism the source's parallelism, a lower bound on the count
@@ -338,13 +420,13 @@ public class ClientQueryPlanner implements QueryPlanner {
      */
     @VisibleForTesting
     static int estimateSplitCount(
-            DatastoreRpc rpc, RunQueryRequest base, @Nullable String kind, int parallelism)
+            Queries queries, RunQueryRequest base, @Nullable String kind, int parallelism)
             throws IOException {
         Preconditions.checkNotNull(kind, "a query that can be split names one kind");
         int floor = Math.max(MIN_SPLITS, parallelism);
         Long bytes;
         try {
-            bytes = kindBytes(rpc, base, kind);
+            bytes = kindBytes(queries, base, kind);
         } catch (RuntimeException e) {
             throw new IOException(
                     "Failed to read the Datastore statistics for kind '"
@@ -378,7 +460,8 @@ public class ClientQueryPlanner implements QueryPlanner {
      * index. Outside the default namespace the namespace's own statistics kinds are read.
      */
     @Nullable
-    private static Long kindBytes(DatastoreRpc rpc, RunQueryRequest base, String kind) {
+    private static Long kindBytes(Queries queries, RunQueryRequest base, String kind)
+            throws IOException {
         boolean defaultNamespace = base.getPartitionId().getNamespaceId().isEmpty();
         Query latest =
                 SplittableQueries.ofKind(defaultNamespace ? "__Stat_Total__" : "__Stat_Ns_Total__")
@@ -388,7 +471,7 @@ public class ClientQueryPlanner implements QueryPlanner {
                                         "timestamp", PropertyOrder.Direction.DESCENDING))
                         .setLimit(Int32Value.of(1))
                         .build();
-        List<Entity> totals = entities(rpc.runQuery(base.toBuilder().setQuery(latest).build()));
+        List<Entity> totals = entities(queries.run(base.toBuilder().setQuery(latest).build()));
         if (totals.isEmpty() || !totals.get(0).containsProperties("timestamp")) {
             return null;
         }
@@ -411,7 +494,7 @@ public class ClientQueryPlanner implements QueryPlanner {
                         .setLimit(Int32Value.of(1))
                         .build();
         List<Entity> kinds =
-                entities(rpc.runQuery(base.toBuilder().setQuery(kindStatistics).build()));
+                entities(queries.run(base.toBuilder().setQuery(kindStatistics).build()));
         if (kinds.isEmpty() || !kinds.get(0).containsProperties("entity_bytes")) {
             return null;
         }
@@ -427,7 +510,8 @@ public class ClientQueryPlanner implements QueryPlanner {
     @Override
     public void close() throws IOException {
         try {
-            Closers.closeAll(client::close, splitterClient);
+            // The runner is closed first, so no plan reads the credentials after they are cleared.
+            Closers.closeAll(runner::close, () -> credentials = null, splitterClient);
         } catch (IOException | RuntimeException | Error e) {
             throw e;
         } catch (Exception e) {

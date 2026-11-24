@@ -1531,7 +1531,7 @@ class DatastoreWriterTest {
                 if (write.getOperation() == DatastoreMutation.Operation.INSERT
                         && delegate.applied().containsKey(write.getKey())) {
                     delegate.record(List.of(encoded));
-                    throw FakeDatastoreDatabaseAccess.failure(StatusCode.Code.ALREADY_EXISTS);
+                    throw FakeDatastoreDatabaseAccess.rpcFailure(StatusCode.Code.ALREADY_EXISTS);
                 }
             }
             delegate.commit(writes);
@@ -1568,7 +1568,7 @@ class DatastoreWriterTest {
         public void commit(List<EncodedMutation> writes) {
             if (writes.size() == 1 && !failed) {
                 failed = true;
-                throw FakeDatastoreDatabaseAccess.failure(StatusCode.Code.UNAVAILABLE);
+                throw FakeDatastoreDatabaseAccess.rpcFailure(StatusCode.Code.UNAVAILABLE);
             }
             delegate.commit(writes);
         }

@@ -19,73 +19,77 @@ package io.github.flink.gcp.connector.datastore.sink.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.datastore.Datastore;
-import com.google.cloud.datastore.DatastoreOptions;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.IncompleteKey;
 import com.google.cloud.datastore.Key;
-import com.google.cloud.datastore.spi.v1.DatastoreRpc;
+import com.google.cloud.datastore.v1.DatastoreClient;
+import com.google.datastore.v1.AllocateIdsRequest;
+import com.google.datastore.v1.AllocateIdsResponse;
 import com.google.datastore.v1.CommitRequest;
 import com.google.datastore.v1.LookupRequest;
 import com.google.datastore.v1.LookupResponse;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The production {@link DatastoreDatabaseAccess}, over the client library's {@link Datastore},
- * which closing it releases.
+ * The production {@link DatastoreDatabaseAccess}, over the generated Datastore client and its lease
+ * on the connector's gRPC event-loop group, which closing it releases.
  *
- * <p>A commit is one non-transactional {@code Commit} request, sent through the client's own RPC
- * object, with the writes in the order they were given, each in the encoding the writer made when
- * it buffered the write. The client library's {@code Batch} is not used: it cannot carry a merge's
- * property mask. A request never holds two writes to one key, because the writer flushes before a
- * key repeats.
+ * <p>A commit is one non-transactional {@code Commit} request with the writes in the order they
+ * were given, each in the encoding the writer made when it buffered the write. The client library's
+ * {@code Batch} is not used: it cannot carry a merge's property mask. A request never holds two
+ * writes to one key, because the writer flushes before a key repeats.
+ *
+ * <p>Every call is the generated client's synchronous one, so a failure is the gax {@code
+ * ApiException} carrying the status, an id allocation's included.
  */
 @Internal
 final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
 
     private static final Logger LOG = LoggerFactory.getLogger(DatastoreServiceAdapter.class);
 
-    private final Datastore datastore;
+    private final DatabaseDestination database;
+    private final GrpcEventLoops.LeasedClient<DatastoreClient> client;
 
-    DatastoreServiceAdapter(Datastore datastore) {
-        this.datastore = Preconditions.checkNotNull(datastore, "datastore must not be null");
+    /**
+     * Creates the adapter, which owns the client.
+     *
+     * @param database the database every request names
+     * @param client the client with its lease
+     */
+    DatastoreServiceAdapter(
+            DatabaseDestination database, GrpcEventLoops.LeasedClient<DatastoreClient> client) {
+        this.database = Preconditions.checkNotNull(database, "database must not be null");
+        this.client = Preconditions.checkNotNull(client, "client must not be null");
     }
 
     @Override
     public void commit(List<EncodedMutation> writes) {
-        DatastoreOptions options = datastore.getOptions();
         CommitRequest.Builder request =
                 CommitRequest.newBuilder()
-                        .setProjectId(options.getProjectId())
-                        .setDatabaseId(options.getDatabaseId())
+                        .setProjectId(database.getProject())
+                        .setDatabaseId(database.getDatabaseId())
                         .setMode(CommitRequest.Mode.NON_TRANSACTIONAL);
         for (EncodedMutation write : writes) {
             request.addMutations(write.getEncoding());
         }
-        rpc().commit(request.build());
+        client.client().commitCallable().call(request.build());
     }
 
-    private DatastoreRpc rpc() {
-        return (DatastoreRpc) datastore.getOptions().getRpc();
-    }
-
-    /**
-     * Sends one {@code Lookup} for the key. Not {@code Datastore.get}: the client library re-sends
-     * a lookup for as long as the service defers the key, with no bound, and the writer needs one
-     * bounded call — any answer, the deferral included, shows the database is there. The call goes
-     * through the client's own RPC object, so it takes the client's single-attempt settings and
-     * opens nothing.
-     */
     @Override
     @Nullable
     public Entity lookup(Key key) {
         LookupResponse response =
-                rpc().lookup(
+                client.client()
+                        .lookupCallable()
+                        .call(
                                 LookupRequest.newBuilder()
                                         .setProjectId(key.getProjectId())
                                         .setDatabaseId(key.getDatabaseId())
@@ -106,14 +110,41 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
         }
     }
 
-    /** Sends one {@code AllocateIds}, which takes the client's single-attempt settings. */
+    /**
+     * Allocates one id per key in one {@code AllocateIds} request to the adapter's database, and
+     * reads each complete key the service returns through the client library's own decoding.
+     */
     @Override
     public List<Key> allocateIds(List<IncompleteKey> keys) {
-        return datastore.allocateId(keys.toArray(new IncompleteKey[0]));
+        if (keys.isEmpty()) {
+            return List.of();
+        }
+        AllocateIdsRequest.Builder request =
+                AllocateIdsRequest.newBuilder()
+                        .setProjectId(database.getProject())
+                        .setDatabaseId(database.getDatabaseId());
+        for (IncompleteKey key : keys) {
+            request.addKeys(EntityProtos.key(key));
+        }
+        AllocateIdsResponse response = client.client().allocateIdsCallable().call(request.build());
+        List<Key> allocated = new ArrayList<>(response.getKeysCount());
+        for (com.google.datastore.v1.Key key : response.getKeysList()) {
+            allocated.add(completeKey(key));
+        }
+        return allocated;
+    }
+
+    /**
+     * Reads a complete key the service returned. {@code Key.fromPb} is package-private, and a
+     * key-only entity is the public way through it.
+     */
+    private static Key completeKey(com.google.datastore.v1.Key key) {
+        return Entity.fromPb(com.google.datastore.v1.Entity.newBuilder().setKey(key).build())
+                .getKey();
     }
 
     @Override
-    public void close() throws Exception {
-        datastore.close();
+    public void close() {
+        client.close();
     }
 }

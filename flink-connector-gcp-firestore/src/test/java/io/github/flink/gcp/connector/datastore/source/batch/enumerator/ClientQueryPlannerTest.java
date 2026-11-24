@@ -16,7 +16,11 @@
 
 package io.github.flink.gcp.connector.datastore.source.batch.enumerator;
 
+import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.auth.oauth2.AccessToken;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.Timestamp;
+import com.google.cloud.datastore.v1.DatastoreSettings;
 import com.google.datastore.v1.Entity;
 import com.google.datastore.v1.EntityResult;
 import com.google.datastore.v1.Filter;
@@ -32,6 +36,8 @@ import com.google.datastore.v1.RunQueryResponse;
 import com.google.datastore.v1.Value;
 import com.google.datastore.v1.client.DatastoreHelper;
 import com.google.protobuf.Int32Value;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.datastore.DatastoreClients;
 import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
@@ -78,8 +84,8 @@ class ClientQueryPlannerTest {
     void parsesAGqlQueryWithoutReadingAnEntity() throws IOException {
         Query parsed =
                 SplittableQueries.ofKind("Task").toBuilder().setLimit(Int32Value.of(0)).build();
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request ->
                                 RunQueryResponse.newBuilder()
                                         .setQuery(parsed)
@@ -105,8 +111,8 @@ class ClientQueryPlannerTest {
     void parsesAGqlQueryThatRefusesTheAppendedLimitByRunningItAsWritten() throws IOException {
         Query parsed =
                 SplittableQueries.ofKind("Task").toBuilder().setLimit(Int32Value.of(5)).build();
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request -> {
                             if (request.getGqlQuery().getQueryString().endsWith("LIMIT 0")) {
                                 throw Status.INVALID_ARGUMENT
@@ -130,8 +136,8 @@ class ClientQueryPlannerTest {
 
     @Test
     void refusesAGqlQueryThatParsesIntoAMetadataKind() {
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request ->
                                 RunQueryResponse.newBuilder()
                                         .setQuery(
@@ -155,8 +161,8 @@ class ClientQueryPlannerTest {
 
     @Test
     void refusesAMetadataKindParsedByRunningTheQueryAsWritten() {
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request -> {
                             if (request.getGqlQuery().getQueryString().endsWith("LIMIT 0")) {
                                 throw Status.INVALID_ARGUMENT
@@ -199,8 +205,8 @@ class ClientQueryPlannerTest {
                         .build();
         // The fake answers as a parse into a nearest-neighbour search would; the text only names
         // the request.
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request ->
                                 RunQueryResponse.newBuilder()
                                         .setQuery(parsed)
@@ -218,8 +224,8 @@ class ClientQueryPlannerTest {
 
     @Test
     void failsOtherwiseWithoutRunningTheQuery() {
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request -> {
                             throw Status.PERMISSION_DENIED.asRuntimeException();
                         });
@@ -233,7 +239,7 @@ class ClientQueryPlannerTest {
 
     @Test
     void takesTheServicesReadTimeFromAOneEntityProbe() throws IOException {
-        FakeDatastoreRpc rpc = new FakeDatastoreRpc(request -> batch());
+        FakeQueries rpc = new FakeQueries(request -> batch());
         RunQueryRequest request =
                 base("").toBuilder()
                         .setQuery(
@@ -255,7 +261,7 @@ class ClientQueryPlannerTest {
 
     @Test
     void probesAtAConfiguredReadTimeAndKeepsIt() throws IOException {
-        FakeDatastoreRpc rpc = new FakeDatastoreRpc(request -> batch());
+        FakeQueries rpc = new FakeQueries(request -> batch());
         Instant configured = Instant.parse("2026-10-03T00:00:00Z");
 
         Timestamp readTime =
@@ -271,8 +277,8 @@ class ClientQueryPlannerTest {
 
     @Test
     void namesTheWindowWhenAConfiguredReadTimeIsRefused() {
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request -> {
                             throw Status.INVALID_ARGUMENT.asRuntimeException();
                         });
@@ -292,8 +298,8 @@ class ClientQueryPlannerTest {
 
     @Test
     void refusesAProbeAnsweredWithoutAReadTime() {
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request ->
                                 RunQueryResponse.newBuilder()
                                         .setBatch(QueryResultBatch.getDefaultInstance())
@@ -313,7 +319,7 @@ class ClientQueryPlannerTest {
 
     @Test
     void withoutStatisticsAsksForTheFloorOrTheParallelism() throws IOException {
-        FakeDatastoreRpc rpc = new FakeDatastoreRpc(request -> batch());
+        FakeQueries rpc = new FakeQueries(request -> batch());
 
         assertThat(ClientQueryPlanner.estimateSplitCount(rpc, base(""), "Task", 4))
                 .isEqualTo(ClientQueryPlanner.MIN_SPLITS);
@@ -327,7 +333,7 @@ class ClientQueryPlannerTest {
     void estimatesOneSplitPer64MibOfTheKindInTheLatestStatistics() throws IOException {
         Value latest = DatastoreHelper.makeValue(new java.util.Date(1_700_000_000_000L)).build();
         long tenGib = 10L * 1024 * 1024 * 1024;
-        FakeDatastoreRpc rpc = statistics(latest, tenGib);
+        FakeQueries rpc = statistics(latest, tenGib);
 
         assertThat(ClientQueryPlanner.estimateSplitCount(rpc, base(""), "Task", 4)).isEqualTo(160);
         RunQueryRequest kindStatistics = rpc.requests().get(1);
@@ -372,7 +378,7 @@ class ClientQueryPlannerTest {
     @Test
     void readsANamespacesOwnStatistics() throws IOException {
         Value latest = DatastoreHelper.makeValue(new java.util.Date(1_700_000_000_000L)).build();
-        FakeDatastoreRpc rpc = statistics(latest, 0);
+        FakeQueries rpc = statistics(latest, 0);
 
         ClientQueryPlanner.estimateSplitCount(rpc, base("tenant"), "Task", 1);
 
@@ -386,8 +392,8 @@ class ClientQueryPlannerTest {
 
     @Test
     void namesTheEscapeWhenTheStatisticsCannotBeRead() {
-        FakeDatastoreRpc rpc =
-                new FakeDatastoreRpc(
+        FakeQueries rpc =
+                new FakeQueries(
                         request -> {
                             throw Status.UNAVAILABLE.asRuntimeException();
                         });
@@ -403,9 +409,9 @@ class ClientQueryPlannerTest {
      * first, and asks for one; the kind query only when it matches the kind and that time. A
      * planner that read the wrong entry finds nothing and asks for the floor.
      */
-    private static FakeDatastoreRpc statistics(Value latest, long bytes) {
+    private static FakeQueries statistics(Value latest, long bytes) {
         Value older = DatastoreHelper.makeValue(new java.util.Date(1_600_000_000_000L)).build();
-        return new FakeDatastoreRpc(
+        return new FakeQueries(
                 request -> {
                     Query query = request.getQuery();
                     if (kindOf(request).endsWith("Total__")) {
@@ -442,5 +448,35 @@ class ClientQueryPlannerTest {
                                             .build())
                             : batch();
                 });
+    }
+
+    /**
+     * Each plan's client keeps the retry settings the library's {@code Datastore} applied: the
+     * planner's queries are idempotent, and a single attempt would fail a plan on one transient
+     * error.
+     */
+    @Test
+    void eachPlansClientKeepsTheLibrarysRetrySettings() throws Exception {
+        try (ClientQueryPlanner planner =
+                new ClientQueryPlanner(EmulatorEndpoint.parse("localhost:1", "e"))) {
+            DatastoreSettings settings = planner.settings().build();
+
+            assertThat(settings.runQuerySettings().getRetrySettings())
+                    .isEqualTo(DatastoreClients.libraryRetrySettings());
+        }
+    }
+
+    /** A closed planner keeps no reference to the credentials it was given. */
+    @Test
+    void closingThePlannerDropsItsCredentials() throws Exception {
+        ClientQueryPlanner planner = new ClientQueryPlanner(null);
+        planner.useCredentials(GoogleCredentials.create(new AccessToken("t", null)));
+        assertThat(planner.settings().getCredentialsProvider())
+                .isInstanceOf(FixedCredentialsProvider.class);
+
+        planner.close();
+
+        assertThat(planner.settings().getCredentialsProvider())
+                .isNotInstanceOf(FixedCredentialsProvider.class);
     }
 }

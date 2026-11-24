@@ -30,6 +30,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -681,6 +682,275 @@ class PerCallClientRunnerTest {
             }
         }
         assertThat(first.get(10, TimeUnit.SECONDS)).isInstanceOf(IOException.class);
+        assertThat(client.closes).hasValue(1);
+    }
+
+    /** A session's calls share the one client opened for it, which closes when the body returns. */
+    @Test
+    void aSessionRunsItsCallsOnOneClientAndClosesItWhenTheBodyReturns() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        AtomicInteger opens = new AtomicInteger();
+
+        String result =
+                runner.session(
+                        () -> "settings",
+                        settings -> {
+                            opens.incrementAndGet();
+                            return open(settings);
+                        },
+                        session -> {
+                            String first =
+                                    session.call(
+                                            c -> {
+                                                assertThat(c).isSameAs(client);
+                                                assertThat(client.closes).hasValue(0);
+                                                return ApiFutures.immediateFuture("first");
+                                            });
+                            String second =
+                                    session.call(
+                                            c -> ApiFutures.immediateFuture(first + "+second"));
+                            assertThat(client.closes)
+                                    .as("the client closed between the session's calls")
+                                    .hasValue(0);
+                            return second;
+                        });
+
+        assertThat(result).isEqualTo("first+second");
+        assertThat(opens).hasValue(1);
+        assertThat(client.closes).hasValue(1);
+    }
+
+    /** A refusal the body answers, such as a fallback on {@code INVALID_ARGUMENT}, ends nothing. */
+    @Test
+    void aFailureTheBodyCatchesLeavesTheSessionOpenForItsNextCall() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        IllegalArgumentException refusal = new IllegalArgumentException("refused");
+
+        String result =
+                runner.session(
+                        () -> "settings",
+                        this::open,
+                        session -> {
+                            try {
+                                session.call(c -> ApiFutures.immediateFailedFuture(refusal));
+                                throw new AssertionError("the refused call returned");
+                            } catch (IllegalArgumentException e) {
+                                assertThat(e).isSameAs(refusal);
+                            }
+                            return session.call(c -> ApiFutures.immediateFuture("fallback"));
+                        });
+
+        assertThat(result).isEqualTo("fallback");
+        assertThat(client.closes).hasValue(1);
+    }
+
+    /**
+     * A teardown that lands on a session's second call cancels that call, closes the client once,
+     * and the body's failure says the runner was closed.
+     */
+    @Test
+    void closeCancelsTheSessionsCallInFlightAndClosesItsClient() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        SettableApiFuture<String> pending = SettableApiFuture.create();
+        CountDownLatch started = new CountDownLatch(1);
+        CompletableFuture<Throwable> caller =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                runner.session(
+                                        () -> "settings",
+                                        this::open,
+                                        session -> {
+                                            session.call(c -> ApiFutures.immediateFuture("first"));
+                                            return session.call(
+                                                    c -> {
+                                                        started.countDown();
+                                                        return pending;
+                                                    });
+                                        });
+                                return null;
+                            } catch (Throwable t) {
+                                return t;
+                            }
+                        });
+        assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+
+        runner.close();
+
+        assertThat(pending.isCancelled()).as("the session's call in flight was cancelled").isTrue();
+        assertThat(caller.get(10, TimeUnit.SECONDS))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("was closed while a call was in flight");
+        assertThat(client.closes).as("the client was closed once").hasValue(1);
+    }
+
+    /**
+     * A teardown that lands between a session's calls closes the client, and the session's next
+     * call is refused without being started.
+     */
+    @Test
+    void aCallAfterCloseIsRefusedWithoutStarting() {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        AtomicBoolean secondStarted = new AtomicBoolean();
+
+        assertThatThrownBy(
+                        () ->
+                                runner.session(
+                                        () -> "settings",
+                                        this::open,
+                                        session -> {
+                                            session.call(c -> ApiFutures.immediateFuture("first"));
+                                            runner.close();
+                                            assertThat(client.closes)
+                                                    .as("close() closed the session's client")
+                                                    .hasValue(1);
+                                            return session.call(
+                                                    c -> {
+                                                        secondStarted.set(true);
+                                                        return ApiFutures.immediateFuture("x");
+                                                    });
+                                        }))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("was closed; the job is shutting down");
+        assertThat(secondStarted).as("a call started after close()").isFalse();
+        assertThat(client.closes).as("the client was closed once").hasValue(1);
+    }
+
+    /**
+     * A session runs one call at a time: a second call started while its first is in flight is
+     * refused unstarted, and the first stays the call {@code close()} cancels.
+     */
+    @Test
+    void aSessionsSecondConcurrentCallIsRefusedAndTheFirstStaysCancellable() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        SettableApiFuture<String> pending = SettableApiFuture.create();
+        CountDownLatch started = new CountDownLatch(1);
+        AtomicReference<Throwable> secondCall = new AtomicReference<>();
+        AtomicBoolean secondStarted = new AtomicBoolean();
+
+        assertThatThrownBy(
+                        () ->
+                                runner.session(
+                                        () -> "settings",
+                                        this::open,
+                                        session -> {
+                                            Thread other =
+                                                    new Thread(
+                                                            () -> {
+                                                                await(started);
+                                                                try {
+                                                                    session.call(
+                                                                            c -> {
+                                                                                secondStarted.set(
+                                                                                        true);
+                                                                                return ApiFutures
+                                                                                        .immediateFuture(
+                                                                                                "x");
+                                                                            });
+                                                                } catch (Throwable t) {
+                                                                    secondCall.set(t);
+                                                                }
+                                                                // Only once the second call was
+                                                                // refused: the close must find
+                                                                // the first call still in flight.
+                                                                runner.close();
+                                                            },
+                                                            "second-call");
+                                            other.start();
+                                            return session.call(
+                                                    c -> {
+                                                        started.countDown();
+                                                        return pending;
+                                                    });
+                                        }))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("was closed while a call was in flight");
+
+        assertThat(secondCall.get())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("one call at a time");
+        assertThat(secondStarted).as("the refused call started").isFalse();
+        assertThat(pending.isCancelled()).as("the first call was cancelled").isTrue();
+        assertThat(client.closes).hasValue(1);
+    }
+
+    /**
+     * A failure of the body's own that happens to be an {@link InterruptedIOException}, such as a
+     * socket timeout, is not an interrupt the session consumed, and sets none.
+     */
+    @Test
+    void aBodysOwnInterruptedIOExceptionSetsNoInterrupt() {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        SocketTimeoutException timeout = new SocketTimeoutException("read timed out");
+
+        assertThatThrownBy(
+                        () ->
+                                runner.session(
+                                        () -> "settings",
+                                        this::open,
+                                        session -> {
+                                            session.call(c -> ApiFutures.immediateFuture("first"));
+                                            throw timeout;
+                                        }))
+                .isSameAs(timeout);
+        assertThat(Thread.interrupted()).as("an interrupt was set").isFalse();
+        assertThat(client.closes).hasValue(1);
+    }
+
+    /**
+     * An interrupt a call's wait consumed is set again before the client closes even when the body
+     * swallows the {@link InterruptedIOException} and returns.
+     */
+    @Test
+    void anInterruptTheBodySwallowsIsStillRestored() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+
+        String result;
+        try {
+            result =
+                    runner.session(
+                            () -> "settings",
+                            this::open,
+                            session -> {
+                                Thread.currentThread().interrupt();
+                                try {
+                                    session.call(c -> SettableApiFuture.<String>create());
+                                    throw new AssertionError("the interrupted wait returned");
+                                } catch (InterruptedIOException e) {
+                                    assertThat(Thread.currentThread().isInterrupted())
+                                            .as("the wait left the interrupt set")
+                                            .isFalse();
+                                    return "swallowed";
+                                }
+                            });
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the interrupt was restored")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(result).isEqualTo("swallowed");
+        assertThat(client.closes).hasValue(1);
+    }
+
+    /** A session that leaks its handle cannot start a call once its body has returned. */
+    @Test
+    void aSessionCannotCallOnceItsBodyHasReturned() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+        AtomicReference<PerCallClientRunner.ClientSession<FakeClient>> leaked =
+                new AtomicReference<>();
+
+        runner.session(
+                () -> "settings",
+                this::open,
+                session -> {
+                    leaked.set(session);
+                    return "done";
+                });
+
+        assertThatThrownBy(() -> leaked.get().call(c -> ApiFutures.immediateFuture("x")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("session is no longer open");
         assertThat(client.closes).hasValue(1);
     }
 

@@ -298,8 +298,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   every `ValueType`, so a type a BOM bump adds fails there. Meaning is read through
   `value.toBuilder().getMeaning()`, the only public route.
 - **The writer is synchronous** (Spanner shape): one non-transactional `CommitRequest` at a time,
-  encoded by `EntityProtos` in the writer's order and sent through the client's `DatastoreRpc`, on
-  the task thread. `Batch` is not used: it cannot carry `Mutation.property_mask`, which
+  encoded by `EntityProtos` in the writer's order and sent through the generated client's
+  synchronous `commitCallable()`, on the task thread. `Batch` is not used: it cannot carry `Mutation.property_mask`, which
   `upsertMerge` needs. **Each write is encoded once**, when it enters the buffer
   (`EncodedMutation`, #1744): its size is taken from that encoding, and every commit carrying it,
   retries and solo re-sends included, sends the same instance. `DatastoreDatabaseAccess.commit`
@@ -318,10 +318,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `NOT_FOUND` like `update`; an entity without properties is refused at build. Every operation
   that can earn `NOT_FOUND` must be named in `DatastoreWriter.earns` and in the fake's
   `servesLikeTheService()` refusal.
-- **The client makes one attempt per call** (`DatastoreClients` sets single-attempt
-  `RetrySettings`, which the library applies to `RetryHelper` and to every generated call); the
-  writer owns retries on the `recovery*` schedule. **The host is always set**, so
-  `DATASTORE_EMULATOR_HOST` never chooses the endpoint; the emulator path uses `NoCredentials`.
+- **Every Datastore gRPC client is the generated `v1.DatastoreClient`, opened through
+  `DatastoreClients.open`** on the connector's event-loop group (ADR-0208's #2329 section): never
+  the library's `Datastore` or its `DatastoreRpc`, whose emulator arm builds its own channel on
+  gRPC's shared group and cannot read a `dns:///` target. The emulator arm is a caller-owned
+  channel (`EmulatorChannels.openLeasedClient`) with `NoCredentialsProvider`; the generated client
+  never reads `DATASTORE_EMULATOR_HOST`. Two things `Datastore` did are kept by hand, each held by
+  `DatastoreClientsTest`: a service-account key goes out as a self-signed scoped JWT
+  (`useJwtAccessWithScope`), and an `http://` or `https://` emulator endpoint loses its scheme
+  before gRPC sees it (`dns:///` is kept). Both are the gRPC clients' only: the planner's HTTP
+  splitter still exchanges a locally signed assertion for an access token at the token endpoint,
+  and refuses either scheme. The credential statements describe a key in the default universe
+  domain; a key for another universe domain was not examined.
+- **The sink's client makes one attempt per call** (`DatastoreClients.singleAttempt` on every
+  unary method); the writer owns retries on the `recovery*` schedule. An id allocation goes
+  through the generated client too and fails with the gax `ApiException`; its keys are decoded
+  through `Entity.fromPb`, since `Key.fromPb` is package-private.
 - **The default database id is empty** in the Datastore API, which refuses `(default)`;
   `DatabaseDestination` normalizes it. A key of another project or database is routed before it is
   sent.
@@ -362,8 +374,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   appended, falling back to running it as written on `INVALID_ARGUMENT`.
 - **`QuerySplitter` is called over the proto-client HTTP `Datastore`** (`SplitterClient`, built
   through `HttpDatastoreRpc`'s factory; owner's decision, 2026-10-03), on the JobManager only while
-  planning. Readers use the gRPC `DatastoreRpc` of a client `DatastoreClients` builds with the
-  library's retry settings (`callTimeout` null; `LazyDatastoreClientTest` pins it).
+  planning. Readers and the planner's own queries use the generated client with the retry settings
+  the library's `Datastore` applied (`DatastoreClients.libraryRetrySettings()`, which
+  `DatastoreClientsTest` compares with the library's). **The planner opens a client per plan**: its
+  GQL parse, read-time probe and statistics queries are one `PerCallClientRunner` session, which
+  `close()` cancels; the splitter runs after it (ADR-0208). The page reader waits on a future
+  derived from each page's call (`ApiFutures.transform`), never on the call's own, and its
+  `close()` cancels those before closing the client: the client's bounded close ends in
+  `shutdownNow()`, which drops a scheduled gax retry, and a cancellation between two gax attempts
+  can miss the call, so a waiter on the call's future could be stranded.
 - **The splitter's ranges are rebuilt in the service's key order** (`KeyRanges`; owner's decision,
   2026-10-03): its comparator orders names by UTF-16 code unit, the service by UTF-8 byte
   (measured on the emulator and the service), and misordered boundaries make ranges overlap. Do not hand the
@@ -399,7 +418,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   passed on (documented, owner's decision); a keyless projection result fails the read.
 - The emulator samples no `__scatter__` keys and keeps no statistics; emulator tests cut ranges
   through `FixedSplitsPlannerFactory` (an override of `ClientQueryPlanner.split`), and the planner's
-  RPC-level steps are unit-tested through `FakeDatastoreRpc`. `DatastoreEmulatorReadDeviationITCase`
+  RPC-level steps are unit-tested through `FakeQueries`; `FakeDatastoreStub` stands in for the
+  generated client where a test needs one. `DatastoreEmulatorReadDeviationITCase`
   pins each emulator fact the docs' deviation table states; with `DatastoreSourceEmulatorITCase`
   it pins the emulator evidence ADR-0177 records.
 
@@ -499,8 +519,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - **Read through the generated `v1.DatastoreClient`, not `Datastore` or `DatastoreRpc`**:
   `lookupCallable().futureCall()` is the only future-returning `Lookup`; the blocking function
-  waits on it (owner, 2026-10-10). Settings come from `DatastoreClients.lookupSettings`
-  (`EmulatorChannels` plaintext for the emulator). Never `Datastore.get` (unbounded deferral loop,
+  waits on it (owner, 2026-10-10). The client is opened through `DatastoreClients.open` with the
+  generated client's own retry settings. Never `Datastore.get` (unbounded deferral loop,
   ADR-0175).
 - **A deferred key is a transient read failure** (`DatastoreEntityLookups.DeferredException`)
   within `lookup.max-retries`, never a miss (owner). `DatastoreLookupErrorClassifier` otherwise

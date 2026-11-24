@@ -52,10 +52,9 @@ import java.util.Map;
  * the stored entity and an {@code updateProperties} replaces only the properties it holds, as their
  * property masks make the service do, so a lookup after a masked write sees the whole entity.
  *
- * <p>Failures are thrown in production's shapes: a commit or a lookup, which go through the
- * client's RPC object, throws the gax exception carrying the status ({@link #rpcFailure}), and an
- * id allocation, which goes through the client library, a {@link DatastoreException} with that
- * exception as its cause ({@link #failure}).
+ * <p>Failures are thrown in production's shape: a commit, a lookup and an id allocation each go
+ * through the generated client, which throws the gax exception carrying the status ({@link
+ * #rpcFailure}).
  */
 final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
 
@@ -335,7 +334,7 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         allocations.add(keys.size());
         StatusCode.Code scripted = nextAllocationFailures.poll();
         if (scripted != null) {
-            throw failure(scripted);
+            throw rpcFailure(scripted);
         }
         List<Key> allocated = new ArrayList<>(keys.size());
         for (IncompleteKey key : keys) {
@@ -394,14 +393,19 @@ final class FakeDatastoreDatabaseAccess implements DatastoreDatabaseAccess {
         return closeCalls;
     }
 
-    /** A failure in the shape the client library throws: what an id allocation fails with. */
+    /**
+     * A failure in the shape the client library's {@code Datastore} throws, a {@link
+     * DatastoreException} around the gax exception, which the sink no longer meets but the
+     * classifier still reads.
+     */
     static DatastoreException failure(StatusCode.Code code) {
         return new DatastoreException(
                 0, code + ": refused by the fake", code.name(), rpcFailure(code));
     }
 
     /**
-     * A failure in the shape the client's RPC object throws: what a commit or a lookup fails with.
+     * A failure in the shape the generated client throws: what a commit, a lookup or an id
+     * allocation fails with.
      */
     static ApiException rpcFailure(StatusCode.Code code) {
         StatusCode status =

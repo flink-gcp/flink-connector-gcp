@@ -146,12 +146,14 @@ creation or seek of a subscription when the source starts, Spanner's batch enume
 planned the read's partitions, Spanner's Change Streams enumerator once it has read the stream's
 configuration, Bigtable's scan enumerator once it has sampled the table's row keys, and Bigtable's
 Change Streams enumerator after each check of the application profile, read of the table's
-retention and listing of its partitions, including the partition scan it repeats every 10 seconds.
+retention and listing of its partitions, including the partition scan it repeats every 10 seconds,
+and a Datastore-mode Firestore enumerator once its planning queries have returned, before the client library's
+splitter cuts its key ranges.
 A loader released while such a call is in flight can still see the group torn down after it
 closed: the job ends in any way, a stop with a savepoint included, or the JobManager shuts down,
 when a BigQuery table read starts, when a BigQuery query read's query has finished, while a
-Pub/Sub or Spanner source starts, or while a Bigtable enumerator is waiting for one of the calls
-above.
+Pub/Sub, Spanner or Datastore-mode Firestore source starts, or while a Bigtable enumerator is
+waiting for one of the calls above.
 Closing the enumerator then asks for the call to be cancelled rather than waiting for its answer.
 A Spanner Change Streams enumerator, or the enumerator of a Spanner Table API scan that reads
 through `scan.index` or whose primary-key filter depends on the key's sort order, closed before
@@ -179,8 +181,8 @@ close for that long.
 A Storage Write API default-stream writer is closed by the client library instead, whose own waits
 can take minutes when it closes a connection's last writer.
 The last close also waits up to 11 seconds for the group.
-When Flink interrupts a BigQuery, Bigtable or Spanner full lookup cache load, which it gives 10
-seconds to end, that wait ends after its first second.
+When Flink interrupts a BigQuery, Bigtable, Spanner or Datastore-mode Firestore full lookup cache
+load, which it gives 10 seconds to end, that wait ends after its first second.
 If an event loop is still busy then, the group's threads can outlive the job's class loader and
 fail as described above.
 In a thread dump, `flink-gcp-grpc-elg-*` threads left after every job using the connector has
@@ -232,8 +234,8 @@ each time under a new client id.
 Under DirectPath on Google Cloud, gRPC's own xDS and ALTS control channels are another such
 channel, also unmeasured.
 
-The Firestore connector still uses gRPC's group
-([#2243]({{< param BookRepo >}}/issues/2243)).
+The Firestore connector's Native mode still uses gRPC's group
+([#2330]({{< param BookRepo >}}/issues/2330)); its Datastore mode runs on the connector's own.
 Under `FAIL`, placing it in Flink's `lib/` avoids the exit, because the parent class loader never
 closes; the same holds for the Bigtable and Spanner channels above.
 
