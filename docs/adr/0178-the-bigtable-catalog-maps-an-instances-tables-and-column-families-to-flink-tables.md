@@ -107,9 +107,9 @@ Contributing to an aggregate family takes an aggregate input table, which ADR-01
 
 ### Requests and statistics
 
-The client is a `BigtableTableAdminClient` with table-admin scopes only, opened on the first table request as ADR-0168 requires.
-Both requests go through its protobuf client (`getBaseClient()`), never the model methods the pinned client marks `@ObsoleteApi`: the listing with `NAME_ONLY`, and a table's families with `SCHEMA_VIEW`, as the sink's table admin reads them, so a family type the client's model classes do not know still reaches the mapping.
-Moving the module's remaining model-method calls, in the sink, the Change Streams preflight and the test harnesses, is [#1622](https://github.com/flink-gcp/flink-connector-gcp/issues/1622).
+The client is a `BigtableTableAdminClientV2` with table-admin scopes only, opened on the first table request as ADR-0168 requires ([#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322); it was the `@ObsoleteApi` wrapper client before).
+Both requests are protobuf requests that name the instance or table in full, never the wrapper's model methods, which the pinned client marks `@ObsoleteApi`: the listing with `NAME_ONLY`, and a table's families with `SCHEMA_VIEW`, as the sink's table admin reads them, so a family type the SDK's model classes do not know still reaches the mapping.
+[#1622](https://github.com/flink-gcp/flink-connector-gcp/issues/1622) moved the module's remaining model-method calls, in the sink, the Change Streams preflight and the test harnesses.
 Statistics are `UNKNOWN`: Bigtable's metadata carries no row count a planner can use without a scan.
 
 ### Tier

@@ -19,8 +19,8 @@ package io.github.flink.gcp.connector.bigtable;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableInstanceAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
@@ -65,12 +65,15 @@ class BigtableCredentialsTest {
     @Test
     void eachEntryPointScopesToExactlyItsClientFamilies() throws Exception {
         String keyFile = ServiceAccountKeyFiles.create(tempDir).toString();
+        // The providers the clients the connector opens start from, read through the settings those
+        // clients are built from rather than the members the loader reads.
         Collection<String> data =
                 vendorScopes(BigtableDataSettings.newBuilder().getCredentialsProvider());
         Collection<String> tableAdmin =
-                vendorScopes(BigtableTableAdminSettings.newBuilder().getCredentialsProvider());
+                vendorScopes(BaseBigtableTableAdminSettings.newBuilder().getCredentialsProvider());
         Collection<String> instanceAdmin =
-                vendorScopes(BigtableInstanceAdminSettings.newBuilder().getCredentialsProvider());
+                vendorScopes(
+                        BaseBigtableInstanceAdminSettings.newBuilder().getCredentialsProvider());
 
         assertThat(scopesOf(BigtableCredentials.loadData(keyFile)))
                 .containsExactlyInAnyOrderElementsOf(union(data))

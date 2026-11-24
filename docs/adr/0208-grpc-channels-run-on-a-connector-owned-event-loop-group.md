@@ -27,7 +27,8 @@ limitations under the License.
   [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269),
   [#2282](https://github.com/flink-gcp/flink-connector-gcp/issues/2282),
-  [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312)
+  [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312),
+  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322)
 - Modules: base, bigquery, bigtable, cloudtasks, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -223,6 +224,7 @@ releases the group's last lease shuts it down and waits for its threads.**
 - None of the three Bigtable clients is a gax `BackgroundResource`: `BigtableDataClient`,
   `BigtableTableAdminClient` and `BigtableInstanceAdminClient` are plain `AutoCloseable`s
   (google-cloud-bigtable 2.88.0).
+  The admin clients have been gax clients since #2322 (below); the data client still is not.
   The data client's `close()` drains its session pool for up to six minutes, then shuts its classic
   channels down and waits up to six minutes for them to terminate without cancelling the classic
   calls still in flight (gax 2.90.0 `GrpcTransportChannel.close()`); on an interrupted thread, or
@@ -243,6 +245,7 @@ releases the group's last lease shuts it down and waits for its threads.**
 - **The emulator arms keep the SDK's own `newBuilderForEmulator(host, port)`**, which sets an
   instantiating provider with a plaintext configurator of its own; the lease is composed after
   it, so no caller-owned channel is needed.
+  Since #2322 only the data client's arm does: the admin clients' settings have no such builder.
 - On a TaskManager, the sinks' per-instance clients release their leases as they close on the
   client reaper's threads, which the writer's close waits for; the readers' clients through
   `LazyBigtableDataClient`, the lookup and the full lookup cache hold theirs from open to close,
@@ -458,6 +461,48 @@ releases the group's last lease shuts it down and waits for its threads.**
 - **Spanner's batch planner stays off the runner.**
   Its calls are synchronous and expose no `ApiFuture`; it cancels them through the gRPC `Context`
   they run in, and a deferred operation's multiplexed session is created outside that context.
+
+**The Bigtable admin clients are opened as gax clients (#2322, 2026-11-25).**
+
+- **The admin clients are `BigtableTableAdminClientV2` and `BigtableInstanceAdminClientV2`**,
+  opened from `BaseBigtableTableAdminSettings` and `BaseBigtableInstanceAdminSettings`, because
+  google-cloud-bigtable 2.89.0 marks the wrapper clients, their factories and their settings
+  `@ObsoleteApi` (ADR-0041).
+  The V2 clients extend the generated `BaseBigtable*AdminClient`s, which are gax
+  `BackgroundResource`s, so `BigtableClients` opens them with `open` rather than
+  `openAutoCloseable`.
+  Their close is therefore the bounded one above: the holder shuts the client down, waits for it
+  to terminate, cancels its calls if it has not, and then releases the lease.
+  The wrappers' close only shut their channels down and returned.
+  The table admin client also owns an executor for its consistency and restore waits, which the
+  module does not call; its shutdown and termination are part of the same close.
+  Opening the generated `BaseBigtableTableAdminClient` instead would avoid that executor, and was
+  declined: its factories and constructors are protected, so the connector would need a subclass
+  of its own, the obsolete wrappers name the V2 clients as their replacement, and the executor
+  starts no thread until something is scheduled on it.
+- **Their emulator arms open a caller-owned channel with `EmulatorChannels.openLeasedClient`**,
+  from the API's own transport defaults, as the Pub/Sub, BigQuery and Cloud Tasks clients do.
+  The base settings have no `newBuilderForEmulator`, and an instantiating provider would carry the
+  two failures recorded for Cloud Tasks above.
+  The defaults keep the maximum inbound message size at `Integer.MAX_VALUE`, where the wrappers'
+  emulator builder used gRPC's 4 MiB.
+  The data client keeps the SDK's emulator builder.
+- **A process with `BIGTABLE_EMULATOR_HOST` set to a non-empty value and no emulator endpoint
+  configured opens no Bigtable client.**
+  The data client's settings read the variable and switch to the emulator, with no credentials;
+  the base admin settings do not read it.
+  Before this change, a value the library could parse made every component fail while loading
+  credentials, with a message about the client's credential scopes, because the loader read the
+  scopes from a settings builder that the variable had switched to no credentials; a value it
+  could not parse, such as `localhost`, failed in the library's own host and port parser.
+  The loader now reads them from settings that never read the variable, and the data and admin
+  settings refuse it by name before the library reads it, so the two families cannot point at
+  different hosts.
+  The refusal comes when a component opens a client.
+  A configured emulator endpoint takes precedence and the variable is not consulted then.
+  The Pub/Sub source ignores `PUBSUB_EMULATOR_HOST` for the same reason, that a stray value would
+  silently redirect a production job; the Bigtable connector cannot ignore its variable, because
+  the data client's settings read it.
 
 The Firestore connector moves onto the group in #2243.
 

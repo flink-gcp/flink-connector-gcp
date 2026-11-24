@@ -59,7 +59,7 @@ class BigtableTableAdminTest {
     void injectsTheRuntimeCredentialProvider() throws Exception {
         NoCredentialsProvider provider = NoCredentialsProvider.create();
 
-        assertThat(new BigtableTableAdmin(null, provider).settings(TABLE).getCredentialsProvider())
+        assertThat(new BigtableTableAdmin(null, provider).settings().getCredentialsProvider())
                 .isSameAs(provider);
     }
 

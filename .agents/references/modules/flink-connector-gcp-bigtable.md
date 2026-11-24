@@ -7,31 +7,46 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Admin calls (`docs/adr/0041`)
 
-- **Every admin call goes through the protobuf client**: `getBaseClient()` with a
-  `com.google.bigtable.admin.v2` request, in main code, the test harnesses and the SQL jar's
-  smoke test alike (#1622). The pinned client marks nearly every model method of both admin
-  clients `@ObsoleteApi`, and the model types parse every family's value type, so a family type
-  the SDK does not know fails the whole read (ADR-0156). Since 2.89.0 the wrappers are marked
-  too: both classes, their `create` factories, their settings classes and the consistency and
-  restore-optimization waits are `@ObsoleteApi`, and the module still opens its admin clients
-  through those factories and settings (`BigtableClients`, `BigtableCredentials`);
-  `getBaseClient()` and `close` stay unmarked. Opening `BigtableTableAdminClientV2` and
-  `BigtableInstanceAdminClientV2` from the `Base*AdminSettings` instead is #2322. Test harnesses
-  build families with `BigtableAdminProtos`;
+- **Every admin call is a `com.google.bigtable.admin.v2` request on a V2 client**:
+  `BigtableTableAdminClientV2` and `BigtableInstanceAdminClientV2`, opened from
+  `BaseBigtableTableAdminSettings` and `BaseBigtableInstanceAdminSettings`, in main code, the test
+  harnesses and the SQL jar's smoke test alike (#1622, #2322). Requests name their project,
+  instance and table in full; the settings carry none of them. The wrapper clients
+  (`BigtableTableAdminClient`, `BigtableInstanceAdminClient`), their `create` factories and their
+  settings classes are `@ObsoleteApi` since 2.89.0, and so are nearly all of their model methods,
+  whose model types parse every family's value type, so a family type the SDK does not know would
+  fail the whole read (ADR-0156). No source in the Bigtable modules names a wrapper type or calls
+  `getBaseClient()`. Test harnesses build families with `BigtableAdminProtos`;
   `BigtableTableAdminTest` and `ColumnFamilyTypesTest` pin the sink's create and modify requests
   field by field.
 
 ## gRPC event-loop group (`docs/adr/0208`, #2264)
 
 - **Every Bigtable client is opened through `BigtableClients`** (`openData`,
-  `openTableAdmin`, `openInstanceAdmin`), never `Bigtable*Client.create`. None of the three is a
-  gax `BackgroundResource`, so they are held by base's `LeasedClient` from
+  `openTableAdmin`, `openInstanceAdmin`), never `Bigtable*Client.create`. The data client is not a
+  gax `BackgroundResource`, so it is held by base's `LeasedClient` from
   `GrpcEventLoops.openAutoCloseable` (#2312), which closes the client with its own `close()` and
   then the lease; the lease goes on the stub settings' instantiating provider through
-  `Lease.applyTo(TransportChannelProvider)`. The `open*` methods take the settings *builder*: a
-  settings `toBuilder()` round trip is not guaranteed to carry every field, which is why the stub
-  `applyTo` stays package-private. The emulator arms keep the SDK's
+  `Lease.applyTo(TransportChannelProvider)`. `openData` takes the settings *builder*: a settings
+  `toBuilder()` round trip is not guaranteed to carry every field, which is why the stub `applyTo`
+  stays package-private. The data client's emulator arm keeps the SDK's
   `newBuilderForEmulator(host, port)`, whose own plaintext configurator the lease composes after.
+- **The admin clients are gax clients** (#2322): `GrpcEventLoops.open` holds them, so their close
+  is bounded and waits for termination. Their settings come only from
+  `BigtableClients.tableAdminSettings` / `instanceAdminSettings` (the admin family's one emulator
+  branch: credentials, or none on an emulator), and `openTableAdmin` / `openInstanceAdmin` take
+  that builder and the same emulator endpoint. The emulator arm opens a caller-owned plaintext
+  channel through `EmulatorChannels.openLeasedClient`, from the API's transport defaults.
+- **`BIGTABLE_EMULATOR_HOST` without a configured emulator endpoint opens no client**
+  (`EmulatorHostVariableChecks`, #2322): `BigtableDataClients.settings` and both admin settings
+  methods refuse it, because the data client's SDK settings would follow it and the admin ones
+  would not.
+  `BigtableCredentials` reads default scopes from settings that never read the variable
+  (`EnhancedBigtableStubSettings.newBuilder()`, `Base*AdminSettings.getDefaultServiceScopes()`),
+  never from `BigtableDataSettings.newBuilder()`, which the variable switches to no credentials,
+  and not from the default-credentials builders, whose class gax marks `@BetaApi`. Real-GCP
+  harnesses refuse the variable through the test helper `NoEmulatorVariable`.
+  `EmulatorHostVariableChecksTest` holds the wiring in a child JVM that sets the variable.
 - **A JobManager-side client is opened per call through base's `PerCallClientRunner`**: the row-key sampler
   and the Change Streams coordinator (profile check, retention, partition listing incl. the 10 s
   reconciliation scan). Every new JobManager call goes through `runner.call(<settings builder

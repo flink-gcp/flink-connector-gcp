@@ -22,9 +22,9 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.auth.oauth2.GoogleCredentials;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
-import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableInstanceAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
+import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
 import io.github.flink.gcp.connector.base.auth.ServiceAccountKeys;
 
 import javax.annotation.Nullable;
@@ -87,23 +87,28 @@ public final class BigtableCredentials {
         return credentials == null ? null : FixedCredentialsProvider.create(credentials);
     }
 
+    // Read from settings that never consult BIGTABLE_EMULATOR_HOST, unlike the data settings'
+    // newBuilder(), which holds no Google credentials while it is set; EmulatorHostVariableChecks
+    // rejects the variable after the credentials are loaded. The default-credentials builders
+    // would do as well, but gax marks GoogleCredentialsProvider.Builder @BetaApi.
+
     private static Collection<String> dataScopes() {
-        return scopesOf(BigtableDataSettings.newBuilder().getCredentialsProvider());
+        return scopesOf(EnhancedBigtableStubSettings.newBuilder().getCredentialsProvider());
     }
 
     private static Collection<String> tableAdminScopes() {
-        return scopesOf(BigtableTableAdminSettings.newBuilder().getCredentialsProvider());
+        return BaseBigtableTableAdminSettings.getDefaultServiceScopes();
     }
 
     private static Collection<String> instanceAdminScopes() {
-        return scopesOf(BigtableInstanceAdminSettings.newBuilder().getCredentialsProvider());
+        return BaseBigtableInstanceAdminSettings.getDefaultServiceScopes();
     }
 
     private static Collection<String> scopesOf(CredentialsProvider provider) {
         if (!(provider instanceof GoogleCredentialsProvider)) {
             throw new IllegalStateException(
-                    "The Bigtable client no longer exposes its default credential scopes through"
-                            + " GoogleCredentialsProvider.");
+                    "The Bigtable data client no longer exposes its default credential scopes"
+                            + " through GoogleCredentialsProvider.");
         }
         return ((GoogleCredentialsProvider) provider).getScopesToApply();
     }

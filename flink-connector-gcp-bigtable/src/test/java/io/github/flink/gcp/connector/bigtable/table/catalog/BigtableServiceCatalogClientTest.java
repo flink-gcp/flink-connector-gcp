@@ -17,38 +17,46 @@
 package io.github.flink.gcp.connector.bigtable.table.catalog;
 
 import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.bigtable.admin.v2.Table;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The admin settings the catalog's client opens with; no client is created. */
+/** The settings and requests the catalog's client works with; no client is created. */
 class BigtableServiceCatalogClientTest {
 
     /** Without this, the catalog's metadata requests would go out under ADC, not the key file. */
     @Test
-    void injectsTheLoadedCredentialsAndNamesTheInstance() throws Exception {
+    void injectsTheLoadedCredentials() throws Exception {
         NoCredentialsProvider provider = NoCredentialsProvider.create();
 
-        BigtableTableAdminSettings settings =
-                BigtableServiceCatalogClient.settings("proj", "inst", null, provider);
+        BaseBigtableTableAdminSettings settings =
+                BigtableServiceCatalogClient.settings(null, provider);
 
         assertThat(settings.getCredentialsProvider()).isSameAs(provider);
-        assertThat(settings.getProjectId()).isEqualTo("proj");
-        assertThat(settings.getInstanceId()).isEqualTo("inst");
     }
 
     @Test
-    void anEmulatorEndpointSelectsTheEmulatorChannel() throws Exception {
-        BigtableTableAdminSettings settings =
+    void anEmulatorEndpointCarriesNoCredentials() throws Exception {
+        BaseBigtableTableAdminSettings settings =
                 BigtableServiceCatalogClient.settings(
-                        "proj",
-                        "inst",
-                        EmulatorEndpoint.parse("localhost:8086", "emulator-endpoint"),
-                        null);
+                        EmulatorEndpoint.parse("localhost:8086", "emulator-endpoint"), null);
 
-        assertThat(settings.getStubSettings().getEndpoint()).isEqualTo("localhost:8086");
         assertThat(settings.getCredentialsProvider()).isInstanceOf(NoCredentialsProvider.class);
+    }
+
+    /** The client's settings carry no project or instance, so the requests name both. */
+    @Test
+    void theRequestsNameTheInstanceAndTable() {
+        assertThat(BigtableServiceCatalogClient.listTablesRequest("proj", "inst").getParent())
+                .isEqualTo("projects/proj/instances/inst");
+        assertThat(BigtableServiceCatalogClient.listTablesRequest("proj", "inst").getView())
+                .isEqualTo(Table.View.NAME_ONLY);
+        assertThat(BigtableServiceCatalogClient.tableRequest("proj", "inst", "orders").getName())
+                .isEqualTo("projects/proj/instances/inst/tables/orders");
+        assertThat(BigtableServiceCatalogClient.tableRequest("proj", "inst", "orders").getView())
+                .isEqualTo(Table.View.SCHEMA_VIEW);
     }
 }

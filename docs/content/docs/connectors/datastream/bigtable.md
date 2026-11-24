@@ -670,6 +670,17 @@ Bigtable. The setter parses it into the host and port the client's emulator sett
 malformed value is rejected by that call on the client rather than when the writer builds its client
 on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
 
+Wherever the connector takes an emulator endpoint, that setting is the only way it reaches an
+emulator; the Change Streams source takes none, because the emulator does not implement Change
+Streams.
+The client library reads the `BIGTABLE_EMULATOR_HOST` environment variable on its own: a value it can
+parse would point the data client at that host over plaintext, while the admin clients would still
+reach Bigtable, and one it cannot parse fails in the library's own parser.
+So in a process where the variable is set to a non-empty value, the connector refuses to open a
+Bigtable client unless an emulator endpoint is configured, and the failure names the variable.
+The refusal comes when a component opens a client.
+A configured endpoint takes precedence over the variable; to reach Bigtable itself, unset it.
+
 ### Per-record destinations
 
 `table(...)` writes every record to one table. `destinationResolver(...)` names the table per

@@ -58,10 +58,11 @@ import java.util.concurrent.TimeUnit;
  * which the plaintext configurator cannot override (ADR-0208); it stays only for the Datastore
  * emulator arm until that moves (#2266).
  *
- * <p>Nothing here reaches a client library, so one signature covers Pub/Sub, BigQuery, Cloud Tasks
- * and whatever arrives next. Products whose SDK offers its own emulator entry point use that
- * instead and never come here — Bigtable's {@code newBuilderForEmulator(host, port)} and Spanner's
- * {@code setEmulatorHost} both switch the channel and the credentials in one call.
+ * <p>Nothing here reaches a client library, so one signature covers Pub/Sub, BigQuery, Cloud Tasks,
+ * Bigtable's admin clients and whatever arrives next. A client whose SDK offers its own emulator
+ * entry point uses that instead and never comes here — the Bigtable data client's {@code
+ * newBuilderForEmulator(host, port)} and Spanner's {@code setEmulatorHost} both switch the channel
+ * and the credentials in one call.
  */
 @Internal
 public final class EmulatorChannels {

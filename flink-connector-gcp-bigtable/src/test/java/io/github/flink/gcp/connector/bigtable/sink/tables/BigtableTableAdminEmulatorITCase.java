@@ -22,7 +22,7 @@ import com.google.bigtable.admin.v2.GetTableRequest;
 import com.google.bigtable.admin.v2.InstanceName;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -72,13 +72,13 @@ class BigtableTableAdminEmulatorITCase {
             BigtableEmulatorContainers.newContainer();
 
     /** Harness-owned client for preparing tables and reading the results back. */
-    private static BigtableTableAdminClient verification;
+    private static BigtableTableAdminClientV2 verification;
 
     private static BigtableTableAdmin admin;
 
     @BeforeAll
     static void startClients() throws IOException {
-        verification = BigtableTestClients.adminClient(EMULATOR, PROJECT, INSTANCE);
+        verification = BigtableTestClients.adminClient(EMULATOR);
         admin =
                 new BigtableTableAdmin(
                         EmulatorEndpoint.parse(
@@ -166,20 +166,17 @@ class BigtableTableAdminEmulatorITCase {
     }
 
     private static void createTable(String tableId, String family, ColumnFamily definition) {
-        verification
-                .getBaseClient()
-                .createTable(
-                        CreateTableRequest.newBuilder()
-                                .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
-                                .setTableId(tableId)
-                                .setTable(Table.newBuilder().putColumnFamilies(family, definition))
-                                .build());
+        verification.createTable(
+                CreateTableRequest.newBuilder()
+                        .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
+                        .setTableId(tableId)
+                        .setTable(Table.newBuilder().putColumnFamilies(family, definition))
+                        .build());
     }
 
     private static Map<String, com.google.bigtable.admin.v2.GcRule> familiesOf(String tableId) {
         Map<String, com.google.bigtable.admin.v2.GcRule> rules = new HashMap<>();
         verification
-                .getBaseClient()
                 .getTable(
                         GetTableRequest.newBuilder()
                                 .setName(TableName.of(PROJECT, INSTANCE, tableId).toString())

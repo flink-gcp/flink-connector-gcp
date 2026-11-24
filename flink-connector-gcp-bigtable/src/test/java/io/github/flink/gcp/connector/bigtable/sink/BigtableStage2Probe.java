@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import io.github.flink.gcp.connector.bigtable.NoEmulatorVariable;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import java.io.IOException;
@@ -112,7 +113,10 @@ public final class BigtableStage2Probe {
                 throw new IllegalArgumentException(
                         "Recovery runs use BigtableProductionRecoveryProbe");
             }
-            lease.claim(table);
+            // After the lease's admission checks, whose diagnostics come first, and before the
+            // claim
+            // is recorded and its budget reserved: a refused worker consumes neither.
+            lease.claim(table, () -> NoEmulatorVariable.require("A Stage 2 worker"));
             if (table.equals("hot")
                     || table.equals("serialized")
                     || table.matches("(bulk|staged)-r[123]")) {

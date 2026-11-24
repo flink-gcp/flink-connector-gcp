@@ -21,8 +21,9 @@ limitations under the License.
   (2026-08-08), by [#436] (2026-08-10, the flow controller's figures), and by [#1175]
   (2026-09-05, protobuf wrappers for aggregate state), and by [#1622] (2026-10-04, the admin path
   moved to the protobuf client), and by [#2015] (2026-11-07, the flow controller's limits are
-  settable through a beta API), and by [#2319] (2026-11-24, google-cloud-bigtable 2.89.0 marks the
-  admin wrappers themselves obsolete)
+  settable through a beta API), by [#2319] (2026-11-24, google-cloud-bigtable 2.89.0 marks the
+  admin wrappers themselves obsolete), and by [#2322] (2026-11-25, the admin clients are opened as
+  the V2 clients)
 - Issues: [#33], [#216], [#217], [#232], [#236], [#436], [#1175], [#1622], [#2015], [#2322]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md`
@@ -91,11 +92,13 @@ inventory under the same accepted-internal-call reading as the batcher facts abo
 moved every admin call of the module to the protobuf client (`getBaseClient()` with
 `com.google.bigtable.admin.v2` requests), so no call rides either tier. google-cloud-bigtable
 2.89.0 ([#2319]) then marked the wrappers themselves `@ObsoleteApi`: both admin clients, their
-`create` factories and their settings classes, which the module still uses to open the clients.
-So construction rides the obsolete tier again, under the same accepted-internal-call reading, until
-[#2322] opens `BigtableTableAdminClientV2` and `BigtableInstanceAdminClientV2` instead. Unlike a
-batcher fact, an obsolete method had a supported replacement in the same artifact, and a later
-release that removes it would have broken the build and every integration-test harness at once.
+`create` factories and their settings classes, which the module still used to open the clients.
+[#2322] opens `BigtableTableAdminClientV2` and `BigtableInstanceAdminClientV2` from
+`BaseBigtableTableAdminSettings` and `BaseBigtableInstanceAdminSettings` instead, so construction
+rides no obsolete type either. `getBaseClient()` already returned those V2 clients, so the
+requests the module sends are unchanged. Unlike a batcher fact,
+an obsolete method had a supported replacement in the same artifact, and a later release that
+removes it would have broken the build and every integration-test harness at once.
 
 Further design decisions of the same cluster:
 

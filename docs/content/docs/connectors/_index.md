@@ -168,10 +168,9 @@ Pub/Sub's publishers and subscribers keep the shutdown budgets of their own opti
 their hold on the group when that shutdown finishes or its budget runs out.
 A Spanner client waits up to 10 seconds for each of its four stubs in turn as it closes.
 Any other client a connector closes itself gets 5 seconds for its calls to finish before they
-are cancelled, except Bigtable's.
+are cancelled, Bigtable's admin clients included, except the Bigtable data client.
 A Bigtable data client's own close can wait minutes for calls still in flight, up to six for its
-session pool and six more for its other channels, and the admin clients' close does not wait at
-all.
+session pool and six more for its other channels.
 The connector closes a Bigtable client once the calls it started have ended or been cancelled
 where it can cancel them, a full lookup cache load's scan among them; one it cannot, such as a
 point read (a lookup's, or one a full lookup cache load makes for a range whose endpoints are equal

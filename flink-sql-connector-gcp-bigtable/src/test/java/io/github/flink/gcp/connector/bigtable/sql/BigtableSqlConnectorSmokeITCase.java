@@ -24,7 +24,7 @@ import com.google.bigtable.admin.v2.ColumnFamily;
 import com.google.bigtable.admin.v2.CreateTableRequest;
 import com.google.bigtable.admin.v2.InstanceName;
 import com.google.bigtable.admin.v2.Table;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
@@ -95,12 +95,12 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
     private static final BigtableEmulatorContainer EMULATOR =
             BigtableEmulatorContainers.newContainer();
 
-    private static BigtableTableAdminClient adminClient;
+    private static BigtableTableAdminClientV2 adminClient;
     private static BigtableDataClient dataClient;
 
     @BeforeAll
     static void createClients() throws IOException {
-        adminClient = BigtableTestClients.adminClient(EMULATOR, PROJECT, INSTANCE);
+        adminClient = BigtableTestClients.adminClient(EMULATOR);
         dataClient = BigtableTestClients.dataClient(EMULATOR, PROJECT, INSTANCE);
     }
 
@@ -116,17 +116,15 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
 
     /** Creates a table with one raw family through the stock admin client's protobuf surface. */
     private static void createTable(String table, String family) {
-        adminClient
-                .getBaseClient()
-                .createTable(
-                        CreateTableRequest.newBuilder()
-                                .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
-                                .setTableId(table)
-                                .setTable(
-                                        Table.newBuilder()
-                                                .putColumnFamilies(
-                                                        family, ColumnFamily.getDefaultInstance()))
-                                .build());
+        adminClient.createTable(
+                CreateTableRequest.newBuilder()
+                        .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
+                        .setTableId(table)
+                        .setTable(
+                                Table.newBuilder()
+                                        .putColumnFamilies(
+                                                family, ColumnFamily.getDefaultInstance()))
+                        .build());
     }
 
     @Override
