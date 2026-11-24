@@ -56,6 +56,10 @@ import java.io.IOException;
  * set on it, {@code build()}'s own among them, which keeps the client in its emulator mode. {@link
  * #open(String, SpannerOptions)} holds a lease while the handle lives.
  *
+ * <p>Before it opens a handle, {@link #open(String, SpannerOptions)} also lets the idle threads of
+ * two executors the client library keeps in static fields exit, which would otherwise hold the
+ * job's class loader after every client has closed ({@code SpannerStaticExecutors}, docs/adr/0210).
+ *
  * <p>The same call puts the client in its emulator mode, where it records no client metrics into a
  * provider ({@code SpannerOptions.isEmulatorEnabled()}, 6.124.0), so an emulator job reports its
  * {@code rpcMethod} series at zero. The emulator branch also turns the built-in Cloud Monitoring
@@ -341,6 +345,7 @@ public final class SpannerClients {
                         + " event-loop group; build them from SpannerClients' builder, not a"
                         + " toBuilder() copy, and set no channel provider",
                 target);
+        SpannerStaticExecutors.allowIdleThreadsToTimeOut();
         // Spanner is not a gax BackgroundResource: the holder closes it with its own close(),
         // which waits for its channels to terminate (6.127.0 waits up to ten seconds for each of
         // its four stubs and its watchdog in turn), and then releases the lease. The settings

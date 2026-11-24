@@ -128,6 +128,14 @@ limitations under the License.
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
         </dependency>
+        <dependency>
+            <!-- GcpManagedChannel, whose static background executor SpannerStaticExecutors lets
+                 time out its idle threads so that they do not hold a finished job's class loader
+                 (#2296). google-cloud-spanner already brings it in. Version managed by the
+                 libraries BOM. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>grpc-gcp</artifactId>
+        </dependency>
 
         <!-- Test dependencies -->
         <dependency>

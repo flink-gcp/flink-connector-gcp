@@ -209,6 +209,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   such settings. **A JobManager-side client** (the planner's, the Change Streams coordinator's)
   closes when its call returns, and runs that call in a cancellable gRPC `Context` that its
   `close()` cancels first; the catalog keeps one client until it closes.
+- **`SpannerClients.open` also lets the client library's two static executors drop their idle
+  threads** (`SpannerStaticExecutors`, `docs/adr/0210`, #2296): grpc-gcp's
+  `SHARED_BACKGROUND_SERVICE` and the client's `MultiplexedSessionDatabaseClient.MAINTAINER_SERVICE`
+  would otherwise hold every finished job's class loader (a separate TaskManager-side retention
+  after change-stream jobs is #2317). Never shut them down: the fields are final, and a client
+  opened later in the same class loader schedules on them. A field the
+  reflection cannot read only logs; `SpannerStaticExecutorsTest` is the tripwire on a
+  `libraries-bom` bump, and `SpannerStaticExecutorsITCase` keeps the harness's client closed
+  because an open client rightly keeps one thread of each. Remove the adjustment when #2314 and
+  #2315 resolve upstream.
 - **The deserialization SPI emits zero or more non-null records synchronously through a collector.**
   The collector is valid only for the deserializer call and must not be retained. Emitting nothing
   increments `recordsSkipped` once for the input row. The progress model is unchanged: a reader

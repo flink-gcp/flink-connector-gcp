@@ -284,5 +284,35 @@ A session cluster that runs many short jobs can avoid it in either of two ways:
   This deployment needs the same connector release wherever the job graph is built, as
   [Upgrading the connector](#upgrading-the-connector) describes.
 
+A Spanner job also had a second, permanent retention, which the connector now removes.
+The Spanner client library keeps two thread pools in static fields, one in grpc-gcp for its
+channel pools and one that maintains multiplexed sessions, and their threads did not exit once a
+job's clients had closed.
+Each of those threads keeps the job's class loader reachable, so a finished Spanner job's class
+loader stayed for the life of the TaskManager or JobManager, whatever the collections.
+On Flink 2.2.1, with the SQL jar shipped with each job, every change-stream job left about 25 MB of
+metaspace in both processes and about 20 MB of direct memory on the TaskManager.
+The TaskManager's tasks failed with direct-memory errors from the sixth job on, and the JobManager
+stopped with `OutOfMemoryError: Metaspace` at the ninth
+([#2296]({{< param BookRepo >}}/issues/2296)).
+Before 1.5.0, a `lib/` deployment avoids the growth, because the pools then belong to a class loader
+that never closes, although each of their few threads can still keep the class loader of the job
+that started it; that follows from the heap path and was not measured.
+From 1.5.0 the connector lets those threads exit once they have had nothing to run for a minute,
+without shutting the pools down.
+In the same measurement, 75 seconds after the last of four jobs no thread of either pool was left,
+and the JobManager's four class loaders went at the second full collection, after change-stream
+jobs and after bounded scans; so did the TaskManager's after bounded scans.
+After change-stream jobs the TaskManager still kept its four class loaders through six full
+collections, held in a way the heap dump does not show, so consecutive change-stream jobs on one
+TaskManager may still run out of direct memory there; that retention is
+[#2317]({{< param BookRepo >}}/issues/2317), and whether either way out above avoids it has not
+been measured.
+That measurement ran against the emulator, where the client starts no Cloud Monitoring exporter.
+Against the service with the built-in export on, which is the default, the exporter's JVM
+shutdown hook keeps the class loader of the client library that started it until the process
+exits ([#2311]({{< param BookRepo >}}/issues/2311)), unless the export is kept from starting as
+[gRPC threads and job shutdown](#grpc-threads-and-job-shutdown) describes.
+
 The reasoning, and the fixes that were weighed and declined, are in
-[ADR-0210]({{< param BookRepo >}}/blob/main/docs/adr/0210-a-finished-jobs-grpc-buffer-pools-are-released-by-netty-finalizers.md).
+[ADR-0210]({{< param BookRepo >}}/blob/main/docs/adr/0210-a-session-cluster-can-opt-out-of-grpc-buffer-pools-and-spanner-static-executors-let-idle-threads-exit.md).
