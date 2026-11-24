@@ -20,13 +20,15 @@ from flink_tier3.bigtable.instance import Instance, merge
 from flink_tier3.bigtable.oracle import AtLeastOnce, ExactlyOnce, Relay
 from flink_tier3.bigtable.trial import Trial
 from flink_tier3.bigtable.verdict import data_reasons
-from flink_tier3.common import Failure, TransportError
+from flink_tier3.common import Failure, TransportError, timestamp
 from flink_tier3.verdict import sequence_verdict
 
 from ..doubles import NOW, Http
 
 TRIAL = Trial("bt-oracle", 20, 10, "2026-10-20T01:05:00Z", "sequence")
 ONE = (1).to_bytes(8, "big")
+# The change stream's end in microseconds, the unit of a relay cell's commit.
+END = int(timestamp(TRIAL.change_stream_end)) * 10**6
 
 
 def b64(value):
@@ -206,9 +208,18 @@ def test_the_at_least_once_oracle_counts_replays_without_failing():
     assert check.report()["verdict"] == "fail"
 
 
-def relay_row(n, deliveries=1):
+def relay_row(n, deliveries=1, at=END - 10**6):
+    """A relayed identity's row, each delivery holding the commit time `at`.
+
+    The value is the commit time in microseconds in decimal, as the relay
+    application writes it with `Long.toString`.
+    """
     key = f"{n % 16:x}/{n:07d}"
-    return key, [("r", f"initial/u/{i}", 0, b"") for i in range(deliveries)]
+    commit = str(at).encode()
+    return key, [("r", f"initial/u/{i}", 0, commit) for i in range(deliveries)]
+
+
+EVERY = [relay_row(n) for n in range(TRIAL.records)]
 
 
 def test_the_relay_oracle_requires_every_applied_identity_and_counts_replays():
@@ -232,7 +243,133 @@ def test_the_relay_oracle_requires_every_applied_identity_and_counts_replays():
     assert (report["verdict"], report["unapplied"]) == ("fail", 1)
 
 
-EVERY = [relay_row(n) for n in range(TRIAL.records)]
+def test_the_relay_oracle_fails_on_a_commit_after_the_change_streams_end():
+    """The end is inclusive, so a commit at it passes and one after it fails."""
+    applied = set(TRIAL.row_keys())
+    check = Relay(TRIAL)
+    check.add([relay_row(n, at=END) for n in range(TRIAL.records)])
+    report = check.report(applied, True)
+    assert (report["verdict"], report["after_end"]) == ("pass", 0)
+    # A row counts once however many of its deliveries came after the end,
+    # and one after the end fails its row beside one before it, in either
+    # order: cells arrive in qualifier order, not commit order.
+    late, early = str(END + 1).encode(), str(END - 1).encode()
+    check = Relay(TRIAL)
+    check.add(
+        [
+            *(relay_row(n) for n in range(3)),
+            (
+                "3/0000003",
+                [("r", "initial/u/0", 0, early), ("r", "upgrade/v/0", 0, late)],
+            ),
+            (
+                "4/0000004",
+                [("r", "initial/u/0", 0, late), ("r", "upgrade/v/0", 0, early)],
+            ),
+            relay_row(5, deliveries=2, at=END + 1),
+            *(relay_row(n) for n in range(6, TRIAL.records)),
+        ]
+    )
+    report = check.report(applied, True)
+    assert (report["verdict"], report["after_end"], report["deliveries"]) == (
+        "fail",
+        3,
+        TRIAL.records + 3,
+    )
+    assert report["examples"]["after_end"] == ["3/0000003", "4/0000004", "5/0000005"]
+
+
+def test_the_relay_oracle_compares_commits_with_the_end_to_the_microsecond():
+    trial = Trial("bt-oracle", 20, 10, "2026-10-20T01:05:00.500000Z", "sequence")
+    end = END + 500_000
+    for commit, after_end in ((end, 0), (end + 1, trial.records)):
+        check = Relay(trial)
+        check.add([relay_row(n, at=commit) for n in range(trial.records)])
+        assert check.report(set(trial.row_keys()), True)["after_end"] == after_end
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        b"",
+        b"x",
+        b"+1",
+        b"-1",
+        b" 1",
+        b"1\n",
+        b"1_0",
+        b"1.0",
+        b"01",
+        # A commit before the end with a leading zero, which `int()` accepts.
+        b"0" + str(END - 1).encode(),
+        str(2**63).encode(),
+        b"1" * 20,
+    ],
+)
+def test_a_delivery_without_a_commit_time_counts_as_a_wrong_value(value):
+    """The relay writes `Long.toString` of the commit time; any other value fails.
+
+    The cell is still a delivery, and the row's other deliveries are still
+    compared with the end.
+    """
+    check = Relay(TRIAL)
+    late = str(END + 1).encode()
+    check.add(
+        [
+            (
+                "0/0000000",
+                [("r", "initial/u/0", 0, value), ("r", "upgrade/v/0", 0, late)],
+            ),
+            *EVERY[1:],
+        ]
+    )
+    report = check.report(set(TRIAL.row_keys()), True)
+    assert (
+        report["verdict"],
+        report["wrong_value"],
+        report["after_end"],
+        report["deliveries"],
+    ) == ("fail", 1, 1, TRIAL.records + 1)
+    assert report["examples"]["wrong_value"] == ["0/0000000"]
+
+
+@pytest.mark.parametrize("values", [[b"x"], [b"x", b"01"]])
+def test_a_wrong_value_alone_fails_the_relay_once_per_row(values):
+    cells = [("r", f"initial/u/{i}", 0, value) for i, value in enumerate(values)]
+    check = Relay(TRIAL)
+    check.add([("0/0000000", cells), *EVERY[1:]])
+    report = check.report(set(TRIAL.row_keys()), True)
+    assert (report["verdict"], report["wrong_value"], report["after_end"]) == (
+        "fail",
+        1,
+        0,
+    )
+
+
+@pytest.mark.parametrize("value", [b"0", str(2**63 - 1).encode()])
+def test_every_long_the_relay_can_write_is_a_commit_time(value):
+    check = Relay(TRIAL)
+    check.add([("0/0000000", [("r", "initial/u/0", 0, value)]), *EVERY[1:]])
+    assert check.report(set(TRIAL.row_keys()), True)["wrong_value"] == 0
+
+
+def test_only_a_delivery_of_an_input_row_is_read_as_a_commit():
+    """A foreign row or family fails the relay as such, not as a wrong value."""
+    check = Relay(TRIAL)
+    check.add(
+        [
+            ("0/0000000", [*EVERY[0][1], ("x", "q", 0, b"x")]),
+            *EVERY[1:],
+            ("zz", [("r", "initial/u/0", 0, b"x")]),
+        ]
+    )
+    report = check.report(set(TRIAL.row_keys()), True)
+    assert (
+        report["verdict"],
+        report["foreign"],
+        report["foreign_families"],
+        report["wrong_value"],
+    ) == ("fail", 1, 1, 0)
 
 
 @pytest.mark.parametrize(
@@ -241,16 +378,23 @@ EVERY = [relay_row(n) for n in range(TRIAL.records)]
         # Only an applied identity missing, which a commit after the end
         # leaves unrelayed.
         (EVERY[1:], set(), "relay-oracle-unjudged"),
-        # A relayed identity `eo` did not apply, a row no input names, and a
-        # cell outside the relay's family fail it whenever the input finished.
+        # A relayed identity `eo` did not apply, a row no input names, a
+        # cell outside the relay's family, and a commit after the change
+        # stream's end fail it whenever the input finished.
         (EVERY, {"0/0000000"}, "relay-oracle-not-passed"),
+        ([*EVERY[1:], ("zz", EVERY[0][1])], set(), "relay-oracle-not-passed"),
         (
-            [*EVERY[1:], ("zz", [("r", "initial/u/0", 0, b"")])],
+            [*EVERY[1:], (EVERY[0][0], [("x", "q", 0, b"")])],
             set(),
             "relay-oracle-not-passed",
         ),
         (
-            [*EVERY[1:], (EVERY[0][0], [("x", "q", 0, b"")])],
+            [*EVERY[2:], relay_row(1, at=END + 1)],
+            set(),
+            "relay-oracle-not-passed",
+        ),
+        (
+            [*EVERY[2:], (EVERY[1][0], [("r", "initial/u/0", 0, b"x")])],
             set(),
             "relay-oracle-not-passed",
         ),

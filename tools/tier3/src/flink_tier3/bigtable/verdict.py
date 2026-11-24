@@ -19,10 +19,17 @@ from ..verdict import component_reasons
 # The components the oracles judge, each by its own report under this name.
 COMPONENTS = ("eo", "alo", "relay")
 # The relay's counts of a failure that timing cannot explain: a row the
-# relay wrote that no input names, a cell outside its family, and an identity
-# relayed although `eo` did not apply it. A missing row is the one shortfall
-# a commit after the change stream's end leaves.
-RELAY_FAILURES = ("foreign", "foreign_families", "unapplied")
+# relay wrote that no input names, a cell outside its family, an identity
+# relayed although `eo` did not apply it, a delivery that holds no commit
+# time, and a commit after the change stream's end, which the source must not
+# relay. A missing row is the one shortfall a commit after the end leaves.
+RELAY_FAILURES = (
+    "foreign",
+    "foreign_families",
+    "unapplied",
+    "wrong_value",
+    "after_end",
+)
 
 
 def data_reasons(record):

@@ -109,6 +109,52 @@ def test_an_input_finished_too_close_to_the_change_streams_end_is_unjudged(exerc
     assert record["outcomes"]["oracles"]["relay"]["verdict"] == "pass"
 
 
+def test_a_commit_after_the_change_streams_end_fails_even_an_unjudged_relay(
+    exercise,
+):
+    """Timing explains a missing row, not a relayed commit after the end."""
+    value, tables = exercise
+    end = timestamp(value.trial.change_stream_end)
+    tables.rows["relay"][4] = relay_row(4, at=int(end) * 10**6 + 1)
+    for sample in value.samples.values():
+        sample["at"] = end - 60
+    value.env.clock = lambda: end
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert record["reasons"] == ["relay-oracle-not-passed"]
+    relay = record["outcomes"]["oracles"]["relay"]
+    assert (relay["judged"], relay["after_end"], relay["verdict"]) == (
+        False,
+        1,
+        "fail",
+    )
+
+
+def test_a_delivery_without_a_commit_time_fails_the_relay_and_keeps_every_report(
+    exercise,
+):
+    """A wrong value is data, judged beside the rest, not a stopped run."""
+    value, tables = exercise
+    end = timestamp(value.trial.change_stream_end)
+    key, _ = tables.rows["relay"][2]
+    tables.rows["relay"][2] = (key, [("r", "initial/u/0", 0, b"x")])
+    tables.rows["relay"][4] = relay_row(4, at=int(end) * 10**6 + 1)
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert (record["stage"], record["reasons"]) == (
+        "complete",
+        ["relay-oracle-not-passed"],
+    )
+    oracles = record["outcomes"]["oracles"]
+    assert (oracles["eo"]["verdict"], oracles["alo"]["verdict"]) == ("pass", "pass")
+    relay = oracles["relay"]
+    assert (relay["wrong_value"], relay["after_end"], relay["verdict"]) == (
+        1,
+        1,
+        "fail",
+    )
+
+
 def built(prepared, monkeypatch):
     """The exercise the supervisor builds for a five-record sequence trial."""
     environment, _, upgrade, _ = prepared
@@ -125,7 +171,8 @@ def built(prepared, monkeypatch):
     rows = {
         "eo": [eo_row(n) for n in range(5)],
         "alo": [eo_row(n, markers=0) for n in range(5)],
-        "relay": [relay_row(n) for n in range(5)],
+        # Each change committed now, well before the change stream's end.
+        "relay": [relay_row(n, at=int(environment.clock()) * 10**6) for n in range(5)],
     }
     tables = Tables(environment, small, rows)
     environment.records.set_phase(rt.Phase.READY)

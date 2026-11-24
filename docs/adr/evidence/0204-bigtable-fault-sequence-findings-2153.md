@@ -113,5 +113,6 @@ Like Spanner's 30.2 minutes, that is just past the 20 to 30 minutes ADR-0204 ask
 
 - The run recorded none of the events ADR-0204 waits out as unplanned, so, like Firestore's and Spanner's, it did not exercise the paths that tolerate an interruption; an interruption that delays the input by more than about ten minutes would leave the relay unjudged.
 - The relay's oracle judges keys, not commits; here each key had one commit to relay, because the input has one record per key and `eo` holds one contribution per key, but an input that commits a key more than once could lose a later commit without notice.
+- The relay's oracle did not yet compare a delivery's commit time with the change stream's end, which it has done since [#2321](https://github.com/flink-gcp/flink-connector-gcp/issues/2321), so this run does not show that the source relayed no commit after the end; the record holds no count of one, and the instance's deletion removed the rows.
 - The exactly-once oracle reads the end state, so it shows that each staged commit took effect once, not that no commit was ever attempted twice.
 - One run shows that the three components kept every record through these five faults once; it is not a measure of how often a fault loses data.
