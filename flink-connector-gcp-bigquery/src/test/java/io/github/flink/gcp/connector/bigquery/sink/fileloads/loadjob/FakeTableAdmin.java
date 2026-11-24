@@ -31,6 +31,8 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -98,6 +100,12 @@ public final class FakeTableAdmin implements TableAdmin {
     public final List<Duration> preparedExpirations = new ArrayList<>();
     public final List<String> preparedKmsKeyNames = new ArrayList<>();
 
+    /**
+     * A log that every preparation also appends {@code "prepare:"} and the table path to, when set,
+     * so a test can order preparations against a runner's events.
+     */
+    @Nullable public List<String> events;
+
     /** The creation time the next created temporary table takes, less one. */
     public long clock = 1_000;
 
@@ -109,11 +117,30 @@ public final class FakeTableAdmin implements TableAdmin {
             String kmsKeyName,
             Duration expiration) {
         preparedTemporaryTables.add(table);
+        if (events != null) {
+            events.add("prepare:" + table.toTablePath());
+        }
         preparedLayouts.add(layout);
         preparedSchemas.add(schema);
         preparedExpirations.add(expiration);
         preparedKmsKeyNames.add(kmsKeyName);
         return temporaryTables.computeIfAbsent(table, unused -> ++clock);
+    }
+
+    /** Every extension of a temporary table that existed, in order. */
+    public final List<TableDestination> extendedTemporaryTables = new ArrayList<>();
+
+    /** The expiration every extension carried, existing table or not. */
+    public final List<Duration> extendedExpirations = new ArrayList<>();
+
+    @Override
+    public boolean extendTemporaryTable(TableDestination table, Duration expiration) {
+        extendedExpirations.add(expiration);
+        if (!temporaryTables.containsKey(table)) {
+            return false;
+        }
+        extendedTemporaryTables.add(table);
+        return true;
     }
 
     @Override

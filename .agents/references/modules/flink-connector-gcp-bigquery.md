@@ -333,20 +333,40 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   clustering from the reconciliation read, never from `TableCreateOptions`, and never its partition
   expiration or `requirePartitionFilter`; a time-partitioned leaf gets the explicit 10,000-year
   expiration so it cannot inherit a dataset default. Ingestion-time-only destinations and
-  `WRITE_TRUNCATE_DATA` keep unlaid tables and unchanged ids. Laid-out temporary names and the jobs filling them
-  take the layout hash; the final copy takes the fixed `-laidout` marker, never the hash, or a
-  clustering change between attempts repeats a succeeded copy. Each final copy names the other
+  `WRITE_TRUNCATE_DATA` keep unlaid tables under unchanged names; the jobs filling them take the
+  schema and incarnation stamps below, and their final copy or terminal query id is unchanged.
+  Laid-out temporary names and the jobs filling them take the layout hash; the final copy takes the
+  fixed `-laidout` marker, never the hash, or a clustering change between attempts repeats a
+  succeeded copy. Each final copy names the other
   plan's id as `CopyJobSpec.getEquivalentJobId()`, and the runner re-attaches to a non-failed job
   under it; do not drop it, or adding or removing a destination's only clustering re-appends rows.
   Do not reintroduce deleting a table by comparing layouts (ADR-0183 declines it).
-  Laid-out temporary tables are created first by `TableAdmin.prepareTemporaryTable` with a
-  `tempTableExpiration` table expiration (a load cannot set one, and a partitioned table skips the
-  dataset default table expiration when a default partition expiration is set), extended on every
-  attempt; the jobs filling them carry the table's creation time (`-t<millis>`). Never drop that
-  stamp: a retry after the table expired would re-attach to the job that filled its predecessor and
-  copy an empty table, losing rows silently. Laid-out loads and copies are `CREATE_NEVER`, and a
-  destination whose final copy succeeded under either id (`LoadJobRunner.copySucceeded`, DONE only,
-  not RUNNING) skips preparation and loads, laid out or not: ask before the layout guard.
+  Every temporary table, laid out or not and under `WRITE_TRUNCATE_DATA` too, is created first by
+  `TableAdmin.prepareTemporaryTable` with a `tempTableExpiration` table expiration (a load cannot
+  set one, and a partitioned table skips the dataset default table expiration when a default
+  partition expiration is set), extended on every attempt; an unlaid one takes `TableLayout.NONE`
+  and keeps its name. The jobs filling a temporary table carry a salt of the reconciled schema
+  (`-s<hash>`, so a partial expiry plus a schema change refills every table instead of refusing
+  the copy on every restart) and its creation time (`-t<millis>`).
+  Never drop the incarnation stamp: a retry after a table expired would re-attach to the job that
+  filled its predecessor and copy the empty table its preparation created, laid out or not, losing
+  rows silently (#2290). Those loads and copies are `CREATE_NEVER`. A destination whose final
+  copy succeeded under either id (`LoadJobRunner.copySucceeded`), or under `WRITE_TRUNCATE_DATA`
+  whose terminal query did (`LoadJobRunner.querySucceeded`), skips preparation and loads; both
+  count DONE without an error only, never a failed job, and are asked before the layout guard.
+  Without that probe every restore after a successful commit recreates the deleted tables and loads
+  deleted staged files, failing on every restart. Both probes wait for a final job an
+  earlier attempt left pending or running before answering; never answer "not succeeded" for it,
+  or the preparation can recreate an expired source empty under a copy that then succeeds without
+  its rows. The same holds for intermediate and aggregate copies, whose ids name only the table
+  they fill: preparation runs over the copy-filled tables from the top down, asks about each
+  one's filling copy under the incarnation it now has (`TempTables.copySucceeded`, which waits),
+  and prepares the leaves last. Keep that order. When such a copy succeeded, the tables it read
+  and everything below them are only extended where they survive (`TempTables.extend`, so they live
+  as long as the table above) and never created, loaded or copied; do not refill or recreate them,
+  or a commit whose aggregate copy succeeded fails on every restart once its leaves expired and a
+  lifecycle rule removed their staged files. The final copy and terminal query ids never take the
+  stamps.
 - **Temporary-table identity derives from the staged files, and the committable records the
   temporary dataset its run resolved** (`docs/adr/0018`, revision for #2289). A leaf's name hashes
   its partition's sorted URIs and its load id hashes that table; every other temporary name, copy
@@ -358,9 +378,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   temporary name and copy id hashes table paths, so a restore under another dataset would miss a
   copy its attempt completed and copy the rows again. A committable without a recorded dataset
   (`isStagedByOlderVersion`: serializer v2-v4, or v5 written back from them) keeps the 1.4.0
-  names, which must stay byte-identical (the older-version batch and streaming pins in
-  `LoadJobOrchestratorTempTableLayoutTest`), because planning it under new names stalls the
-  restore of a commit whose files are already deleted. Keep "no dataset" impossible for anything
+  names and final copy and query ids, which must stay byte-identical (the older-version batch and
+  streaming pins in `LoadJobOrchestratorTempTableLayoutTest`), because planning it under new names
+  stalls the restore of a commit whose files are already deleted. Its loads and intermediate copies
+  take the incarnation stamp as every other commit's do (owner decision on #2290): a completed
+  commit is skipped at its final copy or query, and an incomplete one refills its tables once. Keep "no dataset" impossible for anything
   the writer stages: the dataset goes to each file as it opens, the public constructors require
   one, and `FileLoadsCommittable.stagedByOlderVersion` is package-private for the serializer
   (tests reach it through `OlderVersionCommittables`); do not widen it. The committer

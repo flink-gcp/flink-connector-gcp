@@ -289,10 +289,7 @@ public final class FileLoadsOptions implements Serializable {
         return tempDataset;
     }
 
-    /**
-     * Returns how long a temporary table laid out for a column- or range-partitioned or clustered
-     * destination lives after a commit attempt creates it or extends it.
-     */
+    /** Returns how long a temporary table lives after a commit attempt creates it or extends it. */
     public Duration getTempTableExpiration() {
         return tempTableExpiration;
     }
@@ -628,14 +625,13 @@ public final class FileLoadsOptions implements Serializable {
          * per-load-job limits or replacement rows span staging formats. Rows go through leaf
          * tables, optional intermediate copy levels, and one final copy or query. Optional;
          * defaults to each destination table's own dataset. The temporary and final datasets must
-         * share a BigQuery location. A dedicated dataset with a default table expiration is
-         * recommended so temporary tables orphaned by hard failures are garbage-collected; those
-         * laid out for a column- or range-partitioned or clustered destination carry their own
-         * expiration instead ({@link #tempTableExpiration(Duration)}). Each staged file records the
-         * dataset its run resolved, so a commit restored under another value finishes in the
-         * dataset its files recorded, and a change applies to files staged after the restore. Files
-         * an earlier connector version staged record none and commit in the configured dataset, so
-         * keep this unchanged in the redeploy that restores such state.
+         * share a BigQuery location. Each temporary table carries its own expiration ({@link
+         * #tempTableExpiration(Duration)}), so one a hard failure orphans is removed without a
+         * default table expiration on the dataset. Each staged file records the dataset its run
+         * resolved, so a commit restored under another value finishes in the dataset its files
+         * recorded, and a change applies to files staged after the restore. Files an earlier
+         * connector version staged record none and commit in the configured dataset, so keep this
+         * unchanged in the redeploy that restores such state.
          *
          * @param tempDataset the dataset id, in the same project as the destination table
          * @return this builder
@@ -646,14 +642,14 @@ public final class FileLoadsOptions implements Serializable {
         }
 
         /**
-         * Sets how long a temporary table laid out for a column- or range-partitioned or clustered
-         * destination lives after a commit attempt creates it or extends it. Such a table takes its
-         * destination's partitioning and clustering so the final copy is accepted, and is created
-         * before the job that fills it, because a partitioned table may not take its dataset's
-         * default table expiration. Every attempt of the commit extends it again, and a table that
-         * expired before a retry is created and filled anew from the staged files. Temporary tables
-         * that are not laid out, and those of {@code WRITE_TRUNCATE_DATA}, are left to the
-         * dataset's default table expiration. Defaults to {@link
+         * Sets how long a temporary table lives after a commit attempt creates it or extends it.
+         * Every temporary table is created before the job that fills it, because a load job cannot
+         * set an expiration and a partitioned table may not take its dataset's default table
+         * expiration; one laid out for a column- or range-partitioned or clustered destination also
+         * takes that destination's partitioning and clustering so the final copy is accepted. Every
+         * attempt of the commit extends it again, and a table that expired before a retry is
+         * created and filled anew from the staged files, so a commit left pending for longer than
+         * this loads those files again and needs them still staged. Defaults to {@link
          * FileLoadsOptions#DEFAULT_TEMP_TABLE_EXPIRATION}.
          *
          * @param tempTableExpiration the expiration, at least one hour

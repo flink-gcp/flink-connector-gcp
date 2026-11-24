@@ -123,6 +123,20 @@ class RetryingTableAdminTest {
             return cdcResults.isEmpty() || cdcResults.remove();
         }
 
+        final Deque<IOException> extensionFailures = new ArrayDeque<>();
+        int extensions;
+
+        @Override
+        public boolean extendTemporaryTable(TableDestination table, Duration expiration)
+                throws IOException {
+            extensions++;
+            IOException failure = extensionFailures.poll();
+            if (failure != null) {
+                throw failure;
+            }
+            return true;
+        }
+
         @Override
         public long prepareTemporaryTable(
                 TableDestination table,
@@ -219,6 +233,18 @@ class RetryingTableAdminTest {
         assertThat(creationTime).isEqualTo(42L);
         assertThat(delegate.preparations).isEqualTo(2);
         assertThat(delegate.preparedKmsKeyName).isEqualTo("k");
+    }
+
+    @Test
+    void repeatsARateLimitedTemporaryTableExtension() throws Exception {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.extensionFailures.add(rateLimited());
+
+        assertThat(
+                        new RetryingTableAdmin(delegate, fast(3))
+                                .extendTemporaryTable(DESTINATION, Duration.ofHours(1)))
+                .isTrue();
+        assertThat(delegate.extensions).isEqualTo(2);
     }
 
     @Test

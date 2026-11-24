@@ -20,6 +20,7 @@ import org.apache.flink.metrics.SimpleCounter;
 
 import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.StandardTableDefinition;
@@ -171,9 +172,8 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
 
     @AfterAll
     static void cleanUp() throws Exception {
-        // The commit deletes its temporary tables once it succeeds. After a failure, a laid-out one
-        // expires with its own table expiration, and an unpartitioned one with the dataset's
-        // 24-hour default table expiration.
+        // The commit deletes its temporary tables once it succeeds. After a failure, one this
+        // version prepared expires with its own table expiration.
         Closers.closeAll(
                 () -> RealBigQuery.deleteTables(TABLES.toArray(new String[0])),
                 () -> RealGcs.deletePrefix(PREFIX));
@@ -253,13 +253,30 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
         DestinationCommitPlan planned = plan(committables);
         assertThat(planned.copy.intermediateLevels).isNotEmpty();
         BigQueryLoadJobRunner earlier = new BigQueryLoadJobRunner(null, POLL);
+        // That version's jobs created the temporary tables they filled.
         for (PlannedLoad load : planned.loads) {
-            earlier.submitLoad(load.jobId, specOf(load));
+            earlier.submitLoad(
+                    load.jobId,
+                    new LoadJobSpec(
+                            load.jobDestination,
+                            load.uris,
+                            SCHEMA,
+                            JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                            load.writeDisposition,
+                            load.schemaUpdateOptions,
+                            load.format,
+                            null));
             earlier.awaitJob(load.jobId);
         }
         for (List<PlannedCopy> level : planned.copy.intermediateLevels) {
             for (PlannedCopy copy : level) {
-                earlier.submitCopy(copy.jobId, copy.spec);
+                earlier.submitCopy(
+                        copy.jobId,
+                        new CopyJobSpec(
+                                copy.spec.getSourceTables(),
+                                copy.spec.getDestination(),
+                                JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                copy.spec.getWriteDisposition()));
                 earlier.awaitJob(copy.jobId);
             }
         }
@@ -405,13 +422,221 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
     }
 
     /**
-     * Runs what this version runs before its copies: lays the plan out, prepares its temporary
-     * tables, and fills the leaves under the ids their incarnations give them.
+     * As {@link #aRetryRefillsATempTableThatExpired}, for temporary tables that take no layout: an
+     * unpartitioned destination's, and every one under {@code WRITE_TRUNCATE_DATA} (#2290). The
+     * first attempt runs until its first copy is refused, after every leaf load succeeded, and
+     * every temporary table is then deleted, as an expiration would. A version that left these
+     * tables to the loads that fill them re-attached the retry to those loads, which created
+     * nothing, and the copy failed with "Not found: Table" on every attempt.
+     */
+    @ParameterizedTest
+    @EnumSource(
+            value = WriteDisposition.class,
+            names = {"WRITE_APPEND", "WRITE_TRUNCATE_DATA"})
+    void aRetryRefillsUnlaidTempTablesThatExpired(WriteDisposition disposition) throws Exception {
+        String table = table("expired_unlaid_" + disposition.name().toLowerCase(Locale.ROOT));
+        createDestination(table, "", "");
+        TableLayout layout = TableLayout.of(RealBigQuery.tableDefinition(table));
+        List<FileLoadsCommittable> committables = stage(table);
+        DestinationCommitPlan planned = plan(committables, disposition);
+        assertThatThrownBy(
+                        () -> orchestrator(disposition, refusingCopies(), LIMITS).run(committables))
+                .hasStackTraceContaining("refused (scripted)");
+        for (PlannedLoad load : planned.loads) {
+            // Every leaf load ran, under the names this test deletes, so the retry cannot pass by
+            // re-attaching to tables that never went away.
+            RealBigQuery.tableDefinition(load.jobDestination.getTable());
+        }
+        RealBigQuery.deleteTables(
+                planned.copy.cleanupTables.stream()
+                        .map(TableDestination::getTable)
+                        .toArray(String[]::new));
+
+        orchestrator(disposition).run(committables);
+
+        assertDestination(table, layout, 3);
+    }
+
+    /**
+     * A commit retried after one of its temporary tables expired and the destination gained a
+     * column (#2290). The table created anew is filled under the new schema; the surviving ones
+     * hold the earlier schema, and a copy refuses sources whose schemas differ. Each attempt
+     * extends the surviving tables, so they would never expire to resolve it: the jobs that fill
+     * them name the schema, and every table is filled again under it.
+     */
+    @Test
+    void aRetryAfterAPartialExpiryAndASchemaChangeRefillsEveryTempTable() throws Exception {
+        String table = table("schema_changed");
+        createDestination(table, "", "");
+        List<FileLoadsCommittable> committables = stage(table);
+        DestinationCommitPlan planned = plan(committables);
+        assertThatThrownBy(
+                        () ->
+                                orchestrator(
+                                                WriteDisposition.WRITE_APPEND,
+                                                refusingCopies(),
+                                                LIMITS)
+                                        .run(committables))
+                .hasStackTraceContaining("refused (scripted)");
+        RealBigQuery.queryRows(
+                "ALTER TABLE " + RealBigQuery.tablePath(table) + " ADD COLUMN note STRING");
+        String expired = planned.loads.get(0).jobDestination.getTable();
+        RealBigQuery.tableDefinition(expired);
+        RealBigQuery.deleteTables(expired);
+
+        orchestrator(WriteDisposition.WRITE_APPEND).run(committables);
+
+        assertDestination(table, TableLayout.NONE, 3);
+    }
+
+    /**
+     * A `WRITE_TRUNCATE_DATA` commit whose copy into its aggregate table succeeded and whose
+     * terminal query did not run, retried after its leaves expired and a lifecycle rule removed its
+     * staged files. The aggregate already holds every row, so the retry does not refill the leaves,
+     * only creates them anew, and runs the query; refilling them would need the files, and fail on
+     * every restart.
+     */
+    @Test
+    void aRetryAfterTheAggregateCopySucceededDoesNotRefillTheExpiredLeaves() throws Exception {
+        String table = table("aggregated");
+        createDestination(table, "", "");
+        TableLayout layout = TableLayout.of(RealBigQuery.tableDefinition(table));
+        List<FileLoadsCommittable> committables = stage(table);
+        DestinationCommitPlan planned = plan(committables, WriteDisposition.WRITE_TRUNCATE_DATA);
+        assertThatThrownBy(
+                        () ->
+                                orchestrator(
+                                                WriteDisposition.WRITE_TRUNCATE_DATA,
+                                                refusingQueries(),
+                                                LIMITS)
+                                        .run(committables))
+                .hasStackTraceContaining("refused (scripted)");
+        for (PlannedLoad load : planned.loads) {
+            RealBigQuery.tableDefinition(load.jobDestination.getTable());
+        }
+        RealBigQuery.deleteTables(
+                planned.loads.stream()
+                        .map(load -> load.jobDestination.getTable())
+                        .toArray(String[]::new));
+        RealGcs.deletePrefix(PREFIX + table + "/");
+
+        orchestrator(WriteDisposition.WRITE_TRUNCATE_DATA).run(committables);
+
+        assertDestination(table, layout, 3);
+    }
+
+    /**
+     * A runner that runs every load and copy and refuses every terminal query, standing for an
+     * attempt that stopped after its copy into the aggregate table.
+     */
+    private static LoadJobRunner refusingQueries() {
+        LoadJobRunner runner = new BigQueryLoadJobRunner(null, POLL);
+        return new LoadJobRunner() {
+            @Override
+            public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+                runner.submitLoad(jobId, spec);
+            }
+
+            @Override
+            public void submitCopy(String jobId, CopyJobSpec spec) throws IOException {
+                runner.submitCopy(jobId, spec);
+            }
+
+            @Override
+            public void submitQuery(String jobId, QueryJobSpec spec) throws IOException {
+                throw new IOException("Query " + jobId + " refused (scripted)");
+            }
+
+            @Override
+            public void awaitJob(String jobId) throws IOException {
+                runner.awaitJob(jobId);
+            }
+
+            @Override
+            public void deleteTable(TableDestination temp) {
+                runner.deleteTable(temp);
+            }
+        };
+    }
+
+    /**
+     * A runner that runs every load and refuses every copy, standing for an attempt that stopped
+     * after its leaf loads and before its first copy.
+     */
+    private static LoadJobRunner refusingCopies() {
+        LoadJobRunner runner = new BigQueryLoadJobRunner(null, POLL);
+        return new LoadJobRunner() {
+            @Override
+            public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+                runner.submitLoad(jobId, spec);
+            }
+
+            @Override
+            public void submitCopy(String jobId, CopyJobSpec spec) throws IOException {
+                throw new IOException("Copy " + jobId + " refused (scripted)");
+            }
+
+            @Override
+            public void submitQuery(String jobId, QueryJobSpec spec) {
+                throw new AssertionError("No query follows a refused copy: " + spec);
+            }
+
+            @Override
+            public void awaitJob(String jobId) throws IOException {
+                runner.awaitJob(jobId);
+            }
+
+            @Override
+            public void deleteTable(TableDestination temp) {
+                runner.deleteTable(temp);
+            }
+        };
+    }
+
+    /**
+     * A commit that succeeded, run again as every restore runs its last checkpoint's committables
+     * (#2290). The commit deleted its temporary tables and staged files, so preparing the tables
+     * anew would load files that are gone on every attempt; the retry must re-attach to its final
+     * copy or, under {@code WRITE_TRUNCATE_DATA}, its terminal query alone.
+     */
+    @ParameterizedTest
+    @EnumSource(
+            value = WriteDisposition.class,
+            names = {"WRITE_APPEND", "WRITE_TRUNCATE_DATA"})
+    void aRetryAfterAnUnlaidCommitSucceededReattachesToItsFinalJobAlone(
+            WriteDisposition disposition) throws Exception {
+        String table = table("committed_unlaid_" + disposition.name().toLowerCase(Locale.ROOT));
+        createDestination(table, "", "");
+        TableLayout layout = TableLayout.of(RealBigQuery.tableDefinition(table));
+        List<FileLoadsCommittable> committables = stage(table);
+        orchestrator(disposition).run(committables);
+        assertDestination(table, layout, 3);
+        RealGcs.deletePrefix(PREFIX + table + "/");
+
+        orchestrator(disposition).run(committables);
+
+        assertDestination(table, layout, 3);
+    }
+
+    /**
+     * Runs what this version runs before its copies: prepares the plan's temporary tables, laid out
+     * where the copy needs it, and fills the leaves under the ids their incarnations give them.
      */
     private static void fillLeavesAsThisVersion(DestinationCommitPlan planned, TableLayout layout)
             throws IOException {
         BigQueryTableAdmin admin = new BigQueryTableAdmin();
-        planned.layOutTempTables(
+        // The schema the commit's reconciliation gives the destination, which the jobs filling
+        // its temporary tables carry and are salted with.
+        Schema schema =
+                new FileLoadsSchemaReconciler(
+                                config(),
+                                options(WriteDisposition.WRITE_APPEND),
+                                admin,
+                                new Object())
+                        .reconcile(planned.destination)
+                        .schema;
+        planned.reconciledSchema = schema;
+        planned.prepareTempTables(
                 layout,
                 new DestinationCommitPlan.TempTables() {
                     @Override
@@ -420,15 +645,26 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                     }
 
                     @Override
-                    public long prepare(TableDestination temp) throws IOException {
+                    public boolean querySucceeded(PlannedQuery query) {
+                        return false;
+                    }
+
+                    @Override
+                    public boolean extend(TableDestination temp) throws IOException {
+                        return admin.extendTemporaryTable(temp, Duration.ofDays(1));
+                    }
+
+                    @Override
+                    public long prepare(TableDestination temp, TableLayout tableLayout)
+                            throws IOException {
                         TABLES.add(temp.getTable());
                         return admin.prepareTemporaryTable(
-                                temp, SCHEMA, layout, null, Duration.ofDays(1));
+                                temp, schema, tableLayout, null, Duration.ofDays(1));
                     }
                 });
         BigQueryLoadJobRunner earlier = new BigQueryLoadJobRunner(null, POLL);
         for (PlannedLoad load : planned.loads) {
-            earlier.submitLoad(load.jobId, specOf(load));
+            earlier.submitLoad(load.jobId, specOf(load, schema));
             earlier.awaitJob(load.jobId);
         }
     }
@@ -442,13 +678,15 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
     /** The plan of a commit over one destination's committables, before reconciliation. */
     private static DestinationCommitPlan plan(List<FileLoadsCommittable> committables)
             throws IOException {
+        return plan(committables, WriteDisposition.WRITE_APPEND);
+    }
+
+    /** The plan of a commit under {@code disposition}, before reconciliation. */
+    private static DestinationCommitPlan plan(
+            List<FileLoadsCommittable> committables, WriteDisposition disposition)
+            throws IOException {
         DestinationCommitPlan planned =
-                new CommitPlanner(
-                                config(),
-                                options(WriteDisposition.WRITE_APPEND),
-                                FLINK_JOB_ID,
-                                null,
-                                LIMITS)
+                new CommitPlanner(config(), options(disposition), FLINK_JOB_ID, null, LIMITS)
                         .plan(committables)
                         .destinations
                         .get(0);
@@ -459,11 +697,11 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
         return planned;
     }
 
-    private static LoadJobSpec specOf(PlannedLoad load) {
+    private static LoadJobSpec specOf(PlannedLoad load, Schema schema) {
         return new LoadJobSpec(
                 load.jobDestination,
                 load.uris,
-                SCHEMA,
+                schema,
                 load.createDisposition,
                 load.writeDisposition,
                 load.schemaUpdateOptions,

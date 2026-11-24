@@ -46,6 +46,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -68,6 +69,12 @@ class LoadJobOrchestratorTempTableLayoutTest {
 
     private static final String FLINK_JOB_ID = "0123456789abcdef0123456789abcdef";
     private static final TableDestination T1 = TableDestination.of("p", "d", "t1");
+
+    /**
+     * The salt of the schema reconciliation gives {@link #SCHEMA}, which every job filling a
+     * temporary table takes; pinned so that a change to how it is derived is seen here.
+     */
+    private static final String SCHEMA_SALT = "7062e446";
 
     private static final TableSchema SCHEMA =
             TableSchema.newBuilder()
@@ -253,6 +260,38 @@ class LoadJobOrchestratorTempTableLayoutTest {
     }
 
     /**
+     * Returns the ids of the loads {@code harness} ran, each without the schema salt and the
+     * incarnation of the table it filled, after asserting that every id names both.
+     */
+    private static List<String> withoutIncarnations(Harness harness, List<String> loadIds) {
+        List<TableDestination> tables = loadTables(harness);
+        List<String> baseIds = new ArrayList<>(loadIds.size());
+        for (int i = 0; i < loadIds.size(); i++) {
+            baseIds.add(withoutPreparation(harness, loadIds.get(i), tables.get(i)));
+        }
+        return baseIds;
+    }
+
+    /**
+     * Returns {@code jobId}, of a job that filled {@code table}, without the schema salt and the
+     * incarnation that preparation appended, after asserting both.
+     */
+    private static String withoutPreparation(
+            Harness harness, String jobId, TableDestination table) {
+        String suffix = "-s" + SCHEMA_SALT + "-t" + harness.tableAdmin.temporaryTables.get(table);
+        assertThat(jobId).endsWith(suffix);
+        return jobId.substring(0, jobId.length() - suffix.length());
+    }
+
+    /** The id preparation gives a job that fills the laid-out {@code table}. */
+    private static String preparedLaidOutJobId(
+            Harness harness, String baseJobId, String salt, TableDestination table) {
+        return CommitPlanner.incarnationJobId(
+                CommitPlanner.schemaJobId(CommitPlanner.laidOutJobId(baseJobId, salt), SCHEMA_SALT),
+                harness.tableAdmin.temporaryTables.get(table));
+    }
+
+    /**
      * Asserts that {@code laidOut} ran the plan {@code unpartitioned} ran, with every temporary
      * table renamed and every job filling one salted with {@code layout}, and the copy into the
      * destination under the fixed marker.
@@ -269,15 +308,16 @@ class LoadJobOrchestratorTempTableLayoutTest {
                         loadTables(unpartitioned).stream()
                                 .map(table -> CommitPlanner.laidOutTable(table, salt))
                                 .toList());
-        // Each job filling a temporary table also names that table's incarnation.
-        List<String> unpartitionedIds = new ArrayList<>(unpartitioned.runner.loads.keySet());
+        // Each job filling a temporary table also names that table's incarnation, laid out or not.
+        List<String> unpartitionedBaseIds =
+                withoutIncarnations(
+                        unpartitioned, new ArrayList<>(unpartitioned.runner.loads.keySet()));
         List<TableDestination> tables = loadTables(laidOut);
         List<String> expectedIds = new ArrayList<>();
-        for (int i = 0; i < unpartitionedIds.size(); i++) {
+        for (int i = 0; i < unpartitionedBaseIds.size(); i++) {
             expectedIds.add(
-                    CommitPlanner.incarnationJobId(
-                            CommitPlanner.laidOutJobId(unpartitionedIds.get(i), salt),
-                            laidOut.tableAdmin.temporaryTables.get(tables.get(i))));
+                    preparedLaidOutJobId(
+                            laidOut, unpartitionedBaseIds.get(i), salt, tables.get(i)));
         }
         assertThat(laidOut.runner.loads.keySet()).containsExactlyElementsOf(expectedIds);
         // Every temporary table was prepared, with the layout and the default expiration.
@@ -292,7 +332,10 @@ class LoadJobOrchestratorTempTableLayoutTest {
                         spec ->
                                 assertThat(spec.getCreateDisposition())
                                         .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER));
-        assertThat(unpartitioned.tableAdmin.preparedTemporaryTables).isEmpty();
+        // The unpartitioned plan prepared its tables too, under their own names and without one.
+        assertThat(unpartitioned.tableAdmin.preparedTemporaryTables)
+                .containsExactlyInAnyOrderElementsOf(loadTables(unpartitioned));
+        assertThat(unpartitioned.tableAdmin.preparedLayouts).containsOnly(TableLayout.NONE);
         CopyJobSpec copy = onlyCopy(laidOut);
         assertThat(laidOut.runner.copies.keySet())
                 .containsExactly(
@@ -348,7 +391,7 @@ class LoadJobOrchestratorTempTableLayoutTest {
                 .isEqualTo(
                         "flink-bq-load-"
                                 + FLINK_JOB_ID
-                                + "-4ecae23c5143f639-p0-layout-b40ff274-t1001");
+                                + "-4ecae23c5143f639-p0-layout-b40ff274-s7062e446-t1001");
         assertThat(loadTables(harness).get(0).getTable())
                 .isEqualTo("tmp_" + FLINK_JOB_ID + "_57b4d06d46c9_p0_layout_b40ff274");
         assertThat(harness.runner.copies.keySet())
@@ -361,14 +404,17 @@ class LoadJobOrchestratorTempTableLayoutTest {
 
         harness.orchestrator.run(stagedByOlderVersion(threeOversizedFiles()));
 
-        // Pinned literally: a commit restored from state an older version wrote re-attaches by
-        // these names and ids. A successful attempt deleted its staged files, so under any other
-        // names it could neither re-attach nor load them again.
+        // Pinned literally: a commit restored from state an older version wrote finds its tables
+        // by these names and re-attaches to its final copy by this id. A successful attempt
+        // deleted its staged files, so under any other names it could neither re-attach nor load
+        // them again. Each load also names its table's incarnation, as this version's do (#2290):
+        // a commit whose final copy succeeded loads nothing, and one that did not refills its
+        // tables from the staged files it still has.
         assertThat(harness.runner.loads.keySet())
                 .containsExactly(
-                        "flink-bq-load-" + FLINK_JOB_ID + "-4ecae23c5143f639-p0",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-17a6853089163595-p1",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-75e4dec0e13b0f39-p2");
+                        "flink-bq-load-" + FLINK_JOB_ID + "-4ecae23c5143f639-p0-s7062e446-t1001",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-17a6853089163595-p1-s7062e446-t1002",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-75e4dec0e13b0f39-p2-s7062e446-t1003");
         assertThat(harness.runner.copies.keySet())
                 .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-6a44639ead366984");
         assertThat(loadTables(harness).get(0).getTable())
@@ -386,9 +432,11 @@ class LoadJobOrchestratorTempTableLayoutTest {
         // and ids, which take the checkpoint segment and fold the staging format into the hash.
         assertThat(harness.runner.loads.keySet())
                 .containsExactly(
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4ecae23c5143f639-p0",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-17a6853089163595-p1",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-75e4dec0e13b0f39-p2");
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4ecae23c5143f639-p0-s7062e446-t1001",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-17a6853089163595-p1-s7062e446-t1002",
+                        "flink-bq-load-"
+                                + FLINK_JOB_ID
+                                + "-c7-75e4dec0e13b0f39-p2-s7062e446-t1003");
         assertThat(loadTables(harness).get(0).getTable())
                 .isEqualTo("tmp_" + FLINK_JOB_ID + "_54a2badd475a_c7_p0");
         assertThat(harness.runner.copies.keySet())
@@ -414,9 +462,11 @@ class LoadJobOrchestratorTempTableLayoutTest {
 
         assertThat(harness.runner.loads.keySet())
                 .containsExactly(
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4ecae23c5143f639-p0",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-17a6853089163595-p1",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-75e4dec0e13b0f39-p2");
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4ecae23c5143f639-p0-s7062e446-t1001",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-17a6853089163595-p1-s7062e446-t1002",
+                        "flink-bq-load-"
+                                + FLINK_JOB_ID
+                                + "-c7-75e4dec0e13b0f39-p2-s7062e446-t1003");
         assertThat(harness.runner.copies.keySet())
                 .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-c7-aa511602215ce9c4");
     }
@@ -431,9 +481,11 @@ class LoadJobOrchestratorTempTableLayoutTest {
         // outside this code: the streaming checkpoint segment comes on top of the URI hash.
         assertThat(harness.runner.loads.keySet())
                 .containsExactly(
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-9bb39e0971d977a3-p0",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4cb2656901da57fd-p1",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-f514a856731087a5-p2");
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-9bb39e0971d977a3-p0-s7062e446-t1001",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4cb2656901da57fd-p1-s7062e446-t1002",
+                        "flink-bq-load-"
+                                + FLINK_JOB_ID
+                                + "-c7-f514a856731087a5-p2-s7062e446-t1003");
         assertThat(loadTables(harness).get(0).getTable())
                 .isEqualTo("tmp_" + FLINK_JOB_ID + "_e88106585483_c7_p0");
         assertThat(harness.runner.copies.keySet())
@@ -449,12 +501,13 @@ class LoadJobOrchestratorTempTableLayoutTest {
         laidOut.orchestrator.run(threeOversizedFiles());
 
         // Pinned literally: a retried commit re-attaches by these names and ids, so changing them
-        // takes a new record in the committable, never an edit here.
+        // takes a new record in the committable, never an edit here. The suffix on each load is
+        // the incarnation of the table it fills, its creation time in the fake.
         assertThat(plain.runner.loads.keySet())
                 .containsExactly(
-                        "flink-bq-load-" + FLINK_JOB_ID + "-a46d2635e4333ab8-p0",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-cf81386069c16b3e-p1",
-                        "flink-bq-load-" + FLINK_JOB_ID + "-c39c2d39f5581ae8-p2");
+                        "flink-bq-load-" + FLINK_JOB_ID + "-a46d2635e4333ab8-p0-s7062e446-t1001",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-cf81386069c16b3e-p1-s7062e446-t1002",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c39c2d39f5581ae8-p2-s7062e446-t1003");
         assertThat(loadTables(plain).get(0).getTable())
                 .isEqualTo("tmp_" + FLINK_JOB_ID + "_e88106585483_p0");
         assertThat(plain.runner.copies.keySet())
@@ -464,7 +517,7 @@ class LoadJobOrchestratorTempTableLayoutTest {
                 .isEqualTo(
                         "flink-bq-load-"
                                 + FLINK_JOB_ID
-                                + "-a46d2635e4333ab8-p0-layout-b40ff274-t1001");
+                                + "-a46d2635e4333ab8-p0-layout-b40ff274-s7062e446-t1001");
         assertThat(loadTables(laidOut).get(0).getTable())
                 .isEqualTo("tmp_" + FLINK_JOB_ID + "_e88106585483_p0_layout_b40ff274");
         assertThat(laidOut.runner.copies.keySet())
@@ -620,7 +673,8 @@ class LoadJobOrchestratorTempTableLayoutTest {
     void aRestoredCommitKeepsEveryTemporaryTableAndIdInItsRecordedDataset() throws IOException {
         // Intermediate levels (a fan-out of two) and WRITE_TRUNCATE_DATA's aggregate table, copy
         // and terminal query: every one of their ids hashes a temporary table's path, and this
-        // disposition never asks whether its final copy succeeded, so each must be the attempt's.
+        // disposition asks only whether its terminal query succeeded, so each must be the
+        // attempt's.
         Limits fanOutOfTwo = new Limits(2, 100, 100, 100);
         List<FileLoadsCommittable> files = new ArrayList<>();
         for (FileLoadsCommittable file : threeOversizedFiles()) {
@@ -766,7 +820,11 @@ class LoadJobOrchestratorTempTableLayoutTest {
                 .containsExactlyElementsOf(unpartitioned.runner.copies.keySet());
         assertThat(onlyCopy(ingestion).getEquivalentJobId())
                 .isEqualTo(CommitPlanner.laidOutFinalCopyId(onlyCopyId(ingestion)));
-        assertThat(ingestion.tableAdmin.preparedTemporaryTables).isEmpty();
+        // Its temporary tables are prepared as an unpartitioned destination's are: without a
+        // layout, so the ingestion-time partitioning never reaches them.
+        assertThat(ingestion.tableAdmin.preparedTemporaryTables)
+                .containsExactlyElementsOf(unpartitioned.tableAdmin.preparedTemporaryTables);
+        assertThat(ingestion.tableAdmin.preparedLayouts).containsOnly(TableLayout.NONE);
     }
 
     @Test
@@ -936,7 +994,12 @@ class LoadJobOrchestratorTempTableLayoutTest {
                 .containsExactlyElementsOf(unpartitioned.runner.queries.keySet());
         // The copy fills the aggregate temporary table, not the destination.
         assertThat(onlyCopy(harness).getEquivalentJobId()).isNull();
-        assertThat(harness.tableAdmin.preparedTemporaryTables).isEmpty();
+        // Every temporary table, the aggregate included, is prepared without a layout.
+        assertThat(harness.tableAdmin.preparedTemporaryTables)
+                .containsExactlyElementsOf(unpartitioned.tableAdmin.preparedTemporaryTables)
+                .containsAll(loadTables(harness))
+                .contains(onlyCopy(harness).getDestination());
+        assertThat(harness.tableAdmin.preparedLayouts).containsOnly(TableLayout.NONE);
     }
 
     @Test
@@ -958,16 +1021,20 @@ class LoadJobOrchestratorTempTableLayoutTest {
         List<String> copyIds = new ArrayList<>(unpartitioned.runner.copies.keySet());
         List<CopyJobSpec> copies = new ArrayList<>(unpartitioned.runner.copies.values());
         assertThat(copyIds).hasSize(2);
+        // The unpartitioned intermediate copy names its prepared table's incarnation too.
+        String intermediateBaseId =
+                withoutPreparation(unpartitioned, copyIds.get(0), copies.get(0).getDestination());
         List<CopyJobSpec> laidOutCopies = new ArrayList<>(laidOut.runner.copies.values());
         assertThat(laidOutCopies)
                 .extracting(CopyJobSpec::getCreateDisposition)
                 .containsOnly(JobInfo.CreateDisposition.CREATE_NEVER);
         assertThat(laidOut.runner.copies.keySet())
                 .containsExactly(
-                        CommitPlanner.incarnationJobId(
-                                CommitPlanner.laidOutJobId(copyIds.get(0), salt),
-                                laidOut.tableAdmin.temporaryTables.get(
-                                        laidOutCopies.get(0).getDestination())),
+                        preparedLaidOutJobId(
+                                laidOut,
+                                intermediateBaseId,
+                                salt,
+                                laidOutCopies.get(0).getDestination()),
                         CommitPlanner.laidOutFinalCopyId(copyIds.get(1)));
         // Leaves and the intermediate table are all prepared before any job runs.
         assertThat(laidOut.tableAdmin.preparedTemporaryTables)
@@ -1021,6 +1088,359 @@ class LoadJobOrchestratorTempTableLayoutTest {
         assertThat(after.subList(1, 3)).isEqualTo(before.subList(1, 3));
         assertThat(retry.runner.copies.keySet())
                 .containsExactlyElementsOf(first.runner.copies.keySet());
+    }
+
+    @Test
+    void anUnlaidTemporaryTableThatExpiredBeforeARetryIsFilledAgain() throws IOException {
+        Harness first = withExistingTable(TableLayout.NONE);
+        first.orchestrator.run(threeOversizedFiles());
+        List<TableDestination> tables = loadTables(first);
+
+        // As above, for a destination whose copy accepts tables without a layout (#2290). The
+        // first run stands for an earlier attempt that stopped before its final copy: the fakes
+        // carry its tables over, but not its success. Re-attaching to the load that filled the
+        // expired table would leave the copy without its source on every attempt.
+        Harness retry = withExistingTable(TableLayout.NONE);
+        retry.tableAdmin.temporaryTables.putAll(first.tableAdmin.temporaryTables);
+        retry.tableAdmin.temporaryTables.remove(tables.get(0));
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.orchestrator.run(threeOversizedFiles());
+
+        List<String> before = new ArrayList<>(first.runner.loads.keySet());
+        List<String> after = new ArrayList<>(retry.runner.loads.keySet());
+        assertThat(after.get(0)).isNotEqualTo(before.get(0));
+        assertThat(after.subList(1, 3)).isEqualTo(before.subList(1, 3));
+        assertThat(loadTables(retry)).isEqualTo(tables);
+        assertThat(retry.tableAdmin.preparedTemporaryTables).containsExactlyElementsOf(tables);
+        assertThat(retry.tableAdmin.preparedLayouts).containsOnly(TableLayout.NONE);
+        assertThat(retry.tableAdmin.preparedExpirations)
+                .containsOnly(FileLoadsOptions.DEFAULT_TEMP_TABLE_EXPIRATION);
+        assertThat(retry.runner.copies.keySet())
+                .containsExactlyElementsOf(first.runner.copies.keySet());
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = WriteDisposition.class,
+            names = {"WRITE_APPEND", "WRITE_TRUNCATE_DATA"})
+    void aSchemaThatChangedBetweenAttemptsRefillsEveryTemporaryTable(WriteDisposition disposition)
+            throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(disposition)
+                        .build();
+        Harness first = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        first.orchestrator.run(threeOversizedFiles());
+
+        // No table expired, but the destination gained a column, so the retry reconciles another
+        // schema. Re-attaching to the jobs that filled the surviving tables would leave the copy
+        // sources of two schemas once any one of them expired and was filled again.
+        Harness retry = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        retry.tableAdmin.tables.put(
+                T1,
+                SCHEMA.toBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("f3")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .build());
+        retry.tableAdmin.temporaryTables.putAll(first.tableAdmin.temporaryTables);
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.orchestrator.run(threeOversizedFiles());
+
+        assertThat(loadTables(retry)).isEqualTo(loadTables(first));
+        assertThat(retry.runner.loads.keySet())
+                .hasSize(3)
+                .doesNotContainAnyElementsOf(first.runner.loads.keySet());
+        if (disposition == WriteDisposition.WRITE_APPEND) {
+            // The final copy writes the destination and keeps its id.
+            assertThat(retry.runner.copies.keySet())
+                    .containsExactlyElementsOf(first.runner.copies.keySet());
+        } else {
+            // The copy into the surviving aggregate fills it again under the new schema; the
+            // terminal query that reads it keeps its id.
+            assertThat(onlyCopy(retry).getDestination())
+                    .isEqualTo(onlyCopy(first).getDestination());
+            assertThat(onlyCopyId(retry)).isNotEqualTo(onlyCopyId(first));
+            assertThat(retry.runner.queries.keySet())
+                    .containsExactlyElementsOf(first.runner.queries.keySet());
+        }
+    }
+
+    @Test
+    void anIntermediateCopyLeftUnfinishedIsWaitedForBeforeItsSourcesArePrepared()
+            throws IOException {
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        Harness harness = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+        harness.tableAdmin.events = harness.runner.events;
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10)));
+
+        // Three leaves over a fan-out of two: one intermediate copy, from the first two leaves.
+        // An earlier attempt's copy into the intermediate table may not have read those leaves
+        // yet, so neither is prepared, and possibly created anew empty, before it has finished.
+        assertWaitedForBeforeItsSourcesWerePrepared(
+                harness,
+                harness.runner.copies.keySet().iterator().next(),
+                harness.runner.copies.values().iterator().next());
+    }
+
+    @Test
+    void anAggregateCopyLeftUnfinishedIsWaitedForBeforeItsSourcesArePrepared() throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        Harness harness = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        harness.tableAdmin.events = harness.runner.events;
+
+        harness.orchestrator.run(threeOversizedFiles());
+
+        assertWaitedForBeforeItsSourcesWerePrepared(
+                harness, onlyCopyId(harness), onlyCopy(harness));
+    }
+
+    @Test
+    void everyLevelOfCopiesLeftUnfinishedIsWaitedForBeforeItsSourcesArePrepared()
+            throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        Harness harness = new Harness(options, builder -> {}, null, limits);
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+        harness.tableAdmin.events = harness.runner.events;
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10)));
+
+        // An intermediate copy from the first two leaves, and the copy into the aggregate table
+        // from that intermediate table and the third leaf: the aggregate's copy is waited for
+        // before the intermediate table it reads is prepared, and so on down.
+        assertThat(harness.runner.copies).hasSize(2);
+        for (Map.Entry<String, CopyJobSpec> copy : harness.runner.copies.entrySet()) {
+            assertWaitedForBeforeItsSourcesWerePrepared(harness, copy.getKey(), copy.getValue());
+        }
+    }
+
+    @Test
+    void aLaidOutIntermediateCopyIsWaitedForUnderTheIdItIsSubmittedUnder() throws IOException {
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        Harness harness = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+        harness.tableAdmin.layouts.put(T1, PARTITIONED_AND_CLUSTERED);
+        harness.tableAdmin.events = harness.runner.events;
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10)));
+
+        assertWaitedForBeforeItsSourcesWerePrepared(
+                harness,
+                harness.runner.copies.keySet().iterator().next(),
+                harness.runner.copies.values().iterator().next());
+    }
+
+    /**
+     * Asserts that {@code harness} prepared the table {@code copy} fills, then asked about the copy
+     * under {@code copyId}, whose answer waits for one left unfinished, and only then prepared any
+     * of its sources.
+     */
+    private static void assertWaitedForBeforeItsSourcesWerePrepared(
+            Harness harness, String copyId, CopyJobSpec copy) {
+        List<String> events = harness.runner.events;
+        int prepared = events.indexOf("prepare:" + copy.getDestination().toTablePath());
+        int waited = events.indexOf("copy-succeeded?:" + copyId);
+        assertThat(prepared).as("the filled table is prepared").isNotNegative();
+        assertThat(waited).as("the filling copy is waited for after that").isGreaterThan(prepared);
+        for (TableDestination source : copy.getSourceTables()) {
+            assertThat(events.indexOf("prepare:" + source.toTablePath()))
+                    .as("source %s is prepared after the wait", source)
+                    .isGreaterThan(waited);
+        }
+    }
+
+    @Test
+    void theLeavesUnderAnAggregateCopyThatSucceededAreNotFilledAgain() throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        Harness first = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        first.orchestrator.run(threeOversizedFiles());
+        TableDestination aggregate = onlyCopy(first).getDestination();
+
+        // The copy into the aggregate table succeeded, the terminal query did not run, and every
+        // leaf expired meanwhile: the aggregate already holds every row, so the retry does not
+        // load the leaves, which would need staged files a lifecycle rule may have removed, and
+        // runs the terminal query over the aggregate.
+        Harness retry = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        retry.tableAdmin.temporaryTables.put(
+                aggregate, first.tableAdmin.temporaryTables.get(aggregate));
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.runner.copiesThatSucceeded.add(onlyCopyId(first));
+        retry.orchestrator.run(threeOversizedFiles());
+
+        // The expired leaves are not created anew: an empty one could only be read by an earlier
+        // attempt's copy still running under another id.
+        assertThat(retry.tableAdmin.preparedTemporaryTables).containsExactly(aggregate);
+        assertThat(retry.tableAdmin.extendedTemporaryTables).isEmpty();
+        assertThat(retry.tableAdmin.temporaryTables.keySet()).containsExactly(aggregate);
+        assertThat(retry.runner.loads).isEmpty();
+        assertThat(retry.runner.copies.keySet()).containsExactly(onlyCopyId(first));
+        assertThat(retry.runner.queries.keySet())
+                .containsExactlyElementsOf(first.runner.queries.keySet());
+        assertThat(retry.runner.deletedTables)
+                .containsExactlyInAnyOrderElementsOf(first.runner.deletedTables);
+    }
+
+    @Test
+    void theLeavesUnderAnIntermediateCopyThatSucceededAreNotFilledAgain() throws IOException {
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        List<FileLoadsCommittable> files =
+                List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10));
+        Harness first = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        first.tableAdmin.tables.put(T1, SCHEMA);
+        first.orchestrator.run(files);
+        String intermediateCopyId = first.runner.copies.keySet().iterator().next();
+        CopyJobSpec intermediate = first.runner.copies.values().iterator().next();
+
+        // The intermediate copy from the first two leaves succeeded; those leaves expired, while
+        // the intermediate table and the third leaf survived. Only the third leaf is loaded again,
+        // and its load re-attaches; the expired leaves are not created anew.
+        Harness retry = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        retry.tableAdmin.tables.put(T1, SCHEMA);
+        retry.tableAdmin.temporaryTables.putAll(first.tableAdmin.temporaryTables);
+        for (TableDestination source : intermediate.getSourceTables()) {
+            retry.tableAdmin.temporaryTables.remove(source);
+        }
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.runner.copiesThatSucceeded.add(intermediateCopyId);
+        retry.orchestrator.run(files);
+
+        TableDestination thirdLeaf = loadTables(first).get(2);
+        assertThat(retry.tableAdmin.preparedTemporaryTables)
+                .containsExactlyInAnyOrder(intermediate.getDestination(), thirdLeaf);
+        assertThat(retry.tableAdmin.extendedTemporaryTables).isEmpty();
+        assertThat(loadTables(retry)).containsExactly(thirdLeaf);
+        assertThat(retry.runner.loads.keySet())
+                .containsExactly(new ArrayList<>(first.runner.loads.keySet()).get(2));
+        assertThat(retry.runner.copies.keySet())
+                .containsExactlyElementsOf(first.runner.copies.keySet());
+    }
+
+    @Test
+    void everyLevelBelowACopyThatSucceededIsNotFilledAgain() throws IOException {
+        // Five leaves over a fan-out of two: level one copies a+b and c+d, carrying e; level two
+        // copies those two intermediate tables, carrying e again; the final copy reads the level
+        // two table and e.
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        List<FileLoadsCommittable> files =
+                List.of(
+                        file(T1, "a", 10),
+                        file(T1, "b", 10),
+                        file(T1, "c", 10),
+                        file(T1, "d", 10),
+                        file(T1, "e", 10));
+        Harness first = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        first.tableAdmin.tables.put(T1, SCHEMA);
+        first.orchestrator.run(files);
+        List<String> copyIds = new ArrayList<>(first.runner.copies.keySet());
+        List<CopyJobSpec> copies = new ArrayList<>(first.runner.copies.values());
+        assertThat(copies).hasSize(4);
+        String topCopyId = copyIds.get(2);
+        TableDestination top = copies.get(2).getDestination();
+
+        // The level-two copy succeeded and every leaf under it expired: the level-one tables and
+        // their leaves are neither loaded nor copied again, and only the carried leaf is loaded
+        // for the final copy.
+        Harness retry = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        retry.tableAdmin.tables.put(T1, SCHEMA);
+        retry.tableAdmin.temporaryTables.putAll(first.tableAdmin.temporaryTables);
+        TableDestination carried = loadTables(first).get(4);
+        for (TableDestination leaf : loadTables(first).subList(0, 4)) {
+            retry.tableAdmin.temporaryTables.remove(leaf);
+        }
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.runner.copiesThatSucceeded.add(topCopyId);
+        retry.orchestrator.run(files);
+
+        // The level-one tables survived: they are extended, so they live as long as the level-two
+        // table for a later attempt that finds it expired, but neither created nor filled.
+        assertThat(retry.tableAdmin.preparedTemporaryTables)
+                .containsExactlyInAnyOrder(top, carried);
+        assertThat(retry.tableAdmin.extendedTemporaryTables)
+                .containsExactlyInAnyOrderElementsOf(copies.get(2).getSourceTables());
+        assertThat(retry.tableAdmin.extendedExpirations)
+                .containsOnly(FileLoadsOptions.DEFAULT_TEMP_TABLE_EXPIRATION);
+        assertThat(loadTables(retry)).containsExactly(carried);
+        assertThat(retry.runner.copies.keySet()).containsExactly(topCopyId, copyIds.get(3));
+    }
+
+    @Test
+    void theTablesBelowALaidOutCopyThatSucceededAreNotFilledAgain() throws IOException {
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        List<FileLoadsCommittable> files =
+                List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10));
+        Harness first = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        first.tableAdmin.tables.put(T1, SCHEMA);
+        first.tableAdmin.layouts.put(T1, PARTITIONED_AND_CLUSTERED);
+        first.orchestrator.run(files);
+        String intermediateCopyId = first.runner.copies.keySet().iterator().next();
+        CopyJobSpec intermediate = first.runner.copies.values().iterator().next();
+
+        Harness retry = new Harness(OPTIONS, builder -> {}, 7L, limits);
+        retry.tableAdmin.tables.put(T1, SCHEMA);
+        retry.tableAdmin.layouts.put(T1, PARTITIONED_AND_CLUSTERED);
+        retry.tableAdmin.temporaryTables.putAll(first.tableAdmin.temporaryTables);
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.runner.copiesThatSucceeded.add(intermediateCopyId);
+        retry.orchestrator.run(files);
+
+        // The renamed leaves under the laid-out intermediate copy survived: extended, not loaded.
+        assertThat(retry.tableAdmin.preparedTemporaryTables)
+                .doesNotContainAnyElementsOf(intermediate.getSourceTables())
+                .contains(intermediate.getDestination());
+        assertThat(retry.tableAdmin.extendedTemporaryTables)
+                .containsExactlyInAnyOrderElementsOf(intermediate.getSourceTables());
+        assertThat(loadTables(retry)).doesNotContainAnyElementsOf(intermediate.getSourceTables());
+        assertThat(retry.runner.loads).hasSize(1);
+        assertThat(retry.runner.copies.keySet())
+                .containsExactlyElementsOf(first.runner.copies.keySet());
+    }
+
+    @Test
+    void anExpiredAggregateTableIsCopiedAgainUnderWriteTruncateData() throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        Harness first = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        first.orchestrator.run(threeOversizedFiles());
+        TableDestination aggregate = onlyCopy(first).getDestination();
+
+        // The first run stands for an earlier attempt that stopped before its terminal query
+        // succeeded. The leaves survived and the aggregate expired: the copy into it runs again,
+        // and the terminal query reads the refilled table.
+        Harness retry = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        retry.tableAdmin.temporaryTables.putAll(first.tableAdmin.temporaryTables);
+        retry.tableAdmin.temporaryTables.remove(aggregate);
+        retry.tableAdmin.clock = first.tableAdmin.clock;
+        retry.orchestrator.run(threeOversizedFiles());
+
+        assertThat(retry.runner.loads.keySet())
+                .containsExactlyElementsOf(first.runner.loads.keySet());
+        assertThat(onlyCopy(retry).getDestination()).isEqualTo(aggregate);
+        assertThat(onlyCopyId(retry)).isNotEqualTo(onlyCopyId(first));
+        assertThat(onlyCopy(retry).getCreateDisposition())
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
+        assertThat(retry.runner.queries.keySet())
+                .containsExactlyElementsOf(first.runner.queries.keySet());
     }
 
     @Test
@@ -1115,6 +1535,9 @@ class LoadJobOrchestratorTempTableLayoutTest {
         retry.runner.copiesThatSucceeded.add(onlyCopyId(earlier));
         retry.orchestrator.run(threeOversizedFiles());
 
+        // Preparing its tables would recreate the ones the successful commit deleted, and the
+        // loads they then need would read staged files the commit deleted too.
+        assertThat(retry.tableAdmin.preparedTemporaryTables).isEmpty();
         assertThat(retry.runner.loads).isEmpty();
         assertThat(retry.runner.copies.keySet()).containsExactly(onlyCopyId(earlier));
         assertThat(retry.runner.deletedTables)
@@ -1122,7 +1545,55 @@ class LoadJobOrchestratorTempTableLayoutTest {
     }
 
     @Test
-    void writeTruncateDataNeverSkipsItsLoadsOrQuery() throws IOException {
+    void aCompletedCommitOfOlderVersionFilesIsNeitherPreparedNorLoadedAgain() throws IOException {
+        Harness earlier = Harness.plain();
+        earlier.orchestrator.run(stagedByOlderVersion(threeOversizedFiles()));
+
+        // A restore of state an older version wrote commits its last checkpoint's files again,
+        // which the commit that succeeded deleted: only its final copy, whose id is unchanged,
+        // may be re-attached to.
+        Harness retry = Harness.plain();
+        retry.runner.copiesThatSucceeded.add(onlyCopyId(earlier));
+        retry.orchestrator.run(stagedByOlderVersion(threeOversizedFiles()));
+
+        assertThat(retry.tableAdmin.preparedTemporaryTables).isEmpty();
+        assertThat(retry.runner.loads).isEmpty();
+        assertThat(retry.runner.copies.keySet()).containsExactly(onlyCopyId(earlier));
+    }
+
+    @ParameterizedTest(name = "staged by an older version: {0}")
+    @ValueSource(booleans = {false, true})
+    void writeTruncateDataWhoseTerminalQuerySucceededIsNeitherPreparedNorLoadedAgain(
+            boolean olderVersion) throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        List<FileLoadsCommittable> files =
+                olderVersion ? stagedByOlderVersion(threeOversizedFiles()) : threeOversizedFiles();
+        Harness earlier = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        earlier.orchestrator.run(files);
+        String queryId = earlier.runner.queries.keySet().iterator().next();
+
+        // The commit succeeded and deleted its temporary tables and staged files; the restore
+        // commits the same files again. Preparing the tables would create them anew, and the
+        // loads under their new incarnations would read the deleted files on every attempt.
+        Harness retry = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        retry.runner.queriesThatSucceeded.add(queryId);
+        retry.orchestrator.run(files);
+
+        assertThat(retry.tableAdmin.preparedTemporaryTables).isEmpty();
+        assertThat(retry.runner.loads).isEmpty();
+        assertThat(retry.runner.copies).isEmpty();
+        assertThat(retry.runner.queries.keySet()).containsExactly(queryId);
+        assertThat(retry.runner.deletedTables)
+                .containsExactlyInAnyOrderElementsOf(earlier.runner.deletedTables);
+        assertThat(retry.runner.events).noneMatch(event -> event.startsWith("copy-succeeded?:"));
+    }
+
+    @Test
+    void writeTruncateDataStillRunsItsQueryAfterItsAggregateCopySucceeded() throws IOException {
         FileLoadsOptions options =
                 FileLoadsOptions.builder()
                         .stagingPath("gs://bucket/prefix")
@@ -1132,14 +1603,23 @@ class LoadJobOrchestratorTempTableLayoutTest {
         earlier.orchestrator.run(threeOversizedFiles());
 
         // Its last copy fills the aggregate table, not the destination: a copy that succeeded
-        // there stands for nothing the terminal query has written.
+        // there stands for nothing the terminal query has written, so the query still runs; it
+        // only leaves the leaves unfilled. The tables survived, so the aggregate keeps the
+        // incarnation that copy filled.
         Harness retry = withExistingTable(options, builder -> {}, TableLayout.NONE);
+        retry.tableAdmin.temporaryTables.putAll(earlier.tableAdmin.temporaryTables);
+        retry.tableAdmin.clock = earlier.tableAdmin.clock;
         retry.runner.copiesThatSucceeded.addAll(earlier.runner.copies.keySet());
         retry.orchestrator.run(threeOversizedFiles());
 
-        assertThat(retry.runner.loads).hasSize(3);
-        assertThat(retry.runner.queries).hasSize(1);
-        assertThat(retry.runner.events).noneMatch(event -> event.startsWith("copy-succeeded?:"));
+        assertThat(retry.runner.loads).isEmpty();
+        assertThat(retry.runner.queries.keySet())
+                .containsExactlyElementsOf(earlier.runner.queries.keySet());
+        assertThat(retry.runner.events)
+                .filteredOn(event -> event.startsWith("copy-succeeded?:"))
+                .containsExactly("copy-succeeded?:" + onlyCopyId(retry));
+        assertThat(retry.runner.events)
+                .contains("query-succeeded?:" + retry.runner.queries.keySet().iterator().next());
     }
 
     @Test
@@ -1259,8 +1739,9 @@ class LoadJobOrchestratorTempTableLayoutTest {
 
         harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10)));
 
-        // Unlaid temporary tables are created by their loads, which state the key.
-        assertThat(harness.tableAdmin.preparedTemporaryTables).isEmpty();
+        // Unlaid temporary tables are created with the key, and the jobs that fill them state it.
+        assertThat(harness.tableAdmin.preparedTemporaryTables).hasSize(4);
+        assertThat(harness.tableAdmin.preparedKmsKeyNames).containsOnly(KEY);
         assertThat(harness.runner.loads.values())
                 .allSatisfy(
                         spec -> {

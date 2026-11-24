@@ -102,6 +102,22 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
                         && copiesThatSucceeded.contains(spec.getEquivalentJobId()));
     }
 
+    /**
+     * Base ids of terminal queries a previous attempt completed successfully, which {@link
+     * #querySucceeded} reports.
+     */
+    public final Set<String> queriesThatSucceeded = new HashSet<>();
+
+    /** The specs {@link #querySucceeded} was asked about, in order. */
+    public final List<QueryJobSpec> querySucceededQueries = new ArrayList<>();
+
+    @Override
+    public boolean querySucceeded(String jobId, QueryJobSpec spec) {
+        events.add("query-succeeded?:" + jobId);
+        querySucceededQueries.add(spec);
+        return queriesThatSucceeded.contains(jobId);
+    }
+
     @Override
     public void deleteTable(TableDestination table) {
         events.add("delete:" + table.toTablePath());

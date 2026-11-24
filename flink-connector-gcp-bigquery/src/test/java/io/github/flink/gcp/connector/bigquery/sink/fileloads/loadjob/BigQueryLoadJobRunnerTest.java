@@ -1262,17 +1262,12 @@ class BigQueryLoadJobRunnerTest {
                 JobAnswer.absent(), JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
         assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
 
-        // Its own copy still running, its equivalent done: the equivalent stands for it.
+        // Its own copy still running, its equivalent done: the equivalent stands for it, and
+        // nothing is waited for.
         client.answering(
                 JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
                 JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
         assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
-
-        // Still running is not a success: the commit prepares its tables and re-attaches later.
-        client.answering(
-                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
-                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)));
-        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isFalse();
 
         client.answering(
                 JobAnswer.absent(), JobAnswer.withStatus(failed("refused")), JobAnswer.absent());
@@ -1289,10 +1284,152 @@ class BigQueryLoadJobRunnerTest {
                         "bq-equivalent",
                         JOB_ID,
                         "bq-equivalent",
-                        JOB_ID,
-                        "bq-equivalent",
                         "bq-equivalent-r1");
         assertThat(client.created).isEmpty();
+    }
+
+    @Test
+    void aCopyStillRunningIsWaitedForBeforeTheAnswer() throws Exception {
+        // It may read a temporary table the caller is about to create anew after it expired, and
+        // would then succeed with that table's rows missing; the caller prepares nothing until
+        // it has finished.
+        BigQueryLoadJobRunner runner = runner();
+
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.absent(),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
+
+        // One that fails while waited for is passed over, and the next retry id is looked up.
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.PENDING)),
+                JobAnswer.absent(),
+                JobAnswer.withStatus(failed("Not found: Table")),
+                JobAnswer.withStatus(failed("Not found: Table")),
+                JobAnswer.absent(),
+                JobAnswer.absent());
+        assertThat(runner.copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isFalse();
+
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(
+                        JOB_ID,
+                        "bq-equivalent",
+                        JOB_ID,
+                        JOB_ID,
+                        JOB_ID,
+                        "bq-equivalent",
+                        JOB_ID,
+                        JOB_ID,
+                        JOB_ID + "-r1",
+                        "bq-equivalent");
+        assertThat(client.created).isEmpty();
+    }
+
+    @Test
+    void anEquivalentCopyStillRunningIsWaitedForToo() throws Exception {
+        // A destination that lost its only clustering asks about its unchanged final copy, whose
+        // equivalent is the laid-out copy an earlier attempt may have left running.
+        client.answering(
+                JobAnswer.absent(),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)),
+                JobAnswer.absent(),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+
+        assertThat(runner().copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isTrue();
+
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(JOB_ID, "bq-equivalent", "bq-equivalent", JOB_ID, "bq-equivalent");
+    }
+
+    @Test
+    void aCopyThatDisappearsWhileWaitedForIsNoSuccess() throws Exception {
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.absent(),
+                JobAnswer.absent(),
+                JobAnswer.absent(),
+                JobAnswer.absent());
+
+        assertThat(runner().copySucceeded(JOB_ID, equivalentCopySpec("bq-equivalent"))).isFalse();
+
+        assertThat(client.getJobCalls)
+                .extracting(id -> id.getJob())
+                .containsExactly(JOB_ID, "bq-equivalent", JOB_ID, JOB_ID, "bq-equivalent");
+    }
+
+    @Test
+    void anInterruptWhileWaitingForACopyFailsTheQuestionAndKeepsTheFlag() {
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)), JobAnswer.absent());
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(
+                            () ->
+                                    runner().copySucceeded(
+                                                    JOB_ID, equivalentCopySpec("bq-equivalent")))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Interrupted while waiting for BigQuery job " + JOB_ID);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void aQuerySucceededOnlyWhenItsChainHoldsADoneJobWithoutAnError() throws Exception {
+        BigQueryLoadJobRunner runner = runner();
+        QueryJobSpec spec =
+                new QueryJobSpec(TEMP, DESTINATION, List.of()).withJobProject(JOB_PROJECT);
+
+        // A query that failed, for example on an aggregate table that expired, stands for
+        // nothing; the retry id after it succeeded.
+        client.answering(
+                JobAnswer.withStatus(failed("Not found: Table")),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        assertThat(runner.querySucceeded(JOB_ID, spec)).isTrue();
+
+        // A query still running is waited for, for the reason a copy is.
+        client.answering(
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.RUNNING)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)),
+                JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        assertThat(runner.querySucceeded(JOB_ID, spec)).isTrue();
+
+        client.answering(JobAnswer.withStatus(failed("Not found: Table")), JobAnswer.absent());
+        assertThat(runner.querySucceeded(JOB_ID, spec)).isFalse();
+
+        assertThat(client.getJobCalls)
+                .extracting(JobId::getJob, JobId::getProject)
+                .containsExactly(
+                        tuple(JOB_ID, JOB_PROJECT),
+                        tuple(JOB_ID + "-r1", JOB_PROJECT),
+                        tuple(JOB_ID, JOB_PROJECT),
+                        tuple(JOB_ID, JOB_PROJECT),
+                        tuple(JOB_ID, JOB_PROJECT),
+                        tuple(JOB_ID, JOB_PROJECT),
+                        tuple(JOB_ID + "-r1", JOB_PROJECT));
+        assertThat(client.created).isEmpty();
+    }
+
+    @Test
+    void whetherAQuerySucceededIsAskedWhereTheQueryRuns() throws Exception {
+        // A look-up naming no location resolves against the US multi-region only, so the question
+        // must name the location the query was submitted in, the destination dataset's.
+        client.locatedDataset(DATASET, "europe-west1");
+        client.answering(JobAnswer.absent());
+
+        assertThat(
+                        new BigQueryLoadJobRunner(client, null, FAST)
+                                .querySucceeded(
+                                        JOB_ID, new QueryJobSpec(TEMP, DESTINATION, List.of())))
+                .isFalse();
+
+        assertThat(client.getJobCalls).singleElement().returns("europe-west1", JobId::getLocation);
     }
 
     private static CopyJobSpec equivalentCopySpec(String equivalentJobId) {

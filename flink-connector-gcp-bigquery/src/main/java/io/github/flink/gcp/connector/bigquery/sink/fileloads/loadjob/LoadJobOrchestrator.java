@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCommitterMetrics;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,8 +76,8 @@ import java.util.function.Function;
  * execution failure, temporary tables and staged files are deliberately left in place for the
  * retry. After every destination succeeds, temporary-table cleanup begins and can be partial if
  * interrupted; staged files are deleted only after that cleanup completes normally. Orphans rely on
- * their own table expiration when laid out, otherwise on the temporary dataset's default table
- * expiration, and on the staging bucket's lifecycle rule.
+ * their own table expiration, which every temporary table is created with, and on the staging
+ * bucket's lifecycle rule.
  */
 @Internal
 public final class LoadJobOrchestrator {
@@ -302,7 +303,7 @@ public final class LoadJobOrchestrator {
             runJobStage(
                     plan.destinations,
                     destination ->
-                            destination.copy == null
+                            destination.copy == null || destination.copy.finalCopy == null
                                     ? List.of()
                                     : List.of(destination.copy.finalCopy),
                     limits.maxSubmissionsPerWave,
@@ -512,8 +513,8 @@ public final class LoadJobOrchestrator {
     }
 
     /**
-     * Reconciles one destination, then lays out its temporary tables from what it read, and
-     * prepares them.
+     * Reconciles one destination, then prepares its temporary tables, laid out from what it read
+     * where the copy needs a layout.
      */
     private void reconcile(
             DestinationCommitPlan destination, TableAdmin tableAdmin, LoadJobRunner runner)
@@ -523,7 +524,7 @@ public final class LoadJobOrchestrator {
                         .reconcile(destination.destination);
         destination.reconciledSchema = reconciled.schema;
         destination.kmsKeyName = reconciled.kmsKeyName;
-        destination.layOutTempTables(
+        destination.prepareTempTables(
                 reconciled.layout,
                 new DestinationCommitPlan.TempTables() {
                     @Override
@@ -533,13 +534,26 @@ public final class LoadJobOrchestrator {
                     }
 
                     @Override
-                    public long prepare(TableDestination table) throws IOException {
+                    public boolean querySucceeded(PlannedQuery query) throws IOException {
+                        return runner.querySucceeded(
+                                query.jobId, query.spec.withJobProject(jobProject));
+                    }
+
+                    @Override
+                    public boolean extend(TableDestination table) throws IOException {
+                        return tableAdmin.extendTemporaryTable(
+                                table, options.getTempTableExpiration());
+                    }
+
+                    @Override
+                    public long prepare(TableDestination table, TableLayout layout)
+                            throws IOException {
                         // Created ahead of the jobs that fill it, with an expiration a load
                         // cannot set (ADR-0183).
                         return tableAdmin.prepareTemporaryTable(
                                 table,
                                 reconciled.schema,
-                                reconciled.layout,
+                                layout,
                                 reconciled.kmsKeyName,
                                 options.getTempTableExpiration());
                     }

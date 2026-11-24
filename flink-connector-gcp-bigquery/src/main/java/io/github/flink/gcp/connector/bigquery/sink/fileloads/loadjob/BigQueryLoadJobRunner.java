@@ -49,7 +49,9 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -223,9 +225,9 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     }
 
     /**
-     * Gives the table a temporary-table load creates its destination's partitioning and clustering.
-     * A copy job refuses a non-partitioned source for a column- or range-partitioned destination,
-     * and a source whose clustering differs from an existing destination's (measured, ADR-0183).
+     * Gives the temporary table a load fills its destination's partitioning and clustering. A copy
+     * job refuses a non-partitioned source for a column- or range-partitioned destination, and a
+     * source whose clustering differs from an existing destination's (measured, ADR-0183).
      *
      * <p>A time-partitioned temporary table also gets {@link
      * TableLayout#TEMPORARY_PARTITION_EXPIRATION_MS}, so it cannot inherit its dataset's default
@@ -300,24 +302,12 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         Preconditions.checkState(job != null, "Job %s was never submitted", jobId);
         boolean preserveForInterruptedDrain = false;
         try {
-            int attempt = 1;
-            while (!isDone(job)) {
-                Retries.sleep(
-                        pollSchedule.backoffMs(attempt++),
-                        "Interrupted while waiting for BigQuery job " + jobId);
-                // Deliberately not Job#reload(): the same request, minus its
-                // throw-if-the-job-carries-an-error behaviour, which routed a load that failed
-                // while being polled past the message composed below (ADR-0018). Do not simplify
-                // it back.
-                Job reloaded = getJob(job.getJobId(), "polling for completion");
-                if (reloaded == null) {
-                    throw new IOException(
-                            "BigQuery job "
-                                    + job.getJobId().getJob()
-                                    + " disappeared while polling.");
-                }
-                job = reloaded;
+            Job polled = pollUntilDone(job, jobId, "polling for completion");
+            if (polled == null) {
+                throw new IOException(
+                        "BigQuery job " + job.getJobId().getJob() + " disappeared while polling.");
             }
+            job = polled;
             JobStatus status = job.getStatus();
             if (status.getError() != null) {
                 throw new IOException(
@@ -344,12 +334,82 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
 
     @Override
     public boolean copySucceeded(String jobId, CopyJobSpec spec) throws IOException {
-        String jobLocation = jobLocation(spec.getDestination());
-        String jobProject = spec.getJobProject();
-        return succeeded(findNotFailed(jobId, jobProject, jobLocation))
-                || (spec.getEquivalentJobId() != null
-                        && succeeded(
-                                findNotFailed(spec.getEquivalentJobId(), jobProject, jobLocation)));
+        List<String> baseJobIds = new ArrayList<>(2);
+        baseJobIds.add(jobId);
+        if (spec.getEquivalentJobId() != null) {
+            baseJobIds.add(spec.getEquivalentJobId());
+        }
+        return anySucceeded(baseJobIds, spec.getJobProject(), jobLocation(spec.getDestination()));
+    }
+
+    @Override
+    public boolean querySucceeded(String jobId, QueryJobSpec spec) throws IOException {
+        return anySucceeded(
+                List.of(jobId), spec.getJobProject(), jobLocation(spec.getDestination()));
+    }
+
+    /**
+     * Whether a job under one of {@code baseJobIds}, or one of their retry ids, succeeded, once
+     * none of them is pending or running. A job that has not finished is waited for: it may read
+     * the temporary tables the caller is about to create anew, so answering before it finishes
+     * would let it copy a table the caller recreated empty. One that then fails is passed over, and
+     * the next look-up may find a later retry id.
+     */
+    private boolean anySucceeded(
+            List<String> baseJobIds, @Nullable String jobProject, String jobLocation)
+            throws IOException {
+        while (true) {
+            List<Job> unfinished = new ArrayList<>(baseJobIds.size());
+            for (String baseJobId : baseJobIds) {
+                Job job = findNotFailed(baseJobId, jobProject, jobLocation);
+                if (succeeded(job)) {
+                    return true;
+                }
+                if (job != null) {
+                    unfinished.add(job);
+                }
+            }
+            if (unfinished.isEmpty()) {
+                return false;
+            }
+            for (Job job : unfinished) {
+                waitUntilFinished(job);
+            }
+        }
+    }
+
+    /** Polls {@code job} until it is done, or gone. */
+    private void waitUntilFinished(Job job) throws IOException {
+        LOG.info(
+                "Waiting for BigQuery job {}, left running by a previous attempt, to finish",
+                job.getJobId().getJob());
+        pollUntilDone(job, job.getJobId().getJob(), "waiting for a previous attempt's job");
+    }
+
+    /**
+     * Polls {@code job} until it is done and returns it, or returns {@code null} once it is gone.
+     *
+     * @param job the job as last read
+     * @param name the job's name in the message of an interruption
+     * @param what what the look-up is for, in the message of a failed one
+     */
+    @Nullable
+    private Job pollUntilDone(Job job, String name, String what) throws IOException {
+        int attempt = 1;
+        Job current = job;
+        while (!isDone(current)) {
+            Retries.sleep(
+                    pollSchedule.backoffMs(attempt++),
+                    "Interrupted while waiting for BigQuery job " + name);
+            // Deliberately not Job#reload(): the same request, minus its
+            // throw-if-the-job-carries-an-error behaviour, which routed a load that failed while
+            // being polled past the message awaitJob composes (ADR-0018). Do not simplify it back.
+            current = getJob(current.getJobId(), what);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current;
     }
 
     /**

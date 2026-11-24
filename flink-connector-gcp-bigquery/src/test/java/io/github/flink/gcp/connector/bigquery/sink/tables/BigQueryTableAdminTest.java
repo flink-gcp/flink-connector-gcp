@@ -1327,6 +1327,51 @@ class BigQueryTableAdminTest {
     }
 
     @Test
+    void anExistingTemporaryTableIsExtendedWithoutBeingCreated() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        long before = System.currentTimeMillis();
+
+        assertThat(
+                        new BigQueryTableAdmin(client)
+                                .extendTemporaryTable(DESTINATION, Duration.ofHours(6)))
+                .isTrue();
+
+        assertThat(client.createdTables).isEmpty();
+        TableInfo patch = client.updatedTables.get(0);
+        assertThat(patch.getTableId()).isEqualTo(BigQueryTableAdmin.toTableId(DESTINATION));
+        assertThat(patch.getExpirationTime())
+                .isBetween(
+                        before + Duration.ofHours(6).toMillis(),
+                        System.currentTimeMillis() + Duration.ofHours(6).toMillis());
+        assertThat(patch.getDefinition().getSchema()).isNull();
+    }
+
+    @Test
+    void aMissingTemporaryTableIsNotCreatedToBeExtended() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.updateTableFailure = new BigQueryException(404, "Not found: Table");
+
+        assertThat(
+                        new BigQueryTableAdmin(client)
+                                .extendTemporaryTable(DESTINATION, Duration.ofHours(6)))
+                .isFalse();
+
+        assertThat(client.createdTables).isEmpty();
+    }
+
+    @Test
+    void aFailureOtherThanNotFoundToExtendATemporaryTableIsNotTakenForAMissingTable() {
+        StubBigQuery client = new StubBigQuery();
+        client.updateTableFailure = new BigQueryException(429, "Rate limit exceeded");
+
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .extendTemporaryTable(DESTINATION, Duration.ofHours(6)))
+                .isInstanceOf(RetriableTableAdminException.class);
+    }
+
+    @Test
     void aRetriableFailureToPrepareATemporaryTableIsTypedRetriable() {
         StubBigQuery client = new StubBigQuery();
         client.createTableFailure =

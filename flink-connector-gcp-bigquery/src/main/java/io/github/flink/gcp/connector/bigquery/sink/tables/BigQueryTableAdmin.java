@@ -280,6 +280,33 @@ public class BigQueryTableAdmin implements TableAdmin {
         return creationTimeOf(table, extended);
     }
 
+    @Override
+    public boolean extendTemporaryTable(TableDestination table, Duration expiration)
+            throws IOException {
+        long expirationTime = System.currentTimeMillis() + expiration.toMillis();
+        try {
+            // Only the expiration is sent; `tables.patch` leaves every omitted attribute as it is.
+            client(table)
+                    .update(
+                            TableInfo.newBuilder(
+                                            toTableId(table),
+                                            StandardTableDefinition.newBuilder().build())
+                                    .setExpirationTime(expirationTime)
+                                    .build());
+        } catch (BigQueryException e) {
+            if (e.getCode() == HTTP_NOT_FOUND) {
+                return false;
+            }
+            throw toFailure(
+                    "Failed to extend the expiration of temporary BigQuery table " + table, e);
+        }
+        LOG.info(
+                "Extended temporary BigQuery table {} to expire at {}",
+                table,
+                Instant.ofEpochMilli(expirationTime));
+        return true;
+    }
+
     /** The table {@link #prepareTemporaryTable} creates. */
     @VisibleForTesting
     static TableInfo temporaryTableInfo(

@@ -143,6 +143,33 @@ class LoadJobOrchestratorJobProjectTest {
     }
 
     @Test
+    void aWriteTruncateDataCommitAsksAboutItsTerminalQueryInItsJobProject() throws IOException {
+        // Asked anywhere else, the question finds no query after a successful commit, and the
+        // restore prepares its temporary tables anew and loads staged files that are gone.
+        FakeLoadJobRunner runner = new FakeLoadJobRunner();
+        FakeTableAdmin tableAdmin = new FakeTableAdmin();
+        tableAdmin.tables.put(T1, SCHEMA);
+
+        run(
+                options(WriteDisposition.WRITE_TRUNCATE_DATA),
+                JOB_PROJECT,
+                runner,
+                tableAdmin,
+                List.of(file("a", SIX_TIB), file("b", SIX_TIB), file("c", SIX_TIB)));
+
+        assertThat(runner.querySucceededQueries)
+                .singleElement()
+                .returns(JOB_PROJECT, QueryJobSpec::getJobProject);
+        // And the question about the copy into its aggregate table is asked there too.
+        assertThat(runner.copySucceededQueries)
+                .singleElement()
+                .returns(JOB_PROJECT, CopyJobSpec::getJobProject);
+        assertThat(runner.queries.values())
+                .singleElement()
+                .returns(JOB_PROJECT, QueryJobSpec::getJobProject);
+    }
+
+    @Test
     void withoutAJobProjectEveryJobIsLeftToTheClientsProject() throws IOException {
         FakeLoadJobRunner runner = new FakeLoadJobRunner();
         FakeTableAdmin tableAdmin = new FakeTableAdmin();
