@@ -43,6 +43,8 @@ import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.grpc.Context;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -69,7 +71,11 @@ import java.util.concurrent.CountDownLatch;
  * handle staying open. A {@link #close()} that lands while a call is in flight cancels the call
  * through the gRPC {@link Context} it runs in (gRPC cancels a call when the context it was started
  * in is cancelled), closes the handle, and returns once the call has released it; that wait has no
- * bound of its own beyond the client's shutdown, and an interrupt ends it.
+ * bound of its own beyond the client's shutdown, and an interrupt ends it. The handle is built
+ * outside that context and is not cancelled: a {@link #close()} while it is being built waits for
+ * the build, which against an emulator includes the client's check that the emulator is answering
+ * (10 s at most), and the handle is closed before that close returns, unless the closing thread is
+ * interrupted.
  *
  * <p>A deferred read operation (a Table API scan or FULL cache load that reads through {@code
  * scan.index}, or whose primary-key filter depends on the key's sort order) resolves through the
@@ -99,6 +105,8 @@ import java.util.concurrent.CountDownLatch;
  */
 @Internal
 public final class BatchClientPartitionPlanner implements PartitionPlanner {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BatchClientPartitionPlanner.class);
 
     private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
@@ -333,25 +341,48 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     /**
      * Opens the handle for the call in flight, unless {@link #close()} came first.
      *
-     * <p>Opened outside the monitor, because building the handle can make a round trip (the client
-     * checks an emulator is answering) and {@link #close()} must not wait for it to cancel the
-     * call. The monitor is this object rather than a lock field: one planner belongs to one
-     * enumerator, so the only contention is between that enumerator's planning call and its
-     * teardown, and a separate lock would name nothing the object does not already name.
+     * <p>Opened outside the monitor, so that {@link #close()}, which waits for the open, waits on a
+     * latch an interrupt ends rather than on the monitor. Building the handle can make a round
+     * trip: against an emulator, the client checks that it is answering, under a 10 s timeout of
+     * its own. It is opened in the root context rather than the call's, so that {@link #close()}
+     * does not cancel that check: the client rethrows a failed check without closing the stubs it
+     * has already built (google-cloud-spanner 6.128.0, #2306). A handle opened after {@link
+     * #close()} is closed here, before that close returns unless its thread is interrupted. The
+     * monitor is this object rather than a lock field: one planner belongs to one enumerator, so
+     * the only contention is between that enumerator's planning call and its teardown, and a
+     * separate lock would name nothing the object does not already name.
      */
     private GrpcEventLoops.LeasedClient<Spanner> openClient() throws IOException {
         synchronized (this) {
             checkOpen();
         }
-        GrpcEventLoops.LeasedClient<Spanner> opened = SpannerClients.open(database, settings());
+        GrpcEventLoops.LeasedClient<Spanner> opened;
+        Context previous = Context.ROOT.attach();
+        try {
+            opened = SpannerClients.open(database, settings());
+        } finally {
+            Context.ROOT.detach(previous);
+        }
         synchronized (this) {
             if (!closed) {
                 spanner = opened;
                 return opened;
             }
         }
-        // Teardown overtook the open and could not see this handle.
-        opened.close();
+        // Teardown overtook the open and could not see this handle. The closed enumerator drops
+        // whatever this call throws, so a failure to close the handle is logged here.
+        try {
+            opened.close();
+        } catch (RuntimeException | Error e) {
+            LOG.warn(
+                    "Failed to close the Spanner client built for {} after the partition planner"
+                            + " closed.",
+                    database,
+                    e);
+            if (e instanceof Error) {
+                throw e;
+            }
+        }
         throw closedBeforeUse();
     }
 

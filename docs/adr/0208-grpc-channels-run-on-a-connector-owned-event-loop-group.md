@@ -435,8 +435,22 @@ releases the group's last lease shuts it down and waits for its threads.**
   call it waits for, the client library's check that an emulator is listening, has a 10 s
   timeout of its own, while a check that fails, as a cancelled one would, leaves the stubs the
   library built before it open (#2306).
-  That cheap creation is why the coordinator waits where `PerCallClientRunner`, above, does not:
-  building a Bigtable data client waits for calls bounded at a minute each.
+  That cheap creation is why the coordinator and the planner wait where `PerCallClientRunner`,
+  above, does not: building a Bigtable data client waits for calls bounded at a minute each
+  ([#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347) revisits that choice).
+  A second refinement the same day (#2305) covered three more paths.
+  A `close()` that takes the installed client over records its own close of it, so a further
+  `close()` waits for that close, interruptibly, rather than returning while it runs.
+  A client close that fails after the enumerator closed, whether of a client created late or of
+  one initialization was closing, is logged, since the closed enumerator drops initialization's
+  result; while the enumerator is open, such a failure still fails initialization.
+  An `Error`, such as the `NoClassDefFoundError` a released class loader causes, is logged too,
+  and the planner logs a failure to close a client built after its `close()` the same way, since
+  the closed batch enumerator drops the plan's failure too.
+  The planner builds its client in the root context rather than its call's cancellable one, so
+  its `close()` no longer cancels the emulator check, which would leave the stubs open; it waits
+  for the build, as it already waited for the call, and the client built then is closed before
+  that `close()` returns unless the closing thread is interrupted.
   The end of a bounded read is never published while the client is open: initialization closes
   the client before it returns, and if the enumerator's `close()` took the client over first, the
   closed enumerator publishes nothing.
@@ -453,11 +467,11 @@ releases the group's last lease shuts it down and waits for its threads.**
   Spanner's synchronous calls expose no `ApiFuture`; gRPC binds each call to the context it is
   started in and cancels it when that context is cancelled, and the client also checks the
   context between a streaming read's retry attempts (`ResumableStreamIterator`).
-  The planner and the coordinator's client run their calls in a cancellable context, and `close()`
-  cancels it before it closes the client, since the client's close waits for its channels; the
-  planner's `close()` then waits for the call to end, with no bound of its own beyond the
-  client's shutdown and an interrupt, so its lease is released when it returns whichever thread
-  closed the client.
+  The planner and the coordinator's client run their calls in a cancellable context (the planner
+  builds its client outside it, #2305), and `close()` cancels it before it closes the client,
+  since the client's close waits for its channels; the planner's `close()` then waits for the
+  call to end, with no bound of its own beyond the client's shutdown and an interrupt, so its
+  lease is released when it returns whichever thread closed the client.
   One wait is out of the context's reach: a read through the database client waits for the
   multiplexed session that client creates in the background when it is built.
   The coordinator's first read is one, and so is the planner's resolution of a deferred read operation (a Table API scan or FULL cache load that reads through `scan.index`, or whose primary-key filter depends on the key's sort order); the planner
