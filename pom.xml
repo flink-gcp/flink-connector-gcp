@@ -1318,6 +1318,10 @@ limitations under the License.
                      as its JDK floor; re-pin the ordinary build's 17 so that floor matches
                      the bytecode. -->
                 <maven.compiler.target>17</maven.compiler.target>
+                <!-- The three values enforce-version-line-toolchain checks, joined so one
+                     built-in requireProperty rule can compare them; enforcer 3.7.0 deprecates
+                     the evaluateBeanshell rule this replaced (#2345). -->
+                <version.line.toolchain>${project.version}|${flink.compat}|${flink.version}</version.line.toolchain>
             </properties>
             <build>
                 <pluginManagement>
@@ -1434,10 +1438,16 @@ limitations under the License.
                                 </goals>
                                 <configuration>
                                     <rules>
-                                        <evaluateBeanshell>
-                                            <message>The staged version and the Flink toolchain disagree: a -1.20 version must build with flink.compat=flink1 and a 1.20.x flink.version, and a bare X.Y.Z version must build with flink.compat=flink2 at exactly the pinned floor ${flink.version.floor} (ADR-0147). Resolved: version=${project.version}, flink.version=${flink.version}, flink.compat=${flink.compat}.</message>
-                                            <condition>"${project.version}".endsWith("-1.20") ? ("flink1".equals("${flink.compat}") &amp;&amp; "${flink.version}".startsWith("1.20.")) : ("flink2".equals("${flink.compat}") &amp;&amp; "${flink.version}".equals("${flink.version.floor}"))</condition>
-                                        </evaluateBeanshell>
+                                        <!-- A version ending in -1.20 needs flink1 and a
+                                             flink.version starting 1.20.; any other version needs
+                                             flink2 at exactly the floor. requireProperty matches
+                                             the whole value, and \Q...\E keeps the floor's dots
+                                             literal. -->
+                                        <requireProperty>
+                                            <property>version.line.toolchain</property>
+                                            <regex>[^|]*-1\.20\|flink1\|1\.20\.[^|]*|(?![^|]*-1\.20\|)[^|]+\|flink2\|\Q${flink.version.floor}\E</regex>
+                                            <regexMessage>The staged version and the Flink toolchain disagree: a -1.20 version must build with flink.compat=flink1 and a 1.20.x flink.version, and a bare X.Y.Z version must build with flink.compat=flink2 at exactly the pinned floor ${flink.version.floor} (ADR-0147). Resolved version|flink.compat|flink.version: ${version.line.toolchain}.</regexMessage>
+                                        </requireProperty>
                                     </rules>
                                 </configuration>
                             </execution>
