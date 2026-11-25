@@ -211,9 +211,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `close()` cancels first; the catalog keeps one client until it closes. The coordinator's
   `close()` also covers a client still being created: the creation is recorded under the monitor
   before `create()`, `close()` waits for it, and a client that arrives after `close()` is closed
-  outside the monitor (#2305). Do not cancel that creation: a failed or cancelled emulator check
-  leaves the library's stubs open (#2306). The planner differs: its creation runs inside the
-  context its `close()` cancels, so a close during its emulator check cancels the check.
+  outside the monitor (#2305). A `close()` that takes the installed client over publishes its own
+  release, so a further `close()` waits for it. A client close that `initialize()` runs and that
+  fails after the enumerator closed is logged at WARN, an `Error` included, since
+  `onInitialized` drops it; so is the planner's close of a client built after its
+  `close()`. Do not cancel a creation: a failed or
+  cancelled emulator check leaves the library's stubs open (#2306). The planner therefore builds
+  its client in `Context.ROOT`, outside the call's cancellable context, and its `close()` waits
+  for the build.
 - **`SpannerClients.open` also lets the client library's two static executors drop their idle
   threads** (`SpannerStaticExecutors`, `docs/adr/0210`, #2296): grpc-gcp's
   `SHARED_BACKGROUND_SERVICE` and the client's `MultiplexedSessionDatabaseClient.MAINTAINER_SERVICE`

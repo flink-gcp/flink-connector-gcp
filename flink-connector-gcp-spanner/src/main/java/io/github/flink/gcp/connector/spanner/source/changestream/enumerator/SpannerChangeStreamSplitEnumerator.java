@@ -259,11 +259,12 @@ public final class SpannerChangeStreamSplitEnumerator
     @Nullable private SpannerChangeStreamCoordinatorClient client;
 
     /**
-     * Counted down once {@link #initialize()} no longer holds a client out of {@link #close()}'s
-     * reach: one it is creating (which ends when it is installed, closed because the enumerator
-     * closed first, or not created at all) or one it is closing after initialization. A {@link
-     * #close()} that finds no installed client waits for it, so that such a client's lease is
-     * released when that close returns, unless the closing thread is interrupted.
+     * Counted down once no thread holds a client out of {@link #close()}'s reach: one {@link
+     * #initialize()} is creating (which ends when it is installed, closed because the enumerator
+     * closed first, or not created at all), one it is closing after initialization, or the
+     * installed one a {@link #close()} took over and is closing. A {@link #close()} that finds no
+     * installed client waits for it, so that such a client's lease is released when that close
+     * returns, unless the closing thread is interrupted.
      */
     @Nullable private CountDownLatch clientReleased;
 
@@ -540,7 +541,14 @@ public final class SpannerChangeStreamSplitEnumerator
                 }
             }
             // Outside the monitor, so that a further close() waits for this one interruptibly.
-            created.close();
+            try {
+                created.close();
+            } catch (Throwable e) {
+                logCloseFailureAfterTheEnumeratorClosed(e);
+                if (e instanceof Error) {
+                    throw (Error) e;
+                }
+            }
             throw closedDuringInitialization();
         } finally {
             creating.countDown();
@@ -553,7 +561,10 @@ public final class SpannerChangeStreamSplitEnumerator
 
     /**
      * Closes the client {@link #initialize()} installed, unless {@link #close()} already took it
-     * over and closes it itself; a {@link #close()} that lands meanwhile waits for this one.
+     * over and closes it itself; a {@link #close()} that lands meanwhile waits for this one. A
+     * close failure is logged if the enumerator has closed by the time it fails, since {@link
+     * #onInitialized(Initialization, Throwable)} reports nothing for a closed enumerator, and is
+     * otherwise thrown as an initialization failure.
      */
     private void releaseClient(SpannerChangeStreamCoordinatorClient created) throws Exception {
         CountDownLatch released = new CountDownLatch(1);
@@ -566,9 +577,32 @@ public final class SpannerChangeStreamSplitEnumerator
         }
         try {
             created.close();
+        } catch (Throwable e) {
+            synchronized (this) {
+                if (!closed) {
+                    throw e;
+                }
+            }
+            logCloseFailureAfterTheEnumeratorClosed(e);
+            if (e instanceof Error) {
+                throw (Error) e;
+            }
         } finally {
             released.countDown();
         }
+    }
+
+    /**
+     * Logs a client close failure the closed enumerator cannot report otherwise, since {@link
+     * #onInitialized(Initialization, Throwable)} drops initialization's outcome once it is closed;
+     * an {@link Error}, such as a {@link NoClassDefFoundError} from a job class loader Flink has
+     * already released, is logged too, and its caller rethrows it.
+     */
+    private static void logCloseFailureAfterTheEnumeratorClosed(Throwable failure) {
+        LOG.warn(
+                "Failed to close the Spanner Change Streams coordinator client after the enumerator"
+                        + " closed.",
+                failure);
     }
 
     private static RestoreExpiry oldest(List<RestoreExpiry> expiries) {
@@ -1483,27 +1517,40 @@ public final class SpannerChangeStreamSplitEnumerator
     public void close() throws IOException {
         SpannerChangeStreamCoordinatorClient closing;
         CountDownLatch pending;
+        CountDownLatch takenOver = null;
         synchronized (this) {
             closed = true;
             closing = client;
             client = null;
             pending = clientReleased;
-        }
-        // A client initialize() is creating or closing is released before this returns; an
-        // interrupt ends the wait early and is restored. One installed is closed here instead.
-        if (pending != null) {
-            try {
-                pending.await();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+            if (closing != null) {
+                // A further close() finds no installed client, and waits for this one's close.
+                takenOver = new CountDownLatch(1);
+                clientReleased = takenOver;
             }
         }
-        // After the flag: a start() still registering sees it and lets go of what it bound.
-        metrics.close();
         try {
-            Closers.closeAll(closing);
-        } catch (Exception e) {
-            throw new IOException("Failed to close the Spanner Change Streams coordinator.", e);
+            // A client initialize() is creating or closing, or one an earlier close() took over,
+            // is released before this returns; an interrupt ends the wait early and is restored.
+            // One installed is closed here instead.
+            if (pending != null) {
+                try {
+                    pending.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            // After the flag: a start() still registering sees it and lets go of what it bound.
+            metrics.close();
+            try {
+                Closers.closeAll(closing);
+            } catch (Exception e) {
+                throw new IOException("Failed to close the Spanner Change Streams coordinator.", e);
+            }
+        } finally {
+            if (takenOver != null) {
+                takenOver.countDown();
+            }
         }
     }
 

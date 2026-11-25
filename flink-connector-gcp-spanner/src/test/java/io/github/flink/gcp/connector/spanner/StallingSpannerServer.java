@@ -32,24 +32,32 @@ import com.google.spanner.v1.SpannerGrpc;
 import com.google.spanner.v1.Transaction;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.grpc.Server;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A plaintext Spanner endpoint that answers the client's emulator check and leaves the calls a
- * component starts with open until the server is closed: {@code CreateSession} and {@code
- * BatchCreateSessions} (unless the server was started to answer sessions), {@code BeginTransaction}
- * and {@code ExecuteStreamingSql}. Every other Spanner method fails at once as unimplemented. For
- * tests that close a component while its call is in flight; {@link #calls()} names what arrived.
+ * A plaintext Spanner endpoint that answers the client's emulator check (unless the server was
+ * started to hold it) and leaves the calls a component starts with open until the server is closed:
+ * {@code CreateSession} and {@code BatchCreateSessions} (unless the server was started to answer
+ * sessions), {@code BeginTransaction} and {@code ExecuteStreamingSql}. Every other Spanner method
+ * fails at once as unimplemented. For tests that close a component while its call is in flight;
+ * {@link #calls()} names what arrived. Started to hold the emulator check, it leaves that check
+ * unanswered until {@link #answerEmulatorCheck()}, for tests that close a component while it builds
+ * its client.
  */
 public final class StallingSpannerServer implements AutoCloseable {
 
@@ -57,9 +65,14 @@ public final class StallingSpannerServer implements AutoCloseable {
     private final List<String> calls = new CopyOnWriteArrayList<>();
     private final CountDownLatch firstCall = new CountDownLatch(1);
     private final boolean answerSessions;
+    private final boolean holdEmulatorCheck;
+    private final CompletableFuture<StreamObserver<ListInstanceConfigsResponse>> heldEmulatorCheck =
+            new CompletableFuture<>();
 
-    private StallingSpannerServer(boolean answerSessions) throws IOException {
+    private StallingSpannerServer(boolean answerSessions, boolean holdEmulatorCheck)
+            throws IOException {
         this.answerSessions = answerSessions;
+        this.holdEmulatorCheck = holdEmulatorCheck;
         server =
                 NettyServerBuilder.forAddress(new InetSocketAddress("localhost", 0))
                         .addService(new InstanceAdmin())
@@ -75,7 +88,7 @@ public final class StallingSpannerServer implements AutoCloseable {
      * @throws IOException if it cannot be started
      */
     public static StallingSpannerServer start() throws IOException {
-        return new StallingSpannerServer(false);
+        return new StallingSpannerServer(false, false);
     }
 
     /**
@@ -86,7 +99,55 @@ public final class StallingSpannerServer implements AutoCloseable {
      * @throws IOException if it cannot be started
      */
     public static StallingSpannerServer startAnsweringSessions() throws IOException {
-        return new StallingSpannerServer(true);
+        return new StallingSpannerServer(true, false);
+    }
+
+    /**
+     * Starts a server on a free port that leaves the client's emulator check unanswered until
+     * {@link #answerEmulatorCheck()}.
+     *
+     * @return the running server
+     * @throws IOException if it cannot be started
+     */
+    public static StallingSpannerServer startHoldingTheEmulatorCheck() throws IOException {
+        return new StallingSpannerServer(false, true);
+    }
+
+    /**
+     * Waits for the client's emulator check to arrive.
+     *
+     * @param seconds how long to wait
+     * @return whether it arrived
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public boolean awaitEmulatorCheck(long seconds) throws InterruptedException {
+        try {
+            heldEmulatorCheck.get(seconds, TimeUnit.SECONDS);
+            return true;
+        } catch (TimeoutException e) {
+            return false;
+        } catch (ExecutionException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Answers the emulator check this server is holding, if one has arrived; a check the client has
+     * cancelled meanwhile is left alone.
+     */
+    public void answerEmulatorCheck() {
+        StreamObserver<ListInstanceConfigsResponse> held = heldEmulatorCheck.getNow(null);
+        if (held == null) {
+            return;
+        }
+        try {
+            held.onNext(ListInstanceConfigsResponse.getDefaultInstance());
+            held.onCompleted();
+        } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() != Status.Code.CANCELLED) {
+                throw e;
+            }
+        }
     }
 
     /** Returns the endpoint a component reaches the server through, as an emulator. */
@@ -139,12 +200,17 @@ public final class StallingSpannerServer implements AutoCloseable {
         firstCall.countDown();
     }
 
-    /** Answers the client's check that an emulator is listening. */
-    private static final class InstanceAdmin extends InstanceAdminGrpc.InstanceAdminImplBase {
+    /** Answers the client's check that an emulator is listening, or holds it. */
+    private final class InstanceAdmin extends InstanceAdminGrpc.InstanceAdminImplBase {
         @Override
         public void listInstanceConfigs(
                 ListInstanceConfigsRequest request,
                 StreamObserver<ListInstanceConfigsResponse> responseObserver) {
+            if (holdEmulatorCheck) {
+                // Holds the first check; the client makes one per build.
+                heldEmulatorCheck.complete(responseObserver);
+                return;
+            }
             responseObserver.onNext(ListInstanceConfigsResponse.getDefaultInstance());
             responseObserver.onCompleted();
         }

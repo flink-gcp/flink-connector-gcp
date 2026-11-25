@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.StallingSpannerServer;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -36,6 +37,7 @@ import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,6 +104,195 @@ class BatchClientPartitionPlannerTest {
             assertThatThrownBy(() -> planning.get(1, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class)
                     .satisfies(StallingSpannerServer::assertCancelled);
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void aCloseWhileTheClientIsBeingBuiltWaitsForTheBuildRatherThanCancellingIt() throws Exception {
+        // Before this change the build ran in the call's context, so the close cancelled the
+        // client's emulator check, which the client rethrows without closing the stubs it has
+        // already built (#2306). The held check stays inside the client's own 10 s timeout for it.
+        try (StallingSpannerServer server = StallingSpannerServer.startHoldingTheEmulatorCheck()) {
+            BatchClientPartitionPlanner planner =
+                    new BatchClientPartitionPlanner(DATABASE, server.endpoint());
+            AtomicReference<Throwable> planFailure = new AtomicReference<>();
+            Thread planning = planningThread(planner, planFailure);
+            AtomicBoolean checkAnswered = new AtomicBoolean();
+            AtomicReference<Boolean> answeredWhenCloseReturned = new AtomicReference<>();
+            AtomicReference<Boolean> leaseHeldWhenCloseReturned = new AtomicReference<>();
+            Thread closing =
+                    new Thread(
+                            () -> {
+                                planner.close();
+                                answeredWhenCloseReturned.set(checkAnswered.get());
+                                leaseHeldWhenCloseReturned.set(GrpcEventLoops.isRunning());
+                            },
+                            "close");
+            try {
+                planning.start();
+                assertThat(server.awaitEmulatorCheck(30))
+                        .as("the client's build reached its emulator check")
+                        .isTrue();
+                closing.start();
+                // A cancellation, had the close made one, has reached the check by the time the
+                // close parks: the context runs the call's cancellation on the cancelling thread.
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the close parked or ended")
+                        .isIn(Thread.State.WAITING, Thread.State.TERMINATED);
+            } finally {
+                checkAnswered.set(true);
+                server.answerEmulatorCheck();
+                closing.join(TimeUnit.SECONDS.toMillis(20));
+                planning.join(TimeUnit.SECONDS.toMillis(20));
+            }
+
+            assertThat(closing.isAlive()).as("the close ended").isFalse();
+            assertThat(planning.isAlive()).as("the plan ended").isFalse();
+            // The discriminator: a cancelled check fails the build instead.
+            assertThat(planFailure.get())
+                    .as("the plan was refused once the client was built, not cancelled")
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("was closed before it was used");
+            assertThat(answeredWhenCloseReturned.get())
+                    .as("the check had been answered when the close returned")
+                    .isTrue();
+            assertThat(leaseHeldWhenCloseReturned.get())
+                    .as("the built client's lease was released before the close returned")
+                    .isFalse();
+            assertThat(server.calls()).as("no call was started on the client").isEmpty();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void anInterruptEndsACloseWaitingForTheClientsBuild() throws Exception {
+        // Flink interrupts a closing coordinator that overruns its close timeout.
+        try (StallingSpannerServer server = StallingSpannerServer.startHoldingTheEmulatorCheck()) {
+            BatchClientPartitionPlanner planner =
+                    new BatchClientPartitionPlanner(DATABASE, server.endpoint());
+            AtomicReference<Throwable> planFailure = new AtomicReference<>();
+            Thread planning = planningThread(planner, planFailure);
+            AtomicBoolean checkAnswered = new AtomicBoolean();
+            AtomicReference<Boolean> answeredWhenCloseReturned = new AtomicReference<>();
+            AtomicReference<Boolean> interruptedWhenCloseReturned = new AtomicReference<>();
+            Thread closing =
+                    new Thread(
+                            () -> {
+                                planner.close();
+                                answeredWhenCloseReturned.set(checkAnswered.get());
+                                interruptedWhenCloseReturned.set(
+                                        Thread.currentThread().isInterrupted());
+                            },
+                            "close");
+            try {
+                planning.start();
+                assertThat(server.awaitEmulatorCheck(30)).isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the close waits for the build")
+                        .isEqualTo(Thread.State.WAITING);
+                closing.interrupt();
+                closing.join(TimeUnit.SECONDS.toMillis(5));
+                assertThat(closing.isAlive()).as("the interrupt ended the close").isFalse();
+            } finally {
+                checkAnswered.set(true);
+                server.answerEmulatorCheck();
+                closing.join(TimeUnit.SECONDS.toMillis(20));
+                planning.join(TimeUnit.SECONDS.toMillis(20));
+            }
+
+            assertThat(answeredWhenCloseReturned.get())
+                    .as("the close returned before the build ended")
+                    .isFalse();
+            assertThat(interruptedWhenCloseReturned.get()).as("the interrupt is restored").isTrue();
+            assertThat(planning.isAlive()).as("the plan ended").isFalse();
+            assertThat(planFailure.get())
+                    .as("the client built after the close was closed unused")
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("was closed before it was used");
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void aLateClientsCloseFailureIsLogged() throws Exception {
+        // The closed batch enumerator drops what the plan throws. The client's close fails on an
+        // interrupt the build's uninterruptible wait for the emulator check left set.
+        try (StallingSpannerServer server = StallingSpannerServer.startHoldingTheEmulatorCheck();
+                LogCapture capture = LogCapture.of(BatchClientPartitionPlanner.class)) {
+            BatchClientPartitionPlanner planner =
+                    new BatchClientPartitionPlanner(DATABASE, server.endpoint());
+            AtomicReference<Throwable> planFailure = new AtomicReference<>();
+            Thread planning = planningThread(planner, planFailure);
+            Thread closing = new Thread(planner::close, "close");
+            try {
+                planning.start();
+                assertThat(server.awaitEmulatorCheck(30)).isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the close waits for the build")
+                        .isEqualTo(Thread.State.WAITING);
+                planning.interrupt();
+            } finally {
+                server.answerEmulatorCheck();
+                closing.join(TimeUnit.SECONDS.toMillis(20));
+                planning.join(TimeUnit.SECONDS.toMillis(20));
+            }
+
+            assertThat(planning.isAlive()).as("the plan ended").isFalse();
+            assertThat(closing.isAlive()).as("the close ended").isFalse();
+            assertThat(planFailure.get())
+                    .as("the plan was refused once the client was built")
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("was closed before it was used");
+            assertThat(capture.getEvents())
+                    .as("the late client's close failure is logged")
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage()).contains(DATABASE.toString());
+                                assertThat(event.getThrowable()).isNotNull();
+                            });
+        }
+    }
+
+    /** A thread that plans one query on the planner and records how it failed. */
+    private static Thread planningThread(
+            BatchClientPartitionPlanner planner, AtomicReference<Throwable> failure) {
+        return new Thread(
+                () -> {
+                    try {
+                        planner.plan(
+                                SpannerReadOperation.query(Statement.of("SELECT 1")),
+                                TimestampBound.strong(),
+                                PartitionOptions.getDefaultInstance(),
+                                false,
+                                null);
+                    } catch (Throwable e) {
+                        failure.set(e);
+                    }
+                },
+                "planning");
+    }
+
+    /**
+     * Waits until a thread parks waiting, is blocked on a monitor, or has ended, and says which.
+     */
+    private static Thread.State awaitParkedOrEnded(Thread thread) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (true) {
+            Thread.State state = thread.getState();
+            if (state == Thread.State.WAITING
+                    || state == Thread.State.BLOCKED
+                    || state == Thread.State.TERMINATED) {
+                return state;
+            }
+            assertThat(System.nanoTime())
+                    .as("%s parked or ended in time", thread.getName())
+                    .isLessThan(deadline);
+            Thread.onSpinWait();
         }
     }
 

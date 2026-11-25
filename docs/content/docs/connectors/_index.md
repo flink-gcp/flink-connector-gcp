@@ -162,10 +162,12 @@ A Spanner Change Streams enumerator, or the enumerator of a Spanner Table API sc
 through `scan.index` or whose primary-key filter depends on the key's sort order, closed before
 its client has created its first session waits for the client's own shutdown instead, which took
 about 20 seconds for the Change Streams enumerator against an endpoint that never answered.
-A Spanner Change Streams enumerator closed while it is still building its client waits for the
-client to be built and closes it before its own close returns, unless the closing thread is
-interrupted; against an emulator, the build includes the client library's check that the emulator
-is listening, which gives up after 10 seconds.
+A Spanner enumerator, of a batch read or of Change Streams, closed while it is still building its
+client waits for the client to be built and closes it before its own close returns, unless the
+closing thread is interrupted; against an emulator, the build includes the client library's check
+that the emulator is listening, which gives up after 10 seconds, and a build that fails that way
+leaves the service stubs the client library had built before the check unclosed
+([#2306](https://github.com/flink-gcp/flink-connector-gcp/issues/2306)).
 A catalog keeps its client until it is closed.
 The SQL Gateway and the SQL Client close a session's catalogs before its class loader, so a
 catalog's hold on the group is released before that loader closes.

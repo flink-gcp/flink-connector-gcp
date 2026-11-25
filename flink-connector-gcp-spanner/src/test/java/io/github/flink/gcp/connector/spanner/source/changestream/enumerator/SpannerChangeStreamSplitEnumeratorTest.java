@@ -41,6 +41,8 @@ import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
 
@@ -55,6 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -1198,6 +1201,266 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
         assertThat(client.initializeCalls).isOne();
         assertThat(client.closeCalls).isOne();
+    }
+
+    @Test
+    void aSecondCloseWaitsForTheFirstClosesCloseOfTheInstalledClient() throws Exception {
+        // Before this change the first close took the installed client over and closed it, and a
+        // second close found no client and no release in progress and returned at once.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        CountDownLatch initializeEntered = new CountDownLatch(1);
+        CountDownLatch initializeGate = new CountDownLatch(1);
+        client.duringInitialize =
+                () -> {
+                    initializeEntered.countDown();
+                    try {
+                        initializeGate.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                };
+        CountDownLatch clientCloseEntered = new CountDownLatch(1);
+        CountDownLatch clientCloseGate = new CountDownLatch(1);
+        client.duringClose =
+                () -> {
+                    clientCloseEntered.countDown();
+                    clientCloseGate.await();
+                };
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        enumerator.start();
+        AtomicReference<Throwable> secondCloseFailure = new AtomicReference<>();
+        AtomicInteger clientClosesWhenSecondCloseReturned = new AtomicInteger(-1);
+        Thread initializing = new Thread(() -> catchThrowable(context::runAsyncCalls), "init");
+        Thread firstClose = new Thread(() -> catchThrowable(enumerator::close), "close-1");
+        Thread secondClose =
+                new Thread(
+                        () -> {
+                            secondCloseFailure.set(catchThrowable(enumerator::close));
+                            clientClosesWhenSecondCloseReturned.set(client.closeCalls);
+                        },
+                        "close-2");
+        try {
+            initializing.start();
+            assertThat(initializeEntered.await(10, TimeUnit.SECONDS))
+                    .as("the client was installed and initializing")
+                    .isTrue();
+            firstClose.start();
+            assertThat(clientCloseEntered.await(10, TimeUnit.SECONDS))
+                    .as("the first close took the installed client over and is closing it")
+                    .isTrue();
+
+            secondClose.start();
+            assertThat(awaitParkedOrEnded(secondClose))
+                    .as("the second close waits for the first close's close of the client")
+                    .isEqualTo(Thread.State.WAITING);
+        } finally {
+            clientCloseGate.countDown();
+            initializeGate.countDown();
+            initializing.join(10_000);
+            firstClose.join(10_000);
+            secondClose.join(10_000);
+        }
+        assertThat(secondClose.isAlive()).as("the second close ended").isFalse();
+        assertThat(firstClose.isAlive()).as("the first close ended").isFalse();
+        assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+        assertThat(secondCloseFailure.get()).isNull();
+        assertThat(clientClosesWhenSecondCloseReturned)
+                .as("client closes when the second close returned")
+                .hasValue(1);
+        assertThat(client.closeCalls).isOne();
+    }
+
+    @Test
+    void aSecondCloseEndsWhenTheFirstClosesCloseOfTheInstalledClientFails() throws Exception {
+        // The first close throws its client's close failure; the second must not wait on.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        CountDownLatch initializeEntered = new CountDownLatch(1);
+        CountDownLatch initializeGate = new CountDownLatch(1);
+        client.duringInitialize =
+                () -> {
+                    initializeEntered.countDown();
+                    try {
+                        initializeGate.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                };
+        Exception closeFailure = new IllegalStateException("close failed");
+        CountDownLatch clientCloseEntered = new CountDownLatch(1);
+        CountDownLatch clientCloseGate = new CountDownLatch(1);
+        client.duringClose =
+                () -> {
+                    clientCloseEntered.countDown();
+                    clientCloseGate.await();
+                    throw closeFailure;
+                };
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        enumerator.start();
+        AtomicReference<Throwable> firstCloseFailure = new AtomicReference<>();
+        AtomicReference<Throwable> secondCloseFailure = new AtomicReference<>();
+        Thread initializing = new Thread(() -> catchThrowable(context::runAsyncCalls), "init");
+        Thread firstClose =
+                new Thread(() -> firstCloseFailure.set(catchThrowable(enumerator::close)), "c-1");
+        Thread secondClose =
+                new Thread(() -> secondCloseFailure.set(catchThrowable(enumerator::close)), "c-2");
+        try {
+            initializing.start();
+            assertThat(initializeEntered.await(10, TimeUnit.SECONDS))
+                    .as("the client was installed and initializing")
+                    .isTrue();
+            firstClose.start();
+            assertThat(clientCloseEntered.await(10, TimeUnit.SECONDS))
+                    .as("the first close took the installed client over and is closing it")
+                    .isTrue();
+            secondClose.start();
+            assertThat(awaitParkedOrEnded(secondClose))
+                    .as("the second close waits for the first close's close of the client")
+                    .isEqualTo(Thread.State.WAITING);
+            clientCloseGate.countDown();
+            secondClose.join(10_000);
+            assertThat(secondClose.isAlive())
+                    .as("the second close ended once the client's close failed")
+                    .isFalse();
+        } finally {
+            clientCloseGate.countDown();
+            initializeGate.countDown();
+            initializing.join(10_000);
+            firstClose.join(10_000);
+            secondClose.join(10_000);
+        }
+        assertThat(firstCloseFailure.get())
+                .as("the first close reports its client's close failure")
+                .isInstanceOf(java.io.IOException.class)
+                .hasCause(closeFailure);
+        assertThat(secondCloseFailure.get()).isNull();
+    }
+
+    @ParameterizedTest
+    @MethodSource("closeFailures")
+    void aLateClientsCloseFailureIsLogged(Throwable closeFailure) throws Exception {
+        // Before this change the failure was thrown into initialization's result, which the closed
+        // enumerator drops; an Error, such as a NoClassDefFoundError once Flink has released the
+        // job's class loader, is logged too.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        client.duringClose = () -> throwAs(closeFailure);
+        CountDownLatch creationEntered = new CountDownLatch(1);
+        CountDownLatch creationGate = new CountDownLatch(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        clientMetrics -> {
+                            creationEntered.countDown();
+                            creationGate.await();
+                            return client;
+                        },
+                        null);
+        enumerator.start();
+        Thread initializing = new Thread(() -> catchThrowable(context::runAsyncCalls), "init");
+        AtomicReference<Throwable> closeResult = new AtomicReference<>();
+        Thread closing = new Thread(() -> closeResult.set(catchThrowable(enumerator::close)), "c");
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            try {
+                initializing.start();
+                assertThat(creationEntered.await(10, TimeUnit.SECONDS))
+                        .as("initialization began creating the client")
+                        .isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the enumerator's close waits for the client being created")
+                        .isEqualTo(Thread.State.WAITING);
+            } finally {
+                creationGate.countDown();
+                initializing.join(10_000);
+                closing.join(10_000);
+            }
+            assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+            assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+
+            assertThat(capture.getEvents())
+                    .as("the late client's close failure is logged")
+                    .singleElement()
+                    .satisfies(SpannerChangeStreamSplitEnumeratorTest::isAWarning)
+                    .satisfies(event -> assertThat(event.getThrowable()).isSameAs(closeFailure));
+        }
+        assertThat(closeResult.get()).isNull();
+    }
+
+    @ParameterizedTest
+    @MethodSource("closeFailures")
+    void aCloseFailureOfTheClientInitializationIsClosingIsLoggedOnceTheEnumeratorClosed(
+            Throwable closeFailure) throws Exception {
+        // Before this change the failure became initialization's failure, which the closed
+        // enumerator drops.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        CountDownLatch clientCloseEntered = new CountDownLatch(1);
+        CountDownLatch clientCloseGate = new CountDownLatch(1);
+        client.duringClose =
+                () -> {
+                    clientCloseEntered.countDown();
+                    clientCloseGate.await();
+                    throwAs(closeFailure);
+                };
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        enumerator.start();
+        AtomicReference<Throwable> initializationFailure = new AtomicReference<>();
+        Thread initializing =
+                new Thread(
+                        () -> initializationFailure.set(catchThrowable(context::runAsyncCalls)),
+                        "init");
+        AtomicReference<Throwable> closeResult = new AtomicReference<>();
+        Thread closing = new Thread(() -> closeResult.set(catchThrowable(enumerator::close)), "c");
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            try {
+                initializing.start();
+                assertThat(clientCloseEntered.await(10, TimeUnit.SECONDS))
+                        .as("initialization began closing the client")
+                        .isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the enumerator's close waits for the client initialization is closing")
+                        .isEqualTo(Thread.State.WAITING);
+            } finally {
+                clientCloseGate.countDown();
+                initializing.join(10_000);
+                closing.join(10_000);
+            }
+            assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+            assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+
+            assertThat(capture.getEvents())
+                    .as("the close failure is logged")
+                    .singleElement()
+                    .satisfies(SpannerChangeStreamSplitEnumeratorTest::isAWarning)
+                    .satisfies(event -> assertThat(event.getThrowable()).isSameAs(closeFailure));
+        }
+        assertThat(initializationFailure.get())
+                .as("the closed enumerator's initialization does not fail")
+                .isNull();
+        assertThat(closeResult.get()).isNull();
+    }
+
+    @Test
+    void aCloseFailureOfTheClientWhileTheEnumeratorIsOpenFailsInitialization() {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        Exception closeFailure = new IllegalStateException("close failed");
+        client.duringClose =
+                () -> {
+                    throw closeFailure;
+                };
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        enumerator.start();
+
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            assertThat(catchThrowable(context::runAsyncCalls))
+                    .isInstanceOf(FlinkRuntimeException.class)
+                    .hasCause(closeFailure);
+            assertThat(capture.getEvents()).isEmpty();
+        }
     }
 
     @Test
@@ -2689,6 +2952,26 @@ class SpannerChangeStreamSplitEnumeratorTest {
             context.registerReader(i);
         }
         return context;
+    }
+
+    /** A client close failure, and an Error such as the one a released class loader causes. */
+    private static Stream<Throwable> closeFailures() {
+        return Stream.of(
+                new IllegalStateException("close failed"),
+                new NoClassDefFoundError("closed loader"));
+    }
+
+    /** Throws an exception or an error as itself. */
+    private static void throwAs(Throwable failure) throws Exception {
+        if (failure instanceof Error) {
+            throw (Error) failure;
+        }
+        throw (Exception) failure;
+    }
+
+    /** Asserts that a captured event was logged at WARN, which its rendering starts with. */
+    private static void isAWarning(LogCapture.Event event) {
+        assertThat(event.toString()).as("the event's level").startsWith("WARN ");
     }
 
     /**
