@@ -46,6 +46,15 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `relocatedLineageHelpersShareTheListenerApiAcrossSqlJars`; that file names exactly the six
   freshly built SQL jars, one absolute path per line. Reuse those floor-built paths for the
   ceiling measurement; do not rebuild them on the ceiling.
+- `GrpcEventLoopThreads` and `EventLoopObserver` observe base's gRPC event-loop group
+  (ADR-0208) without depending on base: the thread-name prefix is restated, and the lease state is
+  the caller's `GrpcEventLoops::isRunning`, which also reads true while a pin holds the group
+  (#2268; a no-op on the class path these tests run on). Releasing the last lease starts a
+  thread for every event loop that never ran, to stop it, so finding no thread after an operation
+  that opens and closes its own client passes for an unleased client too. Such a test also asserts
+  `EventLoopObserver.sawGroupDuring`, which counts a thread only while a lease is open (#2303) and
+  is meaningful only with no pin holding the group, which the class path these tests run on
+  ensures; `awaitNoGroup` misses a pin registered before any lease opened.
 
 ## Harnesses (`docs/adr/0051`)
 

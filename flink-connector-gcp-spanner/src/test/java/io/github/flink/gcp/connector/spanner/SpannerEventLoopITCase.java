@@ -27,6 +27,7 @@ import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccess;
@@ -39,6 +40,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.Defa
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.DefaultSpannerChangeStreamQueryClientFactory;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerChangeStreamQueryClient;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +48,8 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -99,10 +103,10 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(LEFTOVER_TEARDOWN))
+        assertThat(EventLoopObserver.awaitNoGroup(GrpcEventLoops::isRunning, LEFTOVER_TEARDOWN))
                 .as(
-                        "no %s* thread before the test: an earlier class in this fork left the"
-                                + " group running",
+                        "no lease and no %s* thread before the test: an earlier class in this fork"
+                                + " left the group running",
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
     }
@@ -130,26 +134,49 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
                 .isTrue();
     }
 
+    /**
+     * The planner's client runs on the group and closes when the plan returns, and the reader's on
+     * close. The plan must show a group thread while a lease is open, since finding none afterwards
+     * alone would pass for a client whose channels ran on gRPC's group too ({@link
+     * EventLoopObserver}).
+     */
     @Test
-    void thePlannerClosesItsClientWhenThePlanReturnsAndTheReaderOnClose() throws Exception {
-        PartitionPlan plan;
+    void thePlannerRunsOnTheGroupAndClosesItsClientWhenThePlanReturnsAndTheReaderOnClose()
+            throws Exception {
+        SpannerReadOperation query =
+                SpannerReadOperation.query(Statement.of("SELECT id, name FROM singers"));
+        AtomicReference<PartitionPlan> planned = new AtomicReference<>();
+        AtomicBoolean heldAtReturn = new AtomicBoolean();
         try (BatchClientPartitionPlanner planner =
                 new BatchClientPartitionPlanner(database, endpoint)) {
-            plan =
-                    planner.plan(
-                            SpannerReadOperation.query(
-                                    Statement.of("SELECT id, name FROM singers")),
-                            TimestampBound.strong(),
-                            PartitionOptions.getDefaultInstance(),
-                            false,
-                            null);
+            assertThat(
+                            EventLoopObserver.sawGroupDuring(
+                                    GrpcEventLoops::isRunning,
+                                    () -> {
+                                        PartitionPlan plan =
+                                                planner.plan(
+                                                        query,
+                                                        TimestampBound.strong(),
+                                                        PartitionOptions.getDefaultInstance(),
+                                                        false,
+                                                        null);
+                                        heldAtReturn.set(GrpcEventLoops.isRunning());
+                                        planned.set(plan);
+                                    }))
+                    .as("a %s* thread while the plan ran", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
 
-            // Nothing else holds a lease, so the planner's own close of its client stopped the
-            // group, before the enumerator that owns the planner closes it.
+            // Nothing else holds a lease, so the planner's own close of its client, before the
+            // plan returned, stopped the group, before the enumerator that owns the planner closes
+            // it.
+            assertThat(heldAtReturn.get())
+                    .as("the planner's client was still holding the group when the plan returned")
+                    .isFalse();
             assertThat(GrpcEventLoopThreads.awaitNone())
                     .as("no %s* thread once the plan returned", GrpcEventLoopThreads.PREFIX)
                     .isTrue();
         }
+        PartitionPlan plan = planned.get();
         assertThat(plan.getPartitions()).isNotEmpty();
 
         BatchClientStructStreamOpener opener =

@@ -36,9 +36,10 @@ public final class EventLoopChannelChecks {
 
     /**
      * Builds a channel through the provider's configurator, connects it to a local socket and
-     * checks that a thread of the connector's group serves it: the group starts a thread only when
-     * a channel registers on it, and gRPC's own threads are named otherwise. A provider without the
-     * lease's configurator builds the channel on gRPC's group, and this fails.
+     * checks that a thread of the connector's group serves it. The caller holds a lease, so the
+     * group starts a thread only when a channel registers on it rather than to shut down, and
+     * gRPC's own threads are named otherwise. A provider without the lease's configurator builds
+     * the channel on gRPC's group, and this fails.
      *
      * @param provider the client's transport provider
      * @throws Exception if the check cannot run

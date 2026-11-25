@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.DefaultMuta
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcher;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,7 +68,7 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        assertThat(EventLoopObserver.awaitNoGroup(LEFTOVER_TEARDOWN))
+        assertThat(EventLoopObserver.awaitNoGroup(GrpcEventLoops::isRunning, LEFTOVER_TEARDOWN))
                 .as(
                         "no lease and no %s* thread before the test: an earlier class in this fork"
                                 + " left the group running",
@@ -142,6 +144,7 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
         try {
             assertThat(
                             EventLoopObserver.sawGroupDuring(
+                                    GrpcEventLoops::isRunning,
                                     () -> assertThat(sampler.sample(destination)).isNotEmpty()))
                     .as("a %s* thread while the sample ran", GrpcEventLoopThreads.PREFIX)
                     .isTrue();
@@ -164,14 +167,19 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
         TableDestination destination = createTable("event-loop-table-admin");
         BigtableTableAdmin admin = new BigtableTableAdmin(endpoint());
 
+        AtomicBoolean heldAtReturn = new AtomicBoolean();
         assertThat(
                         EventLoopObserver.sawGroupDuring(
+                                GrpcEventLoops::isRunning,
                                 () -> {
                                     admin.validateFamilies(destination, Map.of(), false);
-                                    return null;
+                                    heldAtReturn.set(GrpcEventLoops.isRunning());
                                 }))
                 .as("a %s* thread while the table was read", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
+        assertThat(heldAtReturn.get())
+                .as("the admin's client was still holding the group when the read returned")
+                .isFalse();
         assertThat(GrpcEventLoopThreads.awaitNone())
                 .as("no %s* thread once the read returned", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
@@ -179,13 +187,16 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
 
     /**
      * The instance admin has the same arm. The emulator serves no application profiles, so the call
-     * fails; reaching the emulator is what puts the channel on the group.
+     * fails; reaching the emulator is what puts the channel on the group. The call's failure is
+     * caught inside the client's block, so a failure of the close is not suppressed onto it.
      */
     @Test
     void theInstanceAdminsClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
+        String profile = "projects/" + PROJECT + "/instances/" + INSTANCE + "/appProfiles/default";
         AtomicReference<ApiException> answer = new AtomicReference<>();
         assertThat(
                         EventLoopObserver.sawGroupDuring(
+                                GrpcEventLoops::isRunning,
                                 () -> {
                                     try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClientV2>
                                             client =
@@ -193,21 +204,16 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
                                                             BigtableClients.instanceAdminSettings(
                                                                     endpoint(), null),
                                                             endpoint())) {
-                                        client.client()
-                                                .getAppProfile(
-                                                        GetAppProfileRequest.newBuilder()
-                                                                .setName(
-                                                                        "projects/"
-                                                                                + PROJECT
-                                                                                + "/instances/"
-                                                                                + INSTANCE
-                                                                                + "/appProfiles/"
-                                                                                + "default")
-                                                                .build());
-                                    } catch (ApiException expected) {
-                                        answer.set(expected);
+                                        try {
+                                            client.client()
+                                                    .getAppProfile(
+                                                            GetAppProfileRequest.newBuilder()
+                                                                    .setName(profile)
+                                                                    .build());
+                                        } catch (ApiException expected) {
+                                            answer.set(expected);
+                                        }
                                     }
-                                    return null;
                                 }))
                 .as("a %s* thread while the instance admin was open", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
