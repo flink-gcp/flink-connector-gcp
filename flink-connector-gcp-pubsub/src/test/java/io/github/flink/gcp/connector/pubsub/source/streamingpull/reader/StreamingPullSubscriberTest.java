@@ -124,9 +124,10 @@ class StreamingPullSubscriberTest {
         // claiming the client had been asked to stop. close() then returned at the idempotence
         // guard, awaitTerminated spent the whole budget on a client nobody had told to stop, and a
         // WARN about an unclean shutdown was its only trace. Measured on google-cloud-pubsub
-        // 1.152.0, the production AckHandle cannot in fact throw — nack() ends in
-        // SettableApiFuture.set, which returns a boolean — so this is robustness over an SPI whose
-        // implementations need not all be ours, argued as that rather than as a bug closed.
+        // 1.152.0, the production AckHandle's nack() ends in SettableApiFuture.set, which returns a
+        // boolean, and no ordinary failure of it has been demonstrated. Guava lets an Error from a
+        // listener of that future propagate, though (#2326), so this is robustness over a failure
+        // not shown to be impossible, argued as that rather than as a bug closed.
         ScriptedClient client = new ScriptedClient(calls);
         StreamingPullSubscriber subscriber = subscriberOf(client);
         RuntimeException refused = new RuntimeException("the consumer was already settled");
@@ -560,6 +561,177 @@ class StreamingPullSubscriberTest {
     }
 
     @Test
+    void aRefusedDeliveryWhoseNackThrowsAnErrorStillWakesTheFetcher() throws Exception {
+        // The refused path collected only RuntimeExceptions, so an Error from the nack, the one
+        // way found for a production handle to throw (#2326), skipped the wake-up after it.
+        ScriptedClient client = new ScriptedClient(calls);
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, Long.MAX_VALUE, event -> {});
+        StreamingPullSubscriber subscriber = subscriberOf(client, budget);
+        budget.register(SPLIT_ID, client::stopAsync);
+        AssertionError listenerFailure = new AssertionError("a listener failed");
+        subscriber.receiveMessage(message("1", "x"), new RecordingAckHandle("1"));
+
+        assertThatThrownBy(
+                        () ->
+                                subscriber.receiveMessage(
+                                        message("2", "y"),
+                                        new RecordingAckHandle("2").failNackWith(listenerFailure)))
+                .isSameAs(listenerFailure);
+
+        assertThat(calls)
+                .containsExactly("dataAvailable", "stopAsync", "nackReceived", "dataAvailable");
+    }
+
+    @Test
+    void aRefusedDeliveryWhoseNackThrowsRethrowsItAfterTheWakeUp() throws Exception {
+        ScriptedClient client = new ScriptedClient(calls);
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, Long.MAX_VALUE, event -> {});
+        StreamingPullSubscriber subscriber = subscriberOf(client, budget);
+        budget.register(SPLIT_ID, client::stopAsync);
+        IllegalStateException refused = new IllegalStateException("the consumer refused");
+        subscriber.receiveMessage(message("1", "x"), new RecordingAckHandle("1"));
+
+        assertThatThrownBy(
+                        () ->
+                                subscriber.receiveMessage(
+                                        message("2", "y"),
+                                        new RecordingAckHandle("2").failNackWith(refused)))
+                .isSameAs(refused);
+
+        assertThat(calls)
+                .containsExactly("dataAvailable", "stopAsync", "nackReceived", "dataAvailable");
+    }
+
+    @Test
+    void aReturnedReservationKeepsTheSplitAmongTheStartingHolders() throws Exception {
+        // The split reserves before its registration lands, so it counts among the starting
+        // holders for its peers' reservations too (ADR-0066). The refund returns only the refused
+        // copy's reservation: the first copy is still charged, so dropping the split's share here
+        // would let peers see a cap of one holder against two holders' bytes.
+        PubSubAckTracker tracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(
+                        SubscriberBufferLimits.of(
+                                PubSubSubscriberOptions.builder()
+                                        .flowControlMaxOutstandingElementCount(2)
+                                        .flowControlMaxOutstandingRequestBytes(1_000)
+                                        .build()),
+                        event -> {});
+        budget.register("peer", () -> {});
+        StreamingPullSubscriber subscriber =
+                subscriberOf(new ScriptedClient(calls), tracker, budget);
+        IllegalStateException refused = new IllegalStateException("the consumer refused");
+        subscriber.receiveMessage(
+                message("1", "x"), new RecordingAckHandle("first").failNackWith(refused));
+
+        assertThatThrownBy(
+                        () ->
+                                subscriber.receiveMessage(
+                                        message("1", "xxxx"), new RecordingAckHandle("redelivery")))
+                .isSameAs(refused);
+
+        // Two holders' derived share of 4 each is 8, and the split's first copy holds one.
+        for (int i = 0; i < 7; i++) {
+            assertThat(budget.tryReserve("peer", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("peer", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void aRedeliveryWhoseSupersededNackThrowsReturnsItsReservation() throws Exception {
+        assertASupersededNackFailureReturnsTheReservation(
+                new IllegalStateException("the consumer refused"));
+    }
+
+    @Test
+    void aRedeliveryWhoseSupersededNackThrowsAnErrorReturnsItsReservation() throws Exception {
+        assertASupersededNackFailureReturnsTheReservation(new AssertionError("a listener failed"));
+    }
+
+    private void assertASupersededNackFailureReturnsTheReservation(Throwable failure)
+            throws Exception {
+        // #2326: the redelivery reserved before addPendingAck nacked the handle it superseded, so
+        // when that nack threw, the budget kept a delivery the deque never received, and
+        // shutdown() returns only what the deque holds. A real tracker, because only it nacks a
+        // superseded handle.
+        PubSubAckTracker tracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(Long.MAX_VALUE, Long.MAX_VALUE, event -> {});
+        StreamingPullSubscriber subscriber =
+                subscriberOf(new ScriptedClient(calls), tracker, budget);
+        PubsubMessage firstCopy = message("1", "x");
+        RecordingAckHandle superseded = new RecordingAckHandle("first").failNackWith(failure);
+        RecordingAckHandle redelivery = new RecordingAckHandle("redelivery");
+        subscriber.receiveMessage(firstCopy, superseded);
+
+        // A larger copy, so the bytes show whose reservation is left.
+        assertThatThrownBy(() -> subscriber.receiveMessage(message("1", "xxxxxx"), redelivery))
+                .isSameAs(failure);
+
+        assertThat(budget.usage().messages()).isEqualTo(1);
+        assertThat(budget.usage().bytes()).isEqualTo(firstCopy.getSerializedSize());
+        assertThat(subscriber.bufferUsage().messages()).isEqualTo(1);
+        assertThat(subscriber.bufferUsage().bytes()).isEqualTo(firstCopy.getSerializedSize());
+
+        subscriber.shutdown();
+
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(budget.usage().bytes()).isZero();
+        // The new handle took the superseded one's place, so the release nacks it, once.
+        assertThat(redelivery.nackCount()).isEqualTo(1);
+        assertThat(superseded.nackCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aSupersededNackFailureDuringAFailedStartReturnsEverythingOnce() {
+        // The refund and the failed-start release each return their own part: a refund that also
+        // reached the deque, or a release that also counted the refused copy, would drive the
+        // budget negative or leave it charged. The client absorbs the callback's failure, as the
+        // SDK's delivery task does, and its start then fails for a reason of its own.
+        PubSubAckTracker tracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(
+                        SubscriberBufferLimits.of(
+                                PubSubSubscriberOptions.builder()
+                                        .flowControlMaxOutstandingElementCount(2)
+                                        .flowControlMaxOutstandingRequestBytes(1_000)
+                                        .build()),
+                        event -> {});
+        budget.register("peer", () -> {});
+        IllegalStateException refused = new IllegalStateException("the consumer refused");
+        IllegalStateException startFailure = new IllegalStateException("a later stream failed");
+        RecordingAckHandle superseded = new RecordingAckHandle("first").failNackWith(refused);
+        RecordingAckHandle redelivery = new RecordingAckHandle("redelivery");
+        List<Throwable> absorbed = new ArrayList<>();
+        DeliveringClient client = new DeliveringClient(calls);
+        client.onStart =
+                () -> {
+                    client.deliver(message("1", "x"), superseded);
+                    try {
+                        client.deliver(message("1", "xxxx"), redelivery);
+                    } catch (IllegalStateException e) {
+                        absorbed.add(e);
+                    }
+                    throw startFailure;
+                };
+
+        assertThatThrownBy(() -> subscriberOf(client, tracker, budget))
+                .isInstanceOf(IOException.class)
+                .hasCause(startFailure);
+
+        assertThat(absorbed).containsExactly(refused);
+
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(budget.usage().bytes()).isZero();
+        assertThat(tracker.outstandingAckCount()).isZero();
+        assertThat(redelivery.nackCount()).isEqualTo(1);
+        for (int i = 0; i < 4; i++) {
+            assertThat(budget.tryReserve("peer", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("peer", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
     void shutdownEmptiesTheUsageItReports() throws Exception {
         SubscriberBufferBudget budget =
                 new SubscriberBufferBudget(Long.MAX_VALUE, Long.MAX_VALUE, event -> {});
@@ -636,10 +808,25 @@ class StreamingPullSubscriberTest {
     private StreamingPullSubscriber subscriberOf(
             ScriptedClient client, SubscriberBufferBudget bufferBudget, Duration shutdownTimeout)
             throws IOException {
+        return subscriberOf(client, ackTracker, bufferBudget, shutdownTimeout);
+    }
+
+    private StreamingPullSubscriber subscriberOf(
+            ScriptedClient client, AckTracker tracker, SubscriberBufferBudget bufferBudget)
+            throws IOException {
+        return subscriberOf(client, tracker, bufferBudget, SHUTDOWN_TIMEOUT);
+    }
+
+    private StreamingPullSubscriber subscriberOf(
+            ScriptedClient client,
+            AckTracker tracker,
+            SubscriberBufferBudget bufferBudget,
+            Duration shutdownTimeout)
+            throws IOException {
         return new StreamingPullSubscriber(
                 SPLIT_ID,
                 SUBSCRIPTION,
-                ackTracker,
+                tracker,
                 () -> calls.add("dataAvailable"),
                 shutdownTimeout,
                 bufferBudget,

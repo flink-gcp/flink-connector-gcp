@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import com.google.api.core.ApiFuture;
 import com.google.api.core.SettableApiFuture;
 import com.google.cloud.pubsub.v1.AckResponse;
@@ -27,7 +29,8 @@ import javax.annotation.Nullable;
  *
  * <p>By default it behaves like the fire-and-forget flavor and returns no confirmation future. Call
  * {@link #withConfirmation()} for the flavor {@code awaitAckConfirmation} builds, then settle the
- * returned future by hand.
+ * returned future by hand. Call {@link #failNackWith(Throwable)} for a handle whose nack throws
+ * after recording the attempt.
  */
 final class RecordingAckHandle implements AckHandle {
 
@@ -35,6 +38,7 @@ final class RecordingAckHandle implements AckHandle {
     @Nullable private final SettableApiFuture<AckResponse> confirmation;
     private int ackCount;
     private int nackCount;
+    @Nullable private Throwable nackFailure;
 
     RecordingAckHandle(String name) {
         this(name, null);
@@ -60,6 +64,18 @@ final class RecordingAckHandle implements AckHandle {
     @Override
     public void nack() {
         nackCount++;
+        if (nackFailure != null) {
+            ExceptionUtils.rethrow(nackFailure);
+        }
+    }
+
+    /**
+     * Makes every later {@link #nack()} throw the given failure, as itself for an unchecked one,
+     * after counting the attempt.
+     */
+    RecordingAckHandle failNackWith(Throwable failure) {
+        this.nackFailure = failure;
+        return this;
     }
 
     /** Completes the confirmation future with the given response. */

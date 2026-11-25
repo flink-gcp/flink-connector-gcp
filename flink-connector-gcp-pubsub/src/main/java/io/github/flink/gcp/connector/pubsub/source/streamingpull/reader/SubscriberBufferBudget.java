@@ -18,7 +18,9 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.ExceptionUtils;
 
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import org.slf4j.Logger;
@@ -26,10 +28,12 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -325,42 +329,27 @@ final class SubscriberBufferBudget {
                 }
                 return;
             }
-            RuntimeException firstFailure = null;
+            // Every step runs before anything is thrown, after an Error too (#2326): the response
+            // is latched once, so a later refusal carries no event, and a stop that threw before
+            // the report would leave the coordinator never told while the caller goes on to nack.
+            List<AutoCloseable> steps = new ArrayList<>(stops.length + 2);
             for (Runnable stop : stops) {
-                try {
-                    stop.run();
-                } catch (RuntimeException failure) {
-                    if (firstFailure == null) {
-                        firstFailure = failure;
-                    } else {
-                        firstFailure.addSuppressed(failure);
-                    }
-                }
+                steps.add(stop::run);
             }
             if (!triggeringSubscriberIncluded) {
-                try {
-                    triggeringSubscriberStop.run();
-                } catch (RuntimeException failure) {
-                    if (firstFailure == null) {
-                        firstFailure = failure;
-                    } else {
-                        firstFailure.addSuppressed(failure);
-                    }
-                }
+                steps.add(triggeringSubscriberStop::run);
             }
             if (event != null) {
-                try {
-                    failureReporter.accept(event);
-                } catch (RuntimeException failure) {
-                    if (firstFailure == null) {
-                        firstFailure = failure;
-                    } else {
-                        firstFailure.addSuppressed(failure);
-                    }
-                }
+                steps.add(() -> failureReporter.accept(event));
             }
-            if (firstFailure != null) {
-                throw firstFailure;
+            try {
+                Closers.closeAll(steps);
+            } catch (Exception e) {
+                // No step declares a checked exception, so this is the unchecked one closeAll
+                // collected first. An Error that came first leaves closeAll as itself and never
+                // reaches here; one after an exception arrives suppressed onto it, the bound
+                // Closers documents.
+                ExceptionUtils.rethrow(e);
             }
         }
     }

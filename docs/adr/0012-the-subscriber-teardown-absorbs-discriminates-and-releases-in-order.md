@@ -20,9 +20,10 @@ limitations under the License.
 - Date: 2026-08-05 ([#297]) through 2026-08-07 ([#348], [#349], [#350], [#351], the [#348]
   cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23); failed stub
   creation corrected by [#2291] (2026-11-23); budget clock refined by [#2302] (2026-11-23);
-  failed-start deliveries released by [#2307] (2026-11-23)
+  failed-start deliveries released by [#2307] (2026-11-23); throwing nacks qualified by [#2326]
+  (2026-11-25)
 - Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2291], [#2302],
-  [#2307], [#2324]
+  [#2307], [#2324], [#2326]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
   including the four-outcome teardown message table, and the reader metrics)
@@ -121,9 +122,15 @@ transport opened. This change leaves untouched what that decision says about the
   two levels further in. `closed` is set before the nack, so the old shape left `shutdown()`'s
   idempotence guard claiming a client had been asked to stop that had not, and `close()` then
   spent the entire budget waiting on it. **Argue this as robustness, not as a bug closed**:
-  measured on 1.152.0, the production `AckHandle` cannot throw at all — both flavours end in
-  `SettableApiFuture.set`, which returns a `boolean` — so what the list buys is over an
-  `@Internal` SPI whose implementations need not all be ours. `stopQuietly()` is deliberately
+  measured on 1.152.0, both production `AckHandle` flavours end in `SettableApiFuture.set`, which
+  returns a `boolean`, and no ordinary nack failure has been demonstrated for them. Guava runs a
+  direct listener of that future inside `set` and lets an `Error` from it propagate, so a throwing
+  nack is not shown to be impossible either ([#2326], read in `google-cloud-pubsub` 1.161.0 and
+  Guava 33.7.2). What the list
+  buys is mostly over an `@Internal` SPI whose implementations need not all be ours. One level in,
+  `nackSplit` itself nacks every handle of the split before it throws the first failure, since
+  the handles are already out of its maps and one it skipped would be left to the client
+  library's shutdown or lease expiry ([#2326]). `stopQuietly()` is deliberately
   **not** given the same list, and the reason is a property rather than scope-drawing: there, a
   stop that threw has started no shutdown for the wait to wait out, so skipping it is the right
   outcome. `removeSplit` has **no production path** (`SplitsRemoval` reaches a reader only
@@ -425,3 +432,4 @@ transport opened. This change leaves untouched what that decision says about the
 [#2302]: https://github.com/flink-gcp/flink-connector-gcp/issues/2302
 [#2307]: https://github.com/flink-gcp/flink-connector-gcp/issues/2307
 [#2324]: https://github.com/flink-gcp/flink-connector-gcp/issues/2324
+[#2326]: https://github.com/flink-gcp/flink-connector-gcp/issues/2326

@@ -33,7 +33,8 @@ class PubSubAckTrackerTest {
     private static final String SPLIT_A = "split-a";
     private static final String SPLIT_B = "split-b";
 
-    private final PubSubAckTracker tracker = newTracker();
+    private final TestReaderMetrics metrics = new TestReaderMetrics();
+    private final PubSubAckTracker tracker = new PubSubAckTracker(metrics.metrics(), null);
 
     @Test
     void messageIsAcknowledgedOnlyWhenTheCheckpointCoveringItsEmissionCompletes() throws Exception {
@@ -132,6 +133,67 @@ class PubSubAckTrackerTest {
     }
 
     @Test
+    void aThrowingNackStillNacksTheRestOfTheSplit() throws Exception {
+        // #2326: the split's handles leave the maps before any is nacked, so a nack that threw used
+        // to leave every handle after it un-nacked and tracked by nothing, and count none of them.
+        IllegalStateException refused = new IllegalStateException("the consumer refused");
+        RecordingAckHandle pending = new RecordingAckHandle("pending").failNackWith(refused);
+        RecordingAckHandle staged = new RecordingAckHandle("staged");
+        RecordingAckHandle checkpointed = new RecordingAckHandle("checkpointed");
+        RecordingAckHandle onB = new RecordingAckHandle("b");
+        stageOn(SPLIT_A, "checkpointed", checkpointed);
+        tracker.addCheckpoint(1L);
+        stageOn(SPLIT_A, "staged", staged);
+        tracker.addPendingAck(SPLIT_A, "pending", pending);
+        tracker.addPendingAck(SPLIT_B, "b", onB);
+
+        assertThatThrownBy(() -> tracker.nackSplit(SPLIT_A)).isSameAs(refused);
+
+        assertThat(pending.nackCount()).isEqualTo(1);
+        assertThat(staged.nackCount()).isEqualTo(1);
+        assertThat(checkpointed.nackCount()).isEqualTo(1);
+        assertThat(onB.isUnsettled()).isTrue();
+        // Only the nacks that returned count as messages returned for redelivery.
+        assertThat(metrics.counter("messagesNacked")).isEqualTo(2);
+        assertThat(tracker.outstandingAckCount()).isEqualTo(1);
+
+        // Forgotten all the same, so a second release settles nothing again.
+        tracker.nackSplit(SPLIT_A);
+        assertThat(pending.nackCount()).isEqualTo(1);
+        assertThat(staged.nackCount()).isEqualTo(1);
+        assertThat(checkpointed.nackCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aLaterNackFailureIsSuppressedOntoTheFirst() {
+        IllegalStateException first = new IllegalStateException("first");
+        IllegalStateException second = new IllegalStateException("second");
+        RecordingAckHandle between = new RecordingAckHandle("between");
+        tracker.addPendingAck(SPLIT_A, "m1", new RecordingAckHandle("m1").failNackWith(first));
+        tracker.addPendingAck(SPLIT_A, "m2", between);
+        tracker.addPendingAck(SPLIT_A, "m3", new RecordingAckHandle("m3").failNackWith(second));
+
+        assertThatThrownBy(() -> tracker.nackSplit(SPLIT_A))
+                .isSameAs(first)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+        assertThat(between.nackCount()).isEqualTo(1);
+    }
+
+    @Test
+    void anErrorFromANackIsThrownAsItselfAfterTheRestAreNacked() {
+        // The one way found for a production handle's nack to throw is an Error from a listener of
+        // its reply future (#2326), so an Error must neither be wrapped nor end the loop.
+        AssertionError listenerFailure = new AssertionError("a listener failed");
+        RecordingAckHandle after = new RecordingAckHandle("after");
+        tracker.addPendingAck(
+                SPLIT_A, "m1", new RecordingAckHandle("m1").failNackWith(listenerFailure));
+        tracker.addPendingAck(SPLIT_A, "m2", after);
+
+        assertThatThrownBy(() -> tracker.nackSplit(SPLIT_A)).isSameAs(listenerFailure);
+        assertThat(after.nackCount()).isEqualTo(1);
+    }
+
+    @Test
     void sameMessageIdOnDifferentSplitsIsTrackedSeparately() throws Exception {
         // Two subscriptions of one topic deliver the same message id to the same reader.
         RecordingAckHandle onA = new RecordingAckHandle("a");
@@ -210,10 +272,6 @@ class PubSubAckTrackerTest {
     private void stageOn(String splitId, String messageId, RecordingAckHandle consumer) {
         tracker.addPendingAck(splitId, messageId, consumer);
         tracker.stagePendingAck(splitId, messageId);
-    }
-
-    private static PubSubAckTracker newTracker() {
-        return new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
     }
 
     @Test
@@ -339,5 +397,39 @@ class PubSubAckTrackerTest {
         tracker.notifyCheckpointComplete(2L);
 
         assertThat(tracker.checkpointsPendingAckCount()).isZero();
+    }
+
+    @Test
+    void nackingASplitKeepsEveryCheckpointThatHasNotCompleted() throws Exception {
+        // #2325: nackSplit used to drop every checkpoint entry it found empty, its own split's or
+        // not, so the gauge read 1 here instead of 3. A checkpoint emptied by the release has still
+        // not completed.
+        tracker.addCheckpoint(1L);
+        stageOn(SPLIT_A, "a1", new RecordingAckHandle("a1"));
+        tracker.addCheckpoint(2L);
+        RecordingAckHandle onB = new RecordingAckHandle("b");
+        stageOn(SPLIT_A, "a2", new RecordingAckHandle("a2"));
+        stageOn(SPLIT_B, "b", onB);
+        tracker.addCheckpoint(3L);
+
+        tracker.nackSplit(SPLIT_A);
+
+        assertThat(tracker.checkpointsPendingAckCount()).isEqualTo(3);
+        assertThat(tracker.checkpointedMessageIds()).containsOnlyKeys(SPLIT_B);
+
+        tracker.notifyCheckpointComplete(3L);
+
+        assertThat(onB.isAcked()).isTrue();
+        assertThat(tracker.checkpointsPendingAckCount()).isZero();
+        assertThat(tracker.outstandingAckCount()).isZero();
+    }
+
+    @Test
+    void nackingAnUnknownSplitLeavesAnEmptyCheckpointPending() {
+        tracker.addCheckpoint(7L);
+
+        tracker.nackSplit("unrelated");
+
+        assertThat(tracker.checkpointsPendingAckCount()).isEqualTo(1);
     }
 }

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
@@ -28,6 +29,7 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -221,18 +223,35 @@ public class PubSubAckTracker implements AckTracker {
                 toNack.addAll(splitAcks.values());
             }
             drainSplit(stagedAcks, splitId, toNack);
-            Iterator<Map.Entry<Long, List<TrackedAck>>> checkpointed =
-                    checkpoints.entrySet().iterator();
-            while (checkpointed.hasNext()) {
-                Map.Entry<Long, List<TrackedAck>> entry = checkpointed.next();
-                drainSplit(entry.getValue(), splitId, toNack);
-                if (entry.getValue().isEmpty()) {
-                    checkpointed.remove();
-                }
+            // Every checkpoint entry stays, including one this drain empties (#2325): the
+            // checkpoint has still not completed, which is what checkpointsPendingAckCount()
+            // counts, and notifyCheckpointComplete sweeps an empty entry like any other. An empty
+            // entry adds no message id to the ledger. One this drain empties becomes the shared
+            // empty list, so it stops holding the array its handles were copied into.
+            checkpoints.replaceAll(
+                    (checkpointId, checkpointed) -> {
+                        drainSplit(checkpointed, splitId, toNack);
+                        return checkpointed.isEmpty() ? Collections.emptyList() : checkpointed;
+                    });
+        }
+        // The split's handles are already out of the maps, so one this loop skipped would be left
+        // to the client library's own shutdown or lease expiry. Every handle is therefore nacked
+        // before anything is thrown, with the first failure thrown as itself and later ones
+        // suppressed onto it, as Closers.closeAll reports (#2326).
+        Throwable failure = null;
+        int nacked = 0;
+        for (AckHandle handle : toNack) {
+            try {
+                handle.nack();
+                nacked++;
+            } catch (Throwable e) {
+                failure = ExceptionUtils.firstOrSuppressed(e, failure);
             }
         }
-        toNack.forEach(AckHandle::nack);
-        metrics.messagesNacked(toNack.size());
+        metrics.messagesNacked(nacked);
+        if (failure != null) {
+            ExceptionUtils.rethrow(failure);
+        }
     }
 
     private static void drainSplit(List<TrackedAck> acks, String splitId, List<AckHandle> into) {

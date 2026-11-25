@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-08, refined 2026-08-09 ([#377], [#440]) and 2026-08-29 ([#1138]); revised by
-  [#2020] (2026-11-04)
-- Issues: [#357], [#377], [#440], [#1138], [#2020]
+  [#2020] (2026-11-04); refined by [#2326] (2026-11-25)
+- Issues: [#357], [#377], [#440], [#1138], [#2020], [#2326]
 - Modules: pubsub (source)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (§ Subscriber options,
   Metrics and Watermark alignment); `docs/content/docs/reference/pubsub.md` for the four knobs
@@ -113,6 +113,19 @@ deque, so the delivery that would cross either bound is NACKed and never retaine
 - **Checkpoint completion remains the Ack boundary.** An admitted and emitted record follows the
   existing staged/pending/checkpoint lifecycle unchanged.
   Only a delivery rejected before admission is NACKed directly.
+- **A reservation whose delivery never reaches the deque goes back** ([#2326]).
+  `receiveMessage` reserves before `AckTracker.addPendingAck`, which nacks a superseded handle when
+  a still-pending message is redelivered. When that nack throws, the delivery is not admitted, and
+  its reservation is returned under the subscriber monitor with the plain `release`, so the split
+  stays among the starting holders until its registration, its unregistration or a failed start
+  removes it.
+  The new handle stays in the tracker in the superseded one's place and is not rolled back: the
+  copy it superseded is still pending, and the record emitter settles that copy through whichever
+  handle the tracker then holds, by staging it or by acknowledging or nacking it at once.
+- **The limit response runs every step before it throws** ([#2326]). A stop that throws, an
+  `Error` included, no longer skips the other stops or the report to the coordinator: the response
+  is latched once, so a later refusal carries no event, and the refused delivery is nacked after
+  the response either way.
 
 - **The default is twice the flow-control limit it shadows, and the factor is the lapse's own
   size.** The client releases a whole window of permits per expiry wave, so the first wave carries
@@ -307,6 +320,13 @@ This fixes the conflated test deadlines; the original log does not establish why
 
 ## Alternatives declined
 
+- **Admit a redelivery whose superseded handle fails to nack** ([#2326]). The tracker would
+  install the new handle, the deque would take the delivery, and the superseded handle's failure
+  would go to the subscriber's failure signal, so an old handle's exception would never refuse a
+  new delivery. Declined because it changes the callback's failure semantics for a failure shown
+  only with injected handles, while returning the reservation already keeps the budget equal to
+  the deques.
+
 - **Fail an alignment-paused reader at a threshold.** Smallest original change, keeps ADR-0012's
   watching trivially intact, and turns an eventual heap exhaustion into a diagnosable failure
   naming `withIdleness(...)`.
@@ -421,6 +441,14 @@ Verified 2026-11-04 for [#2020] by `PubSubSubscriberOptionsTest`, `SubscriberOpt
 - **The standalone probe now asserts the derived default.** The 256 MiB child JVM retains 2000
   messages of 4 KiB, twice the SDK's default flow-control count, and rejects the next.
 
+Verified 2026-11-25 for [#2326] by `StreamingPullSubscriberTest` and `SubscriberBufferBudgetTest`.
+
+- **A returned reservation leaves the split among the starting holders.** Returning it through
+  `releaseFailedStart` instead fails `aReturnedReservationKeepsTheSplitAmongTheStartingHolders`.
+- **A stop that throws does not skip the report.** Collecting only `RuntimeException`s again fails
+  `aStopThatThrowsAnErrorStillLetsTheOtherStopsRunAndTheFailureBeReported` in
+  `SubscriberBufferBudgetTest`.
+
 [#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348
 [#356]: https://github.com/flink-gcp/flink-connector-gcp/issues/356
 [#357]: https://github.com/flink-gcp/flink-connector-gcp/issues/357
@@ -428,6 +456,7 @@ Verified 2026-11-04 for [#2020] by `PubSubSubscriberOptionsTest`, `SubscriberOpt
 [#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440
 [#1138]: https://github.com/flink-gcp/flink-connector-gcp/issues/1138
 [#2020]: https://github.com/flink-gcp/flink-connector-gcp/issues/2020
+[#2326]: https://github.com/flink-gcp/flink-connector-gcp/issues/2326
 [Weekly run 33336508126]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/33336508126
 [E2E run 35425056265]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35425056265
 [#1345]: https://github.com/flink-gcp/flink-connector-gcp/issues/1345
