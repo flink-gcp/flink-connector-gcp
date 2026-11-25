@@ -332,15 +332,82 @@ In the same measurement, 75 seconds after the last of four jobs no thread of eit
 and the JobManager's four class loaders went at the second full collection, after change-stream
 jobs and after bounded scans; so did the TaskManager's after bounded scans.
 After change-stream jobs the TaskManager still kept its four class loaders through six full
-collections, held in a way the heap dump does not show, so consecutive change-stream jobs on one
-TaskManager may still run out of direct memory there; that retention is
-[#2317]({{< param BookRepo >}}/issues/2317), and whether either way out above avoids it has not
-been measured.
+collections, held by Flink's cache of generated classes, which the next paragraphs describe.
 That measurement ran against the emulator, where the client starts no Cloud Monitoring exporter.
 Against the service with the built-in export on, which is the default, the exporter's JVM
 shutdown hook keeps the class loader of the client library that started it until the process
 exits ([#2311]({{< param BookRepo >}}/issues/2311)), unless the export is kept from starting as
 [gRPC threads and job shutdown](#grpc-threads-and-job-shutdown) describes.
+
+Flink's Table runtime can also keep a finished job's class loader on a TaskManager, through the
+classes it generates for the job's SQL operators.
+It compiles each such class for the class loader it was asked to use, and keeps the class in one
+cache for the whole process, through a soft reference.
+The class loader of a generated class has as its parent the wrapper Flink places around the job's
+class loader.
+Flink gives a task that wrapper as its user-code class loader, and when a task loads a class from
+the job's jars through it, the JVM records that the wrapper depends on the job's class loader.
+That record outlives the reference Flink clears in the wrapper when the job ends.
+So while any of the job's generated classes stays in the cache, the job's class loader stays as
+well, with the job's copy of the gRPC transport and its pooled direct memory.
+The JVM keeps that record outside the heap, which is why a walk of the heap dump that also followed
+soft references found no path from the wrapper to the class loaders
+([#2317]({{< param BookRepo >}}/issues/2317)).
+With `classloader.check-leaked-classloader: false`, Flink gives the task the job's class loader
+itself instead of the wrapper, so a generated class's loader holds the job's class loader through
+its parent, whether or not a class was loaded from the job's jars; that follows from Flink 2.2.1's
+source and was not measured.
+
+On Flink 2.2.1, with that check left on as it is by default, this needed both halves: a class
+loaded from the job's jars, and an operator whose generated class goes into the cache.
+A Spanner change-stream job kept its class loader in `upsert` changelog mode, whose plan in that
+job had a `ChangelogNormalize` operator, and in `full` mode followed by a `GROUP BY` aggregation.
+In `full` mode writing straight to the sink it did not, and neither did a `datagen` source feeding
+a `GROUP BY` nor a `filesystem` source of Debezium records feeding a `ChangelogNormalize`, whose
+classes all come from Flink's own `lib/`.
+Other connectors shipped with a job are expected to behave the same way, but only Spanner was
+measured.
+
+This hold ends when the last of the job's entries leaves the cache, either dropped by the cache or
+through a collection that clears its soft reference, and in the emulator measurement nothing else
+held the class loader; against the service, the Cloud Monitoring exporter's hold described above
+still applies.
+An ordinary HotSpot collection may clear a soft reference once it has gone unread for longer than
+an age that `-XX:SoftRefLRUPolicyMSPerMB` and the free heap set, about eight minutes on the
+measured TaskManager (G1 with default settings), and a collection that leaves the referent's
+region alone does not clear it.
+That age is read from a clock that moves only at collections, so in wall-clock time the clearing
+can come later, on a TaskManager that runs no collection, or sooner, after a long gap between
+collections.
+The cache also drops an entry unused for five minutes, but only when later use of the cache gets
+round to it.
+The collection that a failed direct-memory reservation requests applies the same soft-reference
+rule, so change-stream jobs started about 35 seconds apart, each adding about 20 MB of direct
+memory and 25 MB of metaspace, failed their tasks with `OutOfMemoryError: Direct buffer memory`
+from the sixth job on.
+The sixth job's tasks kept restarting for about four minutes before it was cancelled, and the
+seventh to tenth jobs started 35 to 45 seconds apart.
+Metaspace did not run out over the ten jobs: older class loaders began to unload from the seventh
+job, about seven minutes after the first, when the first jobs' entries were past the cache's five
+minutes and near the soft-reference age, so which of the two released them was not determined.
+The last collection before HotSpot reports metaspace exhausted clears every soft reference to a
+softly reachable object, whatever its age, which was not observed separately.
+
+Each of the following changed what a finished job left behind, in runs of two or three jobs, too
+short to show whether it also avoids the failure:
+
+- **The connector in `lib/`**, with nothing loaded from the job jar: three change-stream jobs left
+  no class loader at the first full collection, and the TaskManager's metaspace and direct memory
+  stayed within 3 MB of their values after the first job.
+- **Unpooled gRPC buffers**: direct memory stayed flat over two jobs, but each job's class loader
+  still stayed through four full collections, and metaspace grew by about 25 MB a job.
+- **A lower `-XX:SoftRefLRUPolicyMSPerMB`**, added to `env.java.opts.taskmanager` beside any option
+  already set there: with `0`, the class loaders of two jobs went at the third full collection.
+  The setting shortens the life of every soft reference in the TaskManager, the JDK's reflection
+  and serialization caches among them, and that cost was not measured.
+
+The cache is Flink's, so the fix belongs there; reporting it and adopting the fix is
+[#2355]({{< param BookRepo >}}/issues/2355).
 
 The reasoning, and the fixes that were weighed and declined, are in
 [ADR-0210]({{< param BookRepo >}}/blob/main/docs/adr/0210-a-session-cluster-can-opt-out-of-grpc-buffer-pools-and-spanner-static-executors-let-idle-threads-exit.md).
