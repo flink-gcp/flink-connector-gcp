@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.datastore.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.client.http.javanet.NetHttpTransport;
@@ -28,10 +29,13 @@ import com.google.datastore.v1.client.Datastore;
 import com.google.datastore.v1.client.DatastoreFactory;
 import com.google.datastore.v1.client.DatastoreOptions;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.datastore.DatastoreClients;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 
 /**
  * The HTTP client the client library's query splitter takes, built on first use and closed once.
@@ -43,7 +47,9 @@ import java.io.IOException;
  * ({@code HttpDatastoreRpc}) uses: the service at its default host with the credentials adapted to
  * HTTP requests, and an emulator as a plaintext local host with no credentials — for any emulator
  * endpoint, as everywhere in this connector, where the library does so only for a loopback one
- * ({@code docs/adr/0177}). The splitter is the only caller, and only while a read is planned.
+ * ({@code docs/adr/0177}). The emulator endpoint reaches it as an HTTP authority ({@link
+ * #httpAuthority(EmulatorEndpoint)}). The splitter is the only caller, and only while a read is
+ * planned.
  *
  * <p>The client makes one attempt per call, which is the proto client's own behaviour (the
  * credentials adapter alone re-sends a request once after refreshing an expired token), and gives
@@ -53,6 +59,9 @@ import java.io.IOException;
  */
 @Internal
 final class SplitterClient implements AutoCloseable {
+
+    /** The scheme of a target that gRPC's DNS resolver reads, such as {@code dns:///host:port}. */
+    private static final String DNS_SCHEME = "dns";
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
@@ -100,7 +109,7 @@ final class SplitterClient implements AutoCloseable {
             DatastoreOptions.Builder options =
                     new DatastoreOptions.Builder().projectId(project).transport(newTransport);
             if (emulatorEndpoint != null) {
-                options.localHost(emulatorEndpoint.getTarget());
+                options.localHost(httpAuthority(emulatorEndpoint));
             } else {
                 options.initializer(new HttpCredentialsAdapter(credentials()));
             }
@@ -108,6 +117,41 @@ final class SplitterClient implements AutoCloseable {
             transport = newTransport;
         }
         return client;
+    }
+
+    /**
+     * Returns the emulator endpoint as the {@code host:port} authority that the proto client's
+     * {@code localHost} takes, from which it builds {@code
+     * http://<authority>/v1/projects/<project>} (datastore-v1-proto-client 3.11.0).
+     *
+     * <p>The Datastore-mode gRPC clients take the endpoint as a channel target, so this reduces
+     * such a target to the {@code host:port} it dials (#2338): an {@code http://} or {@code
+     * https://} scheme is removed as it is for those clients ({@link
+     * DatastoreClients#withoutHttpScheme(EmulatorEndpoint)}), and a target that is a URI with
+     * gRPC's {@code dns} scheme becomes its decoded path without the leading slash, or for an
+     * opaque URI the part after the scheme. Anything else is returned as it is. ADR-0208 records
+     * which spellings gRPC accepts and why the proto client cannot take them as written.
+     *
+     * @param endpoint the emulator endpoint
+     * @return the endpoint's {@code host:port}
+     */
+    @VisibleForTesting
+    static String httpAuthority(EmulatorEndpoint endpoint) {
+        String target = DatastoreClients.withoutHttpScheme(endpoint).getTarget();
+        URI uri;
+        try {
+            uri = new URI(target);
+        } catch (URISyntaxException e) {
+            return target;
+        }
+        if (!DNS_SCHEME.equals(uri.getScheme())) {
+            return target;
+        }
+        if (uri.isOpaque()) {
+            return uri.getSchemeSpecificPart();
+        }
+        String path = uri.getPath();
+        return path.startsWith("/") ? path.substring(1) : target;
     }
 
     private Credentials credentials() throws IOException {
