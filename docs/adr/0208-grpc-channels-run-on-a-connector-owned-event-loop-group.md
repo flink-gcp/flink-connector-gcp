@@ -1125,8 +1125,33 @@ writing jobs here were not traced.
   for the coordinator; the planner's is the same wait, not measured), a longer window for that
   race than the other connectors' cancelled calls leave.
 - If the SDK's location lookup fails, the short-lived client it opened for it is never shut down
-  (google-cloud-bigquerystorage 3.38.0 closes it only on success), so its channels stay on the
-  group until the last lease is released and the group closes them.
+  (google-cloud-bigquerystorage 3.38.0 and 3.39.0 close it only on success), and the group's
+  shutdown closes only its connection
+  ([#2360](https://github.com/flink-gcp/flink-connector-gcp/issues/2360)).
+  The lookup runs only for a pooled default-stream writer whose `location` is unset; the library
+  caches a lookup's result for ten minutes per project and dataset but caches nothing when the
+  call fails, so every build whose lookup call fails leaves another client.
+  Measured 2026-11-26 on 3.39.0 with that writer's channel provider, no location, and a local
+  server whose `GetWriteStream` answered `NOT_FOUND`, on 24 CPUs: each failed build left 48
+  channels, two per CPU, and the client's background executor, whose `Gax` threads grew by one
+  about every 10 s until they reached its core size, 24 here (the larger of 4 and the CPU count),
+  after about 4 minutes.
+  While a lease was open, the channel that served the lookup stayed `READY` with its connection
+  open on the group, and the other 47 stayed `IDLE`.
+  Releasing the last lease stopped the group, which closed that connection, but the channels
+  were not shut down: all 48 stayed registered with gRPC, `IDLE`, for as long as they were
+  watched (up to 330 s), and made no reconnect attempts and logged nothing in that time, since an
+  idle channel connects only when something asks it to.
+  Where a default-stream sink has pinned the group, releasing the last lease does not stop it,
+  so the group's shutdown does not close the lookup's connection then.
+  The `Gax` threads are not on the group and live as long as the process; with the client
+  library loaded by a job's class loader they would keep that loader reachable, inferred and not
+  measured.
+  Setting `location` skips the lookup; the library still builds the client and shuts it down
+  once the writer is built.
+  Reported upstream as
+  [googleapis/google-cloud-java#15242](https://github.com/googleapis/google-cloud-java/issues/15242),
+  tracked by [#2364](https://github.com/flink-gcp/flink-connector-gcp/issues/2364).
 - **A Spanner client whose emulator check fails leaves open what the client library built before
   the check** ([#2306](https://github.com/flink-gcp/flink-connector-gcp/issues/2306)).
   In emulator mode, `GapicSpannerRpc`'s constructor builds its four stubs and its watchdog
