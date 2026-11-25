@@ -720,6 +720,17 @@ class PerCallClientRunnerTest {
         assertThat(client.closes).hasValue(1);
     }
 
+    /** The body can reach the session's client for work that makes no call. */
+    @Test
+    void aSessionHandsItsBodyTheClient() throws Exception {
+        PerCallClientRunner runner = new PerCallClientRunner("test owner");
+
+        Object seen = runner.session(() -> "settings", this::open, session -> session.client());
+
+        assertThat(seen).isSameAs(client);
+        assertThat(client.closes).hasValue(1);
+    }
+
     /** A refusal the body answers, such as a fallback on {@code INVALID_ARGUMENT}, ends nothing. */
     @Test
     void aFailureTheBodyCatchesLeavesTheSessionOpenForItsNextCall() throws Exception {

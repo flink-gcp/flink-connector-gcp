@@ -63,26 +63,29 @@ import java.util.function.Supplier;
  *
  * <p>Every client this object closes, from a call, a session or {@code close()}, is closed with
  * {@link GrpcEventLoops.LeasedClient#closeWithInterruptHeldBack()}. For a client opened with {@link
- * GrpcEventLoops#openAutoCloseable}, the thread's interrupt is held back while the client closes
- * and restored before its lease is released: such a client library can give up its own close at
- * once on an interrupted thread and skip the rest of its cleanup (Bigtable's data client does), and
- * Flink's {@code shutdownNow()} of a coordinator's executor interrupts a worker still building a
- * client after the owner closed. A gax client's bounded shutdown answers an interrupt with {@code
+ * GrpcEventLoops#openAutoCloseable(GrpcEventLoops.ClientFactory)} or its form with a {@link
+ * GrpcEventLoops.ClientCloser}, the thread's interrupt is held back while the client closes and
+ * restored before its lease is released: such a client library can give up its own close at once on
+ * an interrupted thread and skip the rest of its cleanup (Bigtable's data client does), and Flink's
+ * {@code shutdownNow()} of a coordinator's executor interrupts a worker still building a client
+ * after the owner closed. A gax client's bounded shutdown answers an interrupt with {@code
  * shutdownNow()}, which skips none of its cleanup, so its interrupt is not held back. An interrupt
  * that ended a call's wait is set again before the client closes, and so reaches its close the same
  * way. An interrupt delivered during a close still reaches it. A thread that finds another one
  * closing the same client waits for that close, and an interrupt ends that wait.
  *
  * <p>This object's monitor is held to prepare a session's client, to publish the client and to
- * start each of its calls, never while a client is built or a call runs. Building a client can make
- * calls of its own, so {@link #close()} does not wait for one: it marks this object closed, and a
- * client that finishes building after that is closed by the calling thread without a call being
- * started on it. A call a session starts after {@code close()} is refused. A client published
- * before {@code close()} runs is closed by whichever thread gets to it first, and the other waits
- * for that close. Preparing what the client is built from under the monitor means nothing is
- * prepared after {@link #close()}, so an owner may clear its credentials once this object is
- * closed. The flag {@code close()} sets is one-way: an owner is minted per enumerator, or per full
- * lookup cache load, and ends with it ({@code docs/adr/0128}).
+ * start each of its calls, never while a client is built or a call runs, unless starting the call
+ * itself blocks, as a client library that runs its own callbacks on the starting thread can: a
+ * {@code close()} meanwhile waits for that start. Building a client can make calls of its own, so
+ * {@link #close()} does not wait for one: it marks this object closed, and a client that finishes
+ * building after that is closed by the calling thread without a call being started on it. A call a
+ * session starts after {@code close()} is refused. A client published before {@code close()} runs
+ * is closed by whichever thread gets to it first, and the other waits for that close. Preparing
+ * what the client is built from under the monitor means nothing is prepared after {@link #close()},
+ * so an owner may clear its credentials once this object is closed. The flag {@code close()} sets
+ * is one-way: an owner is minted per enumerator, or per full lookup cache load, and ends with it
+ * ({@code docs/adr/0128}).
  *
  * <p>A session that succeeds returns its result even if its client then fails to close with an
  * exception; the failure is logged, since it says nothing about the calls, and the lease is
@@ -383,9 +386,11 @@ public final class PerCallClientRunner {
     /**
      * Refuses later calls, cancels the call in flight if there is one, and closes its client as
      * {@link GrpcEventLoops.LeasedClient#closeWithInterruptHeldBack()} does (holding this thread's
-     * interrupt back only for a client opened with {@link GrpcEventLoops#openAutoCloseable}), or
-     * waits for that close if the calling thread got there first; an interrupt ends that wait. A
-     * client still being built is not waited for; the thread building it closes it.
+     * interrupt back only for a client opened with {@link
+     * GrpcEventLoops#openAutoCloseable(GrpcEventLoops.ClientFactory)} or its form with a {@link
+     * GrpcEventLoops.ClientCloser}), or waits for that close if the calling thread got there first;
+     * an interrupt ends that wait. A client still being built is not waited for; the thread
+     * building it closes it.
      *
      * @throws RuntimeException if this call closed the client and that close failed with an
      *     exception; an {@link Error} from that close is thrown as itself
@@ -445,6 +450,18 @@ public final class PerCallClientRunner {
          */
         public <R> R call(Function<? super C, ApiFuture<R>> start) throws IOException {
             return startAndAwait(this, start);
+        }
+
+        /**
+         * Returns the session's client, for work on it that makes no call, such as building a
+         * Firestore query, which is bound to the client it is built from, for a later {@link
+         * #call(Function)} to send. Every call still goes through {@code call}: {@link
+         * PerCallClientRunner#close()} cancels only a call started there.
+         *
+         * @return the client, which the session closes when its body returns
+         */
+        public C client() {
+            return client.client();
         }
     }
 

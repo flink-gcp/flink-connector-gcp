@@ -29,6 +29,7 @@ import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.v1.FirestoreSettings;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.FirestoreClients;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
@@ -91,7 +92,8 @@ public final class DefaultFirestoreDatabaseAccessFactory implements FirestoreDat
 
     @Override
     public FirestoreDatabaseAccess create(BulkWriterRetryPolicy retryPolicy) throws IOException {
-        Firestore firestore = FirestoreClients.open(database, clientSettings());
+        GrpcEventLoops.LeasedClient<Firestore> client =
+                FirestoreClients.open(database, emulatorEndpoint, clientSettings());
         ScheduledExecutorService executor = null;
         try {
             executor =
@@ -104,12 +106,10 @@ public final class DefaultFirestoreDatabaseAccessFactory implements FirestoreDat
                             });
             ScheduledExecutorService bulkWriterExecutor = executor;
             BulkWriterOptions options = bulkWriterOptions(writerOptions, bulkWriterExecutor);
-            return new BulkWriterDatabaseAccess(
-                    firestore, bulkWriterExecutor, options, retryPolicy);
+            return new BulkWriterDatabaseAccess(client, bulkWriterExecutor, options, retryPolicy);
         } catch (Throwable e) {
             ScheduledExecutorService created = executor;
-            Closers.closeAllSuppressing(
-                    e, created == null ? null : created::shutdownNow, firestore);
+            Closers.closeAllSuppressing(e, created == null ? null : created::shutdownNow, client);
             throw e;
         }
     }
@@ -141,7 +141,7 @@ public final class DefaultFirestoreDatabaseAccessFactory implements FirestoreDat
 
     /** The client's settings: the database, endpoint and credentials, and any retry overrides. */
     @VisibleForTesting
-    FirestoreOptions clientSettings() {
+    FirestoreOptions.Builder clientSettings() {
         return FirestoreClients.settings(
                 database, emulatorEndpoint, credentials, retrySettings(writerOptions));
     }

@@ -286,10 +286,11 @@ public class FirestoreSourceBuilder<T> {
      * Points the source at a Firestore emulator instead of the real service. Optional; for tests.
      *
      * <p>The emulator needs no credentials, so setting this also stops the client from looking for
-     * any. This setting is the only way the source reaches an emulator: the client library would
-     * also read the {@code FIRESTORE_EMULATOR_HOST} environment variable on its own, and the source
-     * logs a warning when that variable is set and this setting is not. The emulator does not
-     * implement partitioning, so a collection-group scan against it needs a partition count of one.
+     * any. Without this setting, the client library reads the {@code FIRESTORE_EMULATOR_HOST}
+     * environment variable on its own and, when it names a host, sends every request to that host,
+     * and the source logs a warning; with it, this endpoint wins over the variable, and a warning
+     * names both when the variable is set too. The emulator does not implement partitioning, so a
+     * collection-group scan against it needs a partition count of one.
      *
      * @param emulatorEndpoint the emulator's gRPC endpoint as {@code host:port}
      * @return this builder

@@ -89,7 +89,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   since Bigtable adopted it (#1620, `docs/adr/0190`); Spanner (#1619) takes the same spelling.
 - The emulator endpoint reaches the client only through the builder; the library also reads
   `FIRESTORE_EMULATOR_HOST` itself, and `FirestoreClients` warns when it is set without an
-  endpoint.
+  endpoint. **Native clients run on the event-loop group** (`docs/adr/0208`, #2330):
+  `FirestoreClients.open` builds the options, applies the lease to the provider they carry (the
+  library's tracing configurator, present only with a tracer provider installed, stays first) and
+  builds again; the emulator arm sets a plaintext provider from `FirestoreSettings`' defaults with
+  `EmulatorCredentials`, not `setEmulatorHost` (except with the variable set, below).
+  With the variable set beside a configured endpoint, `FirestoreClients.options` reads it before
+  the library would (an empty value fails the library's build) and builds on the endpoint through
+  `setEmulatorHost` (off the group) with a warning. `dns:///` and `http://` endpoints fail at
+  creation, as before (gax parses `host:port`); those and the client-certificate trap are #2343.
+  **Close a Native client through `FirestoreClients.close`** (`shutdownNow()` then `close()`):
+  cancelling a query's future does not end its `RunQuery` stream, and `close()` alone waited 300 s
+  for it (`ClientQueryPlannerCloseITCase`).
 
 ## Native-mode source (`docs/adr/0173`)
 
@@ -125,7 +136,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The library retries a broken page from its last document with `limit` and `offset`
   unchanged.** So the reader cuts every page to its limit, and the planner resolves a query's
   `offset` into a cursor; a split never carries an offset. Read through `ReadTimeQueries`
-  (`runAsyncTransaction`, interruptible), and hold clients in `LazyFirestoreClient` (one-way close).
+  (`ReadTimeQueries.start`, `runAsyncTransaction`, interruptible). The page reader holds its client
+  in `LazyFirestoreClient` (one-way close), and its `close()` cancels every page in flight through a
+  derived future first (`shutdownNow()` drops a scheduled gax retry, so the read's own future may
+  never complete); the planner opens one per `plan` through `PerCallClientRunner.session`, its own
+  RPCs through `ClientSession.call` (the `partitions` seam returns the call's `ApiFuture`).
 - The emulator answers `PartitionQuery` with `UNIMPLEMENTED`; emulator tests cut partitions through
   `FixedPartitionsPlannerFactory` (an override of `ClientQueryPlanner.partitions`). Real partition
   counts are `FirestoreSourceRealGcpITCase`'s. A database younger than an hour refuses an older

@@ -104,7 +104,11 @@ class DefaultFirestoreDatabaseAccessFactoryTest {
                 .isNull();
         // The library's own settings are what it then applies; ServiceOptions' default is the
         // sentinel for "none given".
-        assertThat(factory(FirestoreWriterOptions.defaults()).clientSettings().getRetrySettings())
+        assertThat(
+                        factory(FirestoreWriterOptions.defaults())
+                                .clientSettings()
+                                .build()
+                                .getRetrySettings())
                 .isEqualTo(ServiceOptions.getDefaultRetrySettings());
     }
 
@@ -196,7 +200,7 @@ class DefaultFirestoreDatabaseAccessFactoryTest {
                         .retryMaxAttempts(3)
                         .build();
 
-        RetrySettings settings = factory(options).clientSettings().getRetrySettings();
+        RetrySettings settings = factory(options).clientSettings().build().getRetrySettings();
 
         assertThat(settings.getTotalTimeoutDuration()).isEqualTo(Duration.ofSeconds(30));
         assertThat(settings.getInitialRetryDelayDuration()).isEqualTo(Duration.ofMillis(200));

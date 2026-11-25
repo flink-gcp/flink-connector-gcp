@@ -28,6 +28,7 @@ import com.google.cloud.firestore.Precondition;
 import com.google.cloud.firestore.SetOptions;
 import com.google.cloud.firestore.WriteResult;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 
@@ -46,6 +47,7 @@ import java.util.function.Function;
 @Internal
 final class BulkWriterDatabaseAccess implements FirestoreDatabaseAccess {
 
+    private final GrpcEventLoops.LeasedClient<Firestore> client;
     private final Firestore firestore;
     private final ScheduledExecutorService executor;
     private final BulkWriterOptions options;
@@ -54,11 +56,12 @@ final class BulkWriterDatabaseAccess implements FirestoreDatabaseAccess {
     private BulkWriter bulkWriter;
 
     BulkWriterDatabaseAccess(
-            Firestore firestore,
+            GrpcEventLoops.LeasedClient<Firestore> client,
             ScheduledExecutorService executor,
             BulkWriterOptions options,
             BulkWriterRetryPolicy retryPolicy) {
-        this.firestore = firestore;
+        this.client = client;
+        this.firestore = client.client();
         this.executor = executor;
         this.options = options;
         this.retryPolicy = retryPolicy;
@@ -189,7 +192,8 @@ final class BulkWriterDatabaseAccess implements FirestoreDatabaseAccess {
     @Override
     public void close() throws Exception {
         // The executor first: shutting it down cancels every batch send and backoff retry still
-        // scheduled on it, so nothing more reaches the client being closed after it.
-        Closers.closeAll(executor::shutdownNow, firestore);
+        // scheduled on it, so nothing more reaches the client being closed after it. The client's
+        // holder closes the client and then releases its event-loop lease.
+        Closers.closeAll(executor::shutdownNow, client);
     }
 }

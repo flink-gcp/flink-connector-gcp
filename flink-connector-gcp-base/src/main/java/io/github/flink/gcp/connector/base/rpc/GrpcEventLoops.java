@@ -236,8 +236,35 @@ public final class GrpcEventLoops {
      */
     public static <C extends AutoCloseable> LeasedClient<C> openAutoCloseable(
             ClientFactory<C> factory) throws IOException {
+        return openAutoCloseable(factory, AutoCloseable::close);
+    }
+
+    /**
+     * Opens as {@link #openAutoCloseable(ClientFactory)} does, but closes the client with {@code
+     * closer} rather than its own {@code close()}. For a client whose own close waits for calls
+     * that cancelling their futures does not end, such as Firestore's, whose {@code close()} waits
+     * for a query stream until the stream's deadline (google-cloud-firestore 3.53.0): the closer
+     * can end them first. The interrupt is handled as {@link #openAutoCloseable(ClientFactory)}
+     * handles it around the client's close.
+     *
+     * @param factory creates the client, applying the lease to its settings if they take a
+     *     transport provider
+     * @param closer closes the client
+     * @param <C> the client type
+     * @return the client paired with its lease
+     * @throws IOException if the factory does
+     * @throws IllegalArgumentException if the factory returns a gax {@link BackgroundResource}, as
+     *     {@link #openAutoCloseable(ClientFactory)} does
+     */
+    public static <C extends AutoCloseable> LeasedClient<C> openAutoCloseable(
+            ClientFactory<C> factory, ClientCloser<? super C> closer) throws IOException {
         Preconditions.checkNotNull(factory, "factory must not be null");
-        return open(factory, client -> () -> closeRestoringInterrupt(client), null, true);
+        Preconditions.checkNotNull(closer, "closer must not be null");
+        return open(
+                factory,
+                client -> () -> closeRestoringInterrupt(() -> closer.close(client)),
+                null,
+                true);
     }
 
     private static <C> LeasedClient<C> open(
@@ -293,10 +320,10 @@ public final class GrpcEventLoops {
     }
 
     /**
-     * Closes a client with its own {@code close()}, then restores an interrupt that close consumed:
-     * one already set when the close began, or one that arrived during it, which a client such as
-     * Bigtable's or Spanner's reports only as a close failure caused by an {@link
-     * InterruptedException}.
+     * Closes a client, with its own {@code close()} or with a {@link ClientCloser}, then restores
+     * an interrupt that close consumed: one already set when the close began, or one that arrived
+     * during it, which a client such as Bigtable's or Spanner's reports only as a close failure
+     * caused by an {@link InterruptedException}.
      */
     private static void closeRestoringInterrupt(AutoCloseable client) throws Exception {
         boolean interrupted = Thread.currentThread().isInterrupted();
@@ -629,6 +656,23 @@ public final class GrpcEventLoops {
     }
 
     /**
+     * Closes a client opened with {@link #openAutoCloseable(ClientFactory, ClientCloser)}.
+     *
+     * @param <C> the client type
+     */
+    @FunctionalInterface
+    public interface ClientCloser<C> {
+
+        /**
+         * Closes the client.
+         *
+         * @param client the client
+         * @throws Exception if the close fails
+         */
+        void close(C client) throws Exception;
+    }
+
+    /**
      * Creates a client under a lease that is already open. A client whose settings take a transport
      * provider applies the lease to them; one whose settings already carry {@link
      * #channelConfigurator}, such as Spanner's, has nothing to apply.
@@ -817,13 +861,14 @@ public final class GrpcEventLoops {
 
         /**
          * Closes as {@link #close()} does, but for a client opened with {@link
-         * GrpcEventLoops#openAutoCloseable}, if this call is the one that closes it, the thread's
-         * interrupt is held back while the client closes and is restored before the lease is
-         * released. A caller that waits for a close already under way is not affected: an interrupt
-         * still ends its wait. A gax client opened with {@link GrpcEventLoops#open(ClientFactory)}
-         * closes as {@link #close()} does: its bounded shutdown answers an interrupt with {@code
-         * shutdownNow()}, which skips none of its cleanup, and holding the interrupt back would
-         * only make the close wait out its bounds.
+         * GrpcEventLoops#openAutoCloseable(ClientFactory)} or its form with a {@link ClientCloser},
+         * if this call is the one that closes it, the thread's interrupt is held back while the
+         * client closes and is restored before the lease is released. A caller that waits for a
+         * close already under way is not affected: an interrupt still ends its wait. A gax client
+         * opened with {@link GrpcEventLoops#open(ClientFactory)} closes as {@link #close()} does:
+         * its bounded shutdown answers an interrupt with {@code shutdownNow()}, which skips none of
+         * its cleanup, and holding the interrupt back would only make the close wait out its
+         * bounds.
          *
          * <p>For {@link PerCallClientRunner}: a client library can give up its own close at once on
          * an interrupted thread and skip the rest of its cleanup (Bigtable's data client does), and

@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.auth.Credentials;
 import com.google.cloud.firestore.Firestore;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 
 import javax.annotation.Nullable;
 
@@ -29,17 +30,16 @@ import java.io.IOException;
 import java.io.Serializable;
 
 /**
- * A Firestore client built on first use and closed once, held by a seam implementation of the
- * source: the enumerator's planner and the readers' page reader.
+ * A Firestore client built on first use and closed once, held by the readers' page reader, on the
+ * connector's gRPC event-loop group under a lease this holder releases when it closes (ADR-0208).
  *
  * <p>The Bigtable module's {@code LazyBigtableDataClient} shape. The client is built under this
  * object's monitor, and a close is one-way: a {@link #get(DatabaseDestination)} that arrives after
- * it — a planning call still running on the enumerator's worker thread when the coordinator closes
- * the enumerator, or a fetcher that outlived the reader's close timeout — is refused rather than
- * building a client nothing would close.
+ * it, from a fetcher that outlived the reader's close timeout, is refused rather than building a
+ * client nothing would close.
  *
  * <p>The client and the credentials are {@code transient}: the page reader holding this travels in
- * the job graph, and each runtime component pushes in the credentials it loaded.
+ * the job graph, and the reader pushes in the credentials it loaded.
  */
 @Internal
 public final class LazyFirestoreClient implements Serializable {
@@ -49,7 +49,7 @@ public final class LazyFirestoreClient implements Serializable {
     private final String owner;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
-    @Nullable private transient volatile Firestore client;
+    @Nullable private transient volatile GrpcEventLoops.LeasedClient<Firestore> client;
     @Nullable private transient volatile Credentials credentials;
     private transient volatile boolean closed;
 
@@ -68,28 +68,33 @@ public final class LazyFirestoreClient implements Serializable {
      * Returns the client, building it on first use.
      *
      * @param database the database the client reaches
-     * @return the client, which this holder owns
+     * @return the client, which this holder owns: closing this holder closes it
      * @throws IOException if the holder was closed, or the client cannot be created
      */
     public Firestore get(DatabaseDestination database) throws IOException {
-        Firestore existing = client;
-        if (existing != null) {
-            return existing;
-        }
-        synchronized (this) {
-            if (closed) {
-                throw new IOException(
-                        "The Firestore " + owner + " for " + database + " was closed before use.");
+        GrpcEventLoops.LeasedClient<Firestore> existing = client;
+        if (existing == null) {
+            synchronized (this) {
+                if (closed) {
+                    throw new IOException(
+                            "The Firestore "
+                                    + owner
+                                    + " for "
+                                    + database
+                                    + " was closed before use.");
+                }
+                if (client == null) {
+                    client =
+                            FirestoreClients.open(
+                                    database,
+                                    emulatorEndpoint,
+                                    FirestoreClients.settings(
+                                            database, emulatorEndpoint, credentials, null));
+                }
+                existing = client;
             }
-            if (client == null) {
-                client =
-                        FirestoreClients.open(
-                                database,
-                                FirestoreClients.settings(
-                                        database, emulatorEndpoint, credentials, null));
-            }
-            return client;
         }
+        return existing.client();
     }
 
     /**
@@ -106,12 +111,12 @@ public final class LazyFirestoreClient implements Serializable {
     }
 
     /**
-     * Closes the client if one was built, and refuses later use.
+     * Closes the client if one was built, then releases its lease, and refuses later use.
      *
      * @throws IOException if the client fails to close
      */
     public void close() throws IOException {
-        Firestore toClose;
+        GrpcEventLoops.LeasedClient<Firestore> toClose;
         synchronized (this) {
             closed = true;
             toClose = client;
@@ -123,9 +128,7 @@ public final class LazyFirestoreClient implements Serializable {
         }
         try {
             toClose.close();
-        } catch (IOException e) {
-            throw e;
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             throw new IOException("Failed to close the Firestore " + owner + "'s client.", e);
         }
     }
