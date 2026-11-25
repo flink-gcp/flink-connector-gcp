@@ -22,6 +22,7 @@ import com.google.datastore.v1.PartitionId;
 import com.google.datastore.v1.QueryResultBatch;
 import com.google.datastore.v1.RunQueryRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.datastore.sink.writer.DatastoreDatabaseAccess;
 import io.github.flink.gcp.connector.datastore.sink.writer.DefaultDatastoreDatabaseAccessFactory;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSource;
@@ -32,6 +33,7 @@ import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.ClientQueryPlanner;
 import io.github.flink.gcp.connector.datastore.source.batch.enumerator.QueryPlan;
 import io.github.flink.gcp.connector.datastore.source.batch.reader.ClientQueryPageReader;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.firestore.FirestoreEmulatorContainers;
@@ -45,6 +47,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -85,10 +89,10 @@ class DatastoreEventLoopITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(LEFTOVER_TEARDOWN))
+        assertThat(EventLoopObserver.awaitNoGroup(GrpcEventLoops::isRunning, LEFTOVER_TEARDOWN))
                 .as(
-                        "no %s* thread before the test: an earlier class in this fork left the"
-                                + " group running",
+                        "no lease and no %s* thread before the test: an earlier class in this fork"
+                                + " left the group running",
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         assertThat(awaitNoSharedGroupThread(LEFTOVER_TEARDOWN))
@@ -143,7 +147,8 @@ class DatastoreEventLoopITCase {
 
     /**
      * The planner runs on the JobManager, so its client closes when the plan returns, before the
-     * enumerator that owns the planner closes it.
+     * enumerator that owns the planner closes it. The plan must show a group thread while a lease
+     * is open, and hold no lease the moment it returns ({@link EventLoopObserver}).
      */
     @ParameterizedTest(name = "endpoint prefix \"{0}\"")
     @ValueSource(strings = {"", "dns:///", "http://"})
@@ -158,12 +163,26 @@ class DatastoreEventLoopITCase {
                                         .splitCount(1)
                                         .build())
                         .getConfig();
+        AtomicReference<QueryPlan> planned = new AtomicReference<>();
+        AtomicBoolean heldAtReturn = new AtomicBoolean();
         try (ClientQueryPlanner planner = new ClientQueryPlanner(endpoint(prefix))) {
-            QueryPlan plan = planner.plan(config, 1);
+            assertThat(
+                            EventLoopObserver.sawGroupDuring(
+                                    GrpcEventLoops::isRunning,
+                                    () -> {
+                                        QueryPlan plan = planner.plan(config, 1);
+                                        heldAtReturn.set(GrpcEventLoops.isRunning());
+                                        planned.set(plan);
+                                    }))
+                    .as("a %s* thread while the plan ran", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
 
-            assertThat(plan.getRequests()).hasSize(1);
+            assertThat(planned.get().getRequests()).hasSize(1);
             // Nothing else holds a lease, so the plan's own close of its client stopped the group,
             // before the planner closed.
+            assertThat(heldAtReturn.get())
+                    .as("the planner's client was still holding the group when the plan returned")
+                    .isFalse();
             assertGroupStopped("the planner's client, once the plan returned");
         }
     }

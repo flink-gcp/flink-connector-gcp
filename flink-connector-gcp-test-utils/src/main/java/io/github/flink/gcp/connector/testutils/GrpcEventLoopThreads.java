@@ -24,13 +24,24 @@ import java.time.Duration;
  * Observes the threads of the connectors' own gRPC event-loop group ({@code
  * base.rpc.GrpcEventLoops}, ADR-0208) by name.
  *
- * <p>The group starts a thread only when a channel registers on it, so a live thread while a client
- * is open shows that the client's channels run on the group rather than on gRPC's shared one, and
- * no thread after it closed shows that its close stopped the group. Both readings assume that no
- * other lease is open in the JVM. Surefire runs one test class at a time in a fork, but it reuses
- * forks, so a class that leaked a lease would leave the group running into the next one: a test
- * checks {@link #awaitNone()} before it opens a client, so that such a leak fails there rather than
- * at the close it would otherwise be blamed on.
+ * <p>The group starts a thread when a channel registers on it, so a live thread while a client is
+ * open shows that a channel of the client's runs on the group rather than on gRPC's shared one (not
+ * that every one does), and no thread after it closed shows that its close stopped the group. The
+ * release of the last lease starts threads too: the group's shutdown starts every event loop that
+ * never ran in order to stop it, so a lease opened and released around a client whose channels ran
+ * on gRPC's group still shows threads for a moment, and finding none afterwards does not show the
+ * client used the group. An operation that opens and closes its own client is therefore observed
+ * through {@link EventLoopObserver}, which counts a thread only while a lease is open. These
+ * readings assume that no other lease is open in the JVM, that no pin holds the group (a pinned
+ * group keeps its threads with no lease open), and that no earlier group is still shutting down:
+ * its release detaches it first, so a group none of whose event loops ever ran has, for a moment,
+ * neither a lease nor a thread, and the threads its shutdown then starts would read as the next
+ * lease's. Surefire runs one test class at a time in a fork, but it reuses forks, so a class that
+ * leaked a lease would leave the group running into the next one: a test checks {@link
+ * EventLoopObserver#awaitNoGroup(java.util.function.BooleanSupplier, Duration)} before it opens a
+ * client, so that such a leak fails there rather than at the close it would otherwise be blamed on.
+ * {@link #awaitNone()} alone misses a leaked lease whose client never registered a channel, since
+ * that lease has no thread.
  */
 @Internal
 public final class GrpcEventLoopThreads {

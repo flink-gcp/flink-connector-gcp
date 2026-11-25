@@ -18,17 +18,20 @@ package io.github.flink.gcp.connector.pubsub.sink.writer;
 
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,10 +61,10 @@ class PubSubSinkEventLoopITCase extends AbstractPubSubEmulatorITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(LEFTOVER_TEARDOWN))
+        assertThat(EventLoopObserver.awaitNoGroup(GrpcEventLoops::isRunning, LEFTOVER_TEARDOWN))
                 .as(
-                        "no %s* thread before the test: an earlier class in this fork left the"
-                                + " group running",
+                        "no lease and no %s* thread before the test: an earlier class in this fork"
+                                + " left the group running",
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
     }
@@ -98,14 +101,32 @@ class PubSubSinkEventLoopITCase extends AbstractPubSubEmulatorITCase {
                 .containsExactly("event-loop");
     }
 
+    /**
+     * The admin's client runs on the group and closes when the creation returns. The call must show
+     * a group thread while a lease is open, since finding none afterwards alone would pass for a
+     * client whose channels ran on gRPC's group too ({@link EventLoopObserver}).
+     */
     @Test
-    void theTopicAdminClosesItsClientWhenTheCreationReturns() throws Exception {
+    void theTopicAdminRunsOnTheGroupAndClosesItsClientWhenTheCreationReturns() throws Exception {
         TopicDestination destination = TopicDestination.of(PROJECT, "event-loop-created");
 
         try (TopicAdmin admin = newTopicAdmin()) {
-            admin.createTopic(destination, null);
+            AtomicBoolean heldAtReturn = new AtomicBoolean();
+            assertThat(
+                            EventLoopObserver.sawGroupDuring(
+                                    GrpcEventLoops::isRunning,
+                                    () -> {
+                                        admin.createTopic(destination, null);
+                                        heldAtReturn.set(GrpcEventLoops.isRunning());
+                                    }))
+                    .as("a %s* thread while the creation ran", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
 
-            // Nothing else holds a lease, so the client's close is what stopped the group.
+            // Nothing else holds a lease, so the client's close, before the creation returned, is
+            // what stopped the group.
+            assertThat(heldAtReturn.get())
+                    .as("the admin's client was still holding the group when the creation returned")
+                    .isFalse();
             assertThat(GrpcEventLoopThreads.awaitNone())
                     .as("no %s* thread once the creation returned", GrpcEventLoopThreads.PREFIX)
                     .isTrue();

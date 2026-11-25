@@ -19,18 +19,22 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
+import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionInfo;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders.fetchUntil;
 import static io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders.payloads;
@@ -61,10 +65,10 @@ class PubSubSourceEventLoopITCase extends AbstractPubSubSourceEmulatorITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(LEFTOVER_TEARDOWN))
+        assertThat(EventLoopObserver.awaitNoGroup(GrpcEventLoops::isRunning, LEFTOVER_TEARDOWN))
                 .as(
-                        "no %s* thread before the test: an earlier class in this fork left the"
-                                + " group running",
+                        "no lease and no %s* thread before the test: an earlier class in this fork"
+                                + " left the group running",
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
     }
@@ -116,15 +120,34 @@ class PubSubSourceEventLoopITCase extends AbstractPubSubSourceEmulatorITCase {
         }
     }
 
+    /**
+     * The admin's client runs on the group and closes when each call returns. The call must show a
+     * group thread while a lease is open, since finding none afterwards alone would pass for a
+     * client whose channels ran on gRPC's group too ({@link EventLoopObserver}).
+     */
     @Test
-    void theSubscriptionAdminClosesItsClientWhenEachCallReturns() throws Exception {
+    void theSubscriptionAdminRunsOnTheGroupAndClosesItsClientWhenEachCallReturns()
+            throws Exception {
         SubscriptionDestination subscription = createTopicAndSubscription("event-loop-admin", 10);
 
         try (SubscriptionAdmin admin = newSubscriptionAdmin()) {
-            assertThat(admin.describe(subscription)).isNotNull();
+            AtomicBoolean heldAtReturn = new AtomicBoolean();
+            assertThat(
+                            EventLoopObserver.sawGroupDuring(
+                                    GrpcEventLoops::isRunning,
+                                    () -> {
+                                        SubscriptionInfo info = admin.describe(subscription);
+                                        heldAtReturn.set(GrpcEventLoops.isRunning());
+                                        assertThat(info).isNotNull();
+                                    }))
+                    .as("a %s* thread while the call ran", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
 
             // The admin is still open, as the enumerator's is until the job ends; nothing holds a
             // lease once the call has returned.
+            assertThat(heldAtReturn.get())
+                    .as("the admin's client was still holding the group when the call returned")
+                    .isFalse();
             assertThat(GrpcEventLoopThreads.awaitNone())
                     .as("no %s* thread once the call returned", GrpcEventLoopThreads.PREFIX)
                     .isTrue();

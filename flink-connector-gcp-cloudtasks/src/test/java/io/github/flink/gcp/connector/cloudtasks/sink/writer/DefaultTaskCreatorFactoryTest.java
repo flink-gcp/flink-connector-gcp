@@ -195,8 +195,9 @@ class DefaultTaskCreatorFactoryTest {
 
     /**
      * Builds a channel through the provider's configurator, connects it to a local socket and
-     * checks that a thread of the connector's group serves it: the group starts a thread only when
-     * a channel registers on it, and gRPC's own threads are named otherwise.
+     * checks that a thread of the connector's group serves it. The caller holds a lease, so the
+     * group starts a thread only when a channel registers on it rather than to shut down, and
+     * gRPC's own threads are named otherwise.
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static void assertBuildsChannelsOnTheGroup(InstantiatingGrpcChannelProvider provider)

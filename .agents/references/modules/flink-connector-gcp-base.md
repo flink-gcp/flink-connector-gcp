@@ -332,7 +332,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
   state uses package-private `pin` with test-utils' `FakeUserCodeClassLoader` and runs its
   `release()` in a `finally`; `StubWriterInitContext` hands out an empty child loader, so a
   writer's pin is a no-op there. A module test observing the group's threads uses test-utils'
-  `GrpcEventLoopThreads`. The last release waits up to 11 s for the group whatever the
+  `GrpcEventLoopThreads`, and a test of a client opened and closed within one call also asserts
+  `EventLoopObserver.sawGroupDuring` (#2303). The last release waits up to 11 s for the group
+  whatever the
   interrupt says; only a thread inside `GrpcEventLoops.interruptibleReleases()` stops after the
   first `GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS` (1 s, #2269; why it is opt-in: `docs/adr/0208`).
   Open that scope only where Flink stops the thread by interrupt with a deadline (the full lookup

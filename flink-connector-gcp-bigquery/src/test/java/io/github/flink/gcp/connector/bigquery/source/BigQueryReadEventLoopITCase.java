@@ -26,9 +26,13 @@ import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,9 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>See {@code BigQueryWriteEventLoopITCase} for why that is what keeps a job-jar deployment's
  * TaskManager alive under {@code cluster.uncaught-exception-handling: FAIL}. The session creator
  * runs on the JobManager, whose class loader for the job closes the same way. The two clients are
- * tested apart, so that one of them leaving the group is not hidden by the other's threads; that
- * the session client's settings carry the group is {@code BigQueryReadClientsTest}'s to show, since
- * the creator closes its client before a test could look.
+ * tested apart, so that one of them leaving the group is not hidden by the other's threads. The
+ * emulator arms are the ones a test can reach; that the production session client's settings carry
+ * the group is {@code BigQueryReadClientsTest}'s to show.
  */
 class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
 
@@ -61,19 +65,36 @@ class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
      * The session creator closes its client, and with it the group, as soon as the session exists —
      * before the creator itself is closed. On the JobManager Flink closes the enumerator only after
      * releasing the job's class loader, so a client still open then would tear the group down on a
-     * closed loader.
+     * closed loader. The creation must show a group thread while a lease is open, since finding no
+     * group afterwards alone would pass for a client whose channels ran on gRPC's group too ({@link
+     * EventLoopObserver}).
      */
     @Test
-    void theSessionCreatorLeavesNoGroupOnceTheSessionExists() throws Exception {
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread before the creator opens", GrpcEventLoopThreads.PREFIX)
+    void theSessionCreatorRunsOnTheGroupAndLeavesNoGroupOnceTheSessionExists() throws Exception {
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(10)))
+                .as(
+                        "no lease and no %s* thread before the creator opens",
+                        GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         try (ReadClientSessionCreator creator = new ReadClientSessionCreator(endpoint())) {
-            assertThat(creator.create(request()).getStreamsCount()).isPositive();
+            AtomicBoolean heldAtReturn = new AtomicBoolean();
+            assertThat(
+                            EventLoopObserver.sawGroupDuring(
+                                    GrpcEventLoops::isRunning,
+                                    () -> {
+                                        ReadSession session = creator.create(request());
+                                        // Read the moment create() returns, not polled: a client
+                                        // closed a moment later would already be too late on a
+                                        // JobManager.
+                                        heldAtReturn.set(GrpcEventLoops.isRunning());
+                                        assertThat(session.getStreamsCount()).isPositive();
+                                    }))
+                    .as("a %s* thread while the session was created", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
 
-            // Checked the moment create() returns, not polled: a client closed a moment later
-            // would already be too late on a JobManager.
-            assertThat(GrpcEventLoops.isRunning())
+            assertThat(heldAtReturn.get())
                     .as("the session's client was still holding the group when create() returned")
                     .isFalse();
             assertThat(GrpcEventLoopThreads.awaitNone())

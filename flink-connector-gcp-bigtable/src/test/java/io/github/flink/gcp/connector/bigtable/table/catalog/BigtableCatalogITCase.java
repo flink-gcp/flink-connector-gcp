@@ -26,8 +26,8 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
-import io.github.flink.gcp.connector.bigtable.EventLoopObserver;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -151,7 +151,9 @@ class BigtableCatalogITCase extends AbstractBigtableEmulatorITCase {
      */
     @Test
     void holdsItsClientOnTheGroupUntilItCloses() throws Exception {
-        assertThat(EventLoopObserver.awaitNoGroup(Duration.ofSeconds(60)))
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
                 .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         createTable("held", "cf");
@@ -168,7 +170,9 @@ class BigtableCatalogITCase extends AbstractBigtableEmulatorITCase {
 
         table.getCatalog("bt").orElseThrow().close();
 
-        assertThat(EventLoopObserver.awaitNoGroup(Duration.ofSeconds(10)))
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(10)))
                 .as(
                         "no lease and no %s* thread once the catalog closed",
                         GrpcEventLoopThreads.PREFIX)
