@@ -208,7 +208,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   whose `build()` drops the event-loop configurator when an emulator host is set — `open` refuses
   such settings. **A JobManager-side client** (the planner's, the Change Streams coordinator's)
   closes when its call returns, and runs that call in a cancellable gRPC `Context` that its
-  `close()` cancels first; the catalog keeps one client until it closes.
+  `close()` cancels first; the catalog keeps one client until it closes. The coordinator's
+  `close()` also covers a client still being created: the creation is recorded under the monitor
+  before `create()`, `close()` waits for it, and a client that arrives after `close()` is closed
+  outside the monitor (#2305). Do not cancel that creation: a failed or cancelled emulator check
+  leaves the library's stubs open (#2306). The planner differs: its creation runs inside the
+  context its `close()` cancels, so a close during its emulator check cancels the check.
 - **`SpannerClients.open` also lets the client library's two static executors drop their idle
   threads** (`SpannerStaticExecutors`, `docs/adr/0210`, #2296): grpc-gcp's
   `SHARED_BACKGROUND_SERVICE` and the client's `MultiplexedSessionDatabaseClient.MAINTAINER_SERVICE`

@@ -51,6 +51,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -884,17 +886,216 @@ class SpannerChangeStreamSplitEnumeratorTest {
     }
 
     @Test
-    void closeBeforeInitializationMakesTheLateClientCloseItself() throws Exception {
+    void aCloseBeforeInitializationLeavesNoClientToCreate() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
-        ScriptedClient client = new ScriptedClient();
-        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        AtomicInteger creations = new AtomicInteger();
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        clientMetrics -> {
+                            creations.incrementAndGet();
+                            return new ScriptedClient();
+                        },
+                        null);
 
         enumerator.start();
         enumerator.close();
         context.runAsyncCalls();
 
-        assertThat(client.closeCalls).isEqualTo(1);
+        assertThat(creations).hasValue(0);
         assertThat(context.assignedSplits(0)).isEmpty();
+    }
+
+    @Test
+    void aCloseWhileTheClientIsBeingCreatedReturnsOnlyOnceTheLateClientIsClosed() throws Exception {
+        // Before #2305 the close found no client and returned at once, and the client created
+        // afterwards was closed on the coordinator's worker after the enumerator's close had
+        // returned, when Flink may already have released the job's class loader (docs/adr/0208).
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        CountDownLatch creationEntered = new CountDownLatch(1);
+        CountDownLatch creationGate = new CountDownLatch(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        clientMetrics -> {
+                            creationEntered.countDown();
+                            creationGate.await();
+                            return client;
+                        },
+                        null);
+        enumerator.start();
+        AtomicReference<Throwable> initializationFailure = new AtomicReference<>();
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        AtomicInteger clientClosesWhenCloseReturned = new AtomicInteger(-1);
+        Thread initializing =
+                new Thread(
+                        () -> initializationFailure.set(catchThrowable(context::runAsyncCalls)),
+                        "init");
+        Thread closing =
+                new Thread(
+                        () -> {
+                            closeFailure.set(catchThrowable(enumerator::close));
+                            clientClosesWhenCloseReturned.set(client.closeCalls);
+                        },
+                        "close");
+        try {
+            initializing.start();
+            assertThat(creationEntered.await(10, TimeUnit.SECONDS))
+                    .as("initialization began creating the client")
+                    .isTrue();
+
+            closing.start();
+            assertThat(awaitParkedOrEnded(closing))
+                    .as("the enumerator's close waits for the client being created")
+                    .isEqualTo(Thread.State.WAITING);
+        } finally {
+            creationGate.countDown();
+            initializing.join(10_000);
+            closing.join(10_000);
+        }
+        assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+        assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+        assertThat(initializationFailure.get()).isNull();
+        assertThat(closeFailure.get()).isNull();
+        assertThat(clientClosesWhenCloseReturned)
+                .as("client closes when the enumerator's close returned")
+                .hasValue(1);
+        assertThat(client.initializeCalls).isZero();
+        assertThat(context.assignedSplits(0)).isEmpty();
+    }
+
+    @Test
+    void aCloseWhileTheClientsCreationFailsReturnsOnceTheCreationHasFailed() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        CountDownLatch creationEntered = new CountDownLatch(1);
+        CountDownLatch creationGate = new CountDownLatch(1);
+        AtomicBoolean creationFailed = new AtomicBoolean();
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        clientMetrics -> {
+                            creationEntered.countDown();
+                            creationGate.await();
+                            creationFailed.set(true);
+                            throw new java.io.IOException("no emulator is listening");
+                        },
+                        null);
+        enumerator.start();
+        AtomicReference<Throwable> initializationFailure = new AtomicReference<>();
+        Thread initializing =
+                new Thread(
+                        () -> initializationFailure.set(catchThrowable(context::runAsyncCalls)),
+                        "init");
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        AtomicReference<Boolean> failedWhenCloseReturned = new AtomicReference<>();
+        Thread closing =
+                new Thread(
+                        () -> {
+                            closeFailure.set(catchThrowable(enumerator::close));
+                            failedWhenCloseReturned.set(creationFailed.get());
+                        },
+                        "close");
+        try {
+            initializing.start();
+            assertThat(creationEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            closing.start();
+            assertThat(awaitParkedOrEnded(closing))
+                    .as("the enumerator's close waits for the client being created")
+                    .isEqualTo(Thread.State.WAITING);
+        } finally {
+            creationGate.countDown();
+            initializing.join(10_000);
+            closing.join(10_000);
+        }
+        assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+        assertThat(initializationFailure.get())
+                .as("the closed enumerator dropped the creation failure")
+                .isNull();
+        assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+        assertThat(closeFailure.get()).isNull();
+        assertThat(failedWhenCloseReturned.get())
+                .as("the creation had failed when the enumerator's close returned")
+                .isTrue();
+    }
+
+    @Test
+    void aSecondCloseWaitsForALateClientsCloseInterruptiblyRatherThanOnTheMonitor()
+            throws Exception {
+        // Before #2305 a client created after the enumerator closed was closed under the
+        // enumerator's monitor, so a further close() was blocked on the monitor, which no
+        // interrupt ends, for as long as the client's shutdown took. Flink interrupts a closing
+        // coordinator that overruns its close timeout.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        CountDownLatch creationEntered = new CountDownLatch(1);
+        CountDownLatch creationGate = new CountDownLatch(1);
+        CountDownLatch clientCloseEntered = new CountDownLatch(1);
+        CountDownLatch clientCloseGate = new CountDownLatch(1);
+        client.duringClose =
+                () -> {
+                    clientCloseEntered.countDown();
+                    clientCloseGate.await();
+                };
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        clientMetrics -> {
+                            creationEntered.countDown();
+                            creationGate.await();
+                            return client;
+                        },
+                        null);
+        enumerator.start();
+        AtomicReference<Throwable> secondCloseFailure = new AtomicReference<>();
+        AtomicReference<Boolean> secondCloseInterrupted = new AtomicReference<>();
+        AtomicInteger clientClosesWhenSecondCloseReturned = new AtomicInteger(-1);
+        Thread initializing = new Thread(context::runAsyncCalls, "init");
+        Thread firstClose = new Thread(() -> catchThrowable(enumerator::close), "close-1");
+        Thread secondClose =
+                new Thread(
+                        () -> {
+                            secondCloseFailure.set(catchThrowable(enumerator::close));
+                            secondCloseInterrupted.set(Thread.currentThread().isInterrupted());
+                            clientClosesWhenSecondCloseReturned.set(client.closeCalls);
+                        },
+                        "close-2");
+        try {
+            initializing.start();
+            assertThat(creationEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            firstClose.start();
+            // The first close has marked the enumerator closed once it parks, or, before #2305,
+            // once it has returned; parked anywhere else, the client could be installed instead.
+            assertThat(awaitParkedOrEnded(firstClose))
+                    .isIn(Thread.State.WAITING, Thread.State.TERMINATED);
+            creationGate.countDown();
+            assertThat(clientCloseEntered.await(10, TimeUnit.SECONDS))
+                    .as("the late client's close began")
+                    .isTrue();
+
+            secondClose.start();
+            assertThat(awaitParkedOrEnded(secondClose))
+                    .as("where the second close waits for the late client's close")
+                    .isEqualTo(Thread.State.WAITING);
+            secondClose.interrupt();
+            secondClose.join(10_000);
+            assertThat(secondClose.isAlive()).as("the interrupt ended the second close").isFalse();
+        } finally {
+            creationGate.countDown();
+            clientCloseGate.countDown();
+            initializing.join(10_000);
+            firstClose.join(10_000);
+            secondClose.join(10_000);
+        }
+        assertThat(secondCloseFailure.get()).isNull();
+        assertThat(secondCloseInterrupted.get()).as("the interrupt is restored").isTrue();
+        assertThat(clientClosesWhenSecondCloseReturned)
+                .as("the interrupt ended the wait before the client's close finished")
+                .hasValue(0);
+        assertThat(firstClose.isAlive()).as("the first close ended").isFalse();
+        assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+        assertThat(client.initializeCalls).as("the client was never installed").isZero();
+        assertThat(client.closeCalls).isOne();
     }
 
     @Test
@@ -960,14 +1161,9 @@ class SpannerChangeStreamSplitEnumeratorTest {
             closing.start();
             // The only place the closing thread can park while the gate is shut is the wait for
             // the client's release.
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-            while (closing.getState() != Thread.State.WAITING && closing.isAlive()) {
-                assertThat(System.nanoTime()).as("the close parked in time").isLessThan(deadline);
-                Thread.onSpinWait();
-            }
-            assertThat(closing.isAlive())
+            assertThat(awaitParkedOrEnded(closing))
                     .as("the enumerator's close waits for the client's; failure: %s", closeFailure)
-                    .isTrue();
+                    .isEqualTo(Thread.State.WAITING);
         } finally {
             closeGate.countDown();
             initializing.join(10_000);
@@ -2495,13 +2691,39 @@ class SpannerChangeStreamSplitEnumeratorTest {
         return context;
     }
 
+    /**
+     * Waits until a thread parks waiting, is blocked on a monitor, or has ended, and says which.
+     */
+    private static Thread.State awaitParkedOrEnded(Thread thread) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (true) {
+            Thread.State state = thread.getState();
+            if (state == Thread.State.WAITING
+                    || state == Thread.State.BLOCKED
+                    || state == Thread.State.TERMINATED) {
+                return state;
+            }
+            assertThat(System.nanoTime())
+                    .as("%s parked or ended in time", thread.getName())
+                    .isLessThan(deadline);
+            Thread.onSpinWait();
+        }
+    }
+
     private static SpannerChangeStreamSplitEnumerator enumerator(
             FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ScriptedClient client,
             SpannerChangeStreamEnumeratorState restored) {
+        return enumerator(context, clientMetrics -> client, restored);
+    }
+
+    private static SpannerChangeStreamSplitEnumerator enumerator(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            SpannerChangeStreamCoordinatorClientFactory clientFactory,
+            SpannerChangeStreamEnumeratorState restored) {
         return new SpannerChangeStreamSplitEnumerator(
                 context,
-                clientMetrics -> client,
+                clientFactory,
                 StartPosition.latest(),
                 null,
                 null,

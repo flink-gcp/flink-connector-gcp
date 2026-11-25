@@ -259,9 +259,11 @@ public final class SpannerChangeStreamSplitEnumerator
     @Nullable private SpannerChangeStreamCoordinatorClient client;
 
     /**
-     * Counted down once {@link #initialize()} has closed the client it installed, while it is
-     * closing it; {@link #close()} waits for it, so that the client's lease is released when the
-     * enumerator's close returns.
+     * Counted down once {@link #initialize()} no longer holds a client out of {@link #close()}'s
+     * reach: one it is creating (which ends when it is installed, closed because the enumerator
+     * closed first, or not created at all) or one it is closing after initialization. A {@link
+     * #close()} that finds no installed client waits for it, so that such a client's lease is
+     * released when that close returns, unless the closing thread is interrupted.
      */
     @Nullable private CountDownLatch clientReleased;
 
@@ -381,11 +383,7 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     private Initialization initialize() throws Exception {
-        SpannerChangeStreamCoordinatorClient created = clientFactory.create(clientMetrics);
-        if (!installClient(created)) {
-            throw new IllegalStateException(
-                    "Spanner Change Streams enumerator was already closed.");
-        }
+        SpannerChangeStreamCoordinatorClient created = createClient();
         // On the JobManager a client closes when the call it was opened for returns, not when the
         // enumerator closes: Flink closes the enumerator without waiting and in practice after it
         // releases the job's class loader (docs/adr/0208).
@@ -515,14 +513,42 @@ public final class SpannerChangeStreamSplitEnumerator
         }
     }
 
-    private synchronized boolean installClient(SpannerChangeStreamCoordinatorClient created)
-            throws Exception {
-        if (closed) {
-            created.close();
-            return false;
+    /**
+     * Creates the client and installs it where {@link #close()} takes it from, unless the
+     * enumerator closed first.
+     *
+     * <p>The creation is recorded under the monitor before it starts and runs outside it, as the
+     * batch planner's does: a {@link #close()} that lands meanwhile has no client to close, so it
+     * waits for the creation to end instead, and the client then created is closed here, outside
+     * the monitor, before that close returns unless its thread is interrupted. The creation is not
+     * cancelled (docs/adr/0208, #2306).
+     */
+    private SpannerChangeStreamCoordinatorClient createClient() throws Exception {
+        CountDownLatch creating = new CountDownLatch(1);
+        synchronized (this) {
+            if (closed) {
+                throw closedDuringInitialization();
+            }
+            clientReleased = creating;
         }
-        client = created;
-        return true;
+        try {
+            SpannerChangeStreamCoordinatorClient created = clientFactory.create(clientMetrics);
+            synchronized (this) {
+                if (!closed) {
+                    client = created;
+                    return created;
+                }
+            }
+            // Outside the monitor, so that a further close() waits for this one interruptibly.
+            created.close();
+            throw closedDuringInitialization();
+        } finally {
+            creating.countDown();
+        }
+    }
+
+    private static IllegalStateException closedDuringInitialization() {
+        return new IllegalStateException("Spanner Change Streams enumerator was already closed.");
     }
 
     /**
@@ -1456,18 +1482,18 @@ public final class SpannerChangeStreamSplitEnumerator
     @Override
     public void close() throws IOException {
         SpannerChangeStreamCoordinatorClient closing;
-        CountDownLatch released;
+        CountDownLatch pending;
         synchronized (this) {
             closed = true;
             closing = client;
             client = null;
-            released = clientReleased;
+            pending = clientReleased;
         }
-        // A client initialize() is closing is released before this returns; an interrupt ends the
-        // wait early and is restored.
-        if (released != null) {
+        // A client initialize() is creating or closing is released before this returns; an
+        // interrupt ends the wait early and is restored. One installed is closed here instead.
+        if (pending != null) {
             try {
-                released.await();
+                pending.await();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

@@ -29,6 +29,7 @@ limitations under the License.
   [#2268](https://github.com/flink-gcp/flink-connector-gcp/issues/2268),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269),
   [#2282](https://github.com/flink-gcp/flink-connector-gcp/issues/2282),
+  [#2305](https://github.com/flink-gcp/flink-connector-gcp/issues/2305),
   [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312),
   [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322),
   [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329)
@@ -425,6 +426,16 @@ releases the group's last lease shuts it down and waits for its threads.**
   included, has been resolved (at once if it failed), and its own `close()` waits for that
   release unless the closing thread is interrupted: a `latest` start resolved after the close
   would skip what was committed meanwhile.
+  A `close()` that lands while the client is still being created waits for the creation, and
+  the client created then is closed before that `close()` returns, outside the enumerator's
+  monitor, so a further `close()` waits for it interruptibly too (refined 2026-11-25, #2305).
+  The creation is not cancelled: against the service it waits for no Spanner call (it starts
+  the database client's session creation in the background), and against an emulator the one
+  call it waits for, the client library's check that an emulator is listening, has a 10 s
+  timeout of its own, while a check that fails, as a cancelled one would, leaves the stubs the
+  library built before it open (#2306).
+  That cheap creation is why the coordinator waits where `PerCallClientRunner`, above, does not:
+  building a Bigtable data client waits for calls bounded at a minute each.
   The end of a bounded read is never published while the client is open: initialization closes
   the client before it returns, and if the enumerator's `close()` took the client over first, the
   closed enumerator publishes nothing.
