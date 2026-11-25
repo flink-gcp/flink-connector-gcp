@@ -368,6 +368,21 @@ final class StreamingPullSubscriber implements PullSubscriber {
      * <p>Package-private rather than private so the buffer accounting can be driven without a
      * client: this is the client library's callback, and the client a test hands the seam
      * constructor never calls it.
+     *
+     * <p><b>A redelivery whose superseded handle fails to nack is not admitted</b> (#2326). The
+     * failure leaves this callback as itself, and the delivery's reservation goes back to the
+     * budget first, so the budget again matches the deque. Nothing waits on the way out, and the
+     * deque gains nothing, so the order of what it holds is unchanged. The new handle stays in the
+     * tracker in the superseded one's place, and is not rolled back: the copy it superseded is
+     * still pending, buffered here or already drained, and the record emitter settles that copy
+     * through whichever handle the tracker then holds, by staging it or by acknowledging or nacking
+     * it at once. For an {@code Exception}, the client library also tries to settle the new
+     * delivery as failed once this callback has thrown, and whichever settles the handle's reply
+     * first, the library or the connector, wins. For an {@code Error}, the library does not catch
+     * it, and the tracker's handle is what settles the delivery. No ordinary nack failure has been
+     * demonstrated for the production handles; the one path found, reading google-cloud-pubsub
+     * 1.161.0 and Guava 33.7.2, is an {@code Error} that a listener of the reply future throws,
+     * which Guava lets propagate.
      */
     @VisibleForTesting
     void receiveMessage(PubsubMessage message, AckHandle ackHandle) {
@@ -386,41 +401,36 @@ final class StreamingPullSubscriber implements PullSubscriber {
             // release that reservation as part of its ordinary teardown.
             admission = bufferBudget.tryReserve(splitId, messageBytes);
             if (admission.isAdmitted()) {
-                ackTracker.addPendingAck(splitId, message.getMessageId(), ackHandle);
+                try {
+                    ackTracker.addPendingAck(splitId, message.getMessageId(), ackHandle);
+                } catch (Throwable failure) {
+                    // Nacking a superseded handle threw, so this delivery never reaches the
+                    // deque, and nothing that releases from the deque would return its
+                    // reservation (#2326). Returned under this monitor, as pullMessages releases.
+                    Closers.closeAllSuppressing(
+                            failure, () -> bufferBudget.release(1, messageBytes));
+                    throw failure;
+                }
                 messages.addLast(message);
                 bufferedBytes += messageBytes;
             }
         }
         if (!admission.isAdmitted()) {
-            RuntimeException firstFailure = null;
+            // A list for the same reason shutdown() has one: a step that throws, an Error
+            // included, must not skip the nack or the wake-up after it. The order stays: stop
+            // intake before releasing this delivery's permit, so an immediate redelivery cannot
+            // race ahead of the asynchronous stop and form a live NACK loop.
             try {
-                // Stop intake before releasing this delivery's permit, so an immediate
-                // redelivery cannot race ahead of the asynchronous stop and form a live NACK
-                // loop.
-                admission.respond(this::requestStop);
-            } catch (RuntimeException failure) {
-                firstFailure = failure;
-            }
-            try {
-                ackTracker.nackReceived(ackHandle);
-            } catch (RuntimeException failure) {
-                if (firstFailure == null) {
-                    firstFailure = failure;
-                } else {
-                    firstFailure.addSuppressed(failure);
-                }
-            }
-            try {
-                dataAvailableSignal.run();
-            } catch (RuntimeException failure) {
-                if (firstFailure == null) {
-                    firstFailure = failure;
-                } else {
-                    firstFailure.addSuppressed(failure);
-                }
-            }
-            if (firstFailure != null) {
-                throw firstFailure;
+                Closers.closeAll(
+                        () -> admission.respond(this::requestStop),
+                        () -> ackTracker.nackReceived(ackHandle),
+                        dataAvailableSignal::run);
+            } catch (Exception e) {
+                // No step declares a checked exception, so this is the unchecked one closeAll
+                // collected first. An Error that came first leaves closeAll as itself and never
+                // reaches here; one after an exception arrives suppressed onto it, the bound
+                // Closers documents.
+                ExceptionUtils.rethrow(e);
             }
             return;
         }

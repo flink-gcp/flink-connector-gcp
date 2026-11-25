@@ -59,6 +59,9 @@ public interface AckTracker {
      * id is already pending on the split — a redelivery whose predecessor was never settled — the
      * superseded acknowledgement is nacked so the client library releases its flow-control permit.
      *
+     * <p>That nack runs after the given handle is recorded, so when it throws, the failure
+     * propagates with the given handle already in the superseded one's place.
+     *
      * @param splitId the split the message was received on
      * @param messageId the Pub/Sub message id
      * @param ackHandle the handle settling this delivery
@@ -133,6 +136,9 @@ public interface AckTracker {
     /**
      * Nacks and forgets every message of the given split, in all states. Pub/Sub redelivers them
      * immediately rather than after the acknowledgement deadline expires.
+     *
+     * <p>A nack that throws does not stop the rest: every message is nacked first, and then the
+     * first failure is thrown, with any later one suppressed onto it.
      *
      * @param splitId the split to release
      */

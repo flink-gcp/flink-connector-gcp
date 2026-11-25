@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests the callback-thread boundary that remains active when Flink stops polling downstream. */
 class SubscriberBufferBudgetTest {
@@ -388,6 +389,28 @@ class SubscriberBufferBudgetTest {
         budget.tryReserve("split-a", 4).respond();
 
         assertThat(budget.parkingRequested()).isFalse();
+        assertThat(events).hasSize(1);
+    }
+
+    @Test
+    void aStopThatThrowsAnErrorStillLetsTheOtherStopsRunAndTheFailureBeReported() {
+        // #2326: the response is latched once, so a stop whose Error skipped the report left the
+        // coordinator never told, and later refusals carry no event.
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        List<String> stops = new ArrayList<>();
+        AssertionError stopFailure = new AssertionError("a stop failed");
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, 10, events::add);
+        budget.register(
+                "split-a",
+                () -> {
+                    throw stopFailure;
+                });
+        budget.register("split-b", () -> stops.add("split-b"));
+        assertThat(budget.tryReserve("split-b", 4).isAdmitted()).isTrue();
+
+        assertThatThrownBy(() -> budget.tryReserve("split-b", 4).respond()).isSameAs(stopFailure);
+
+        assertThat(stops).containsExactly("split-b");
         assertThat(events).hasSize(1);
     }
 
