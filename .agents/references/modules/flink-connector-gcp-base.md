@@ -276,21 +276,19 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `TopicCreateOptionsMapper`, `PublisherOptionsMapper`, `SubscriptionCreateOptionsMapper`,
   `TableCreateOptionsMapper` — runs after the parse and is pre-empted by it, which `docs/adr/0127`
   records rather than fixes.
-- `EmulatorChannels` is split **by who owns the channel**, not by settings type (`docs/adr/0081`):
-  `plaintextProvider` where the client closes its own channel, `openLeasedPlaintextChannel` +
-  `fixedProvider` where the caller does — and the ownership difference is load-bearing, so never
-  unify them. A new emulator arm takes the caller-owned route: `plaintextProvider` hands the target
-  to gax, which cannot dial a `dns:///` target and turns TLS under a client certificate
-  (`docs/adr/0208`); it stays only for Datastore's arm until #2266. **Always
-  pass an API's own `defaultGrpcTransportProviderBuilder()`** (or the provider the SDK's builder
-  uses), never a bare one, to either: the API's defaults include the inbound message limit, and
+- `EmulatorChannels` opens **caller-owned emulator channels** (`docs/adr/0081`):
+  `openLeasedPlaintextChannel` + `fixedProvider`, or `openLeasedClient` for a gax client. An
+  emulator arm never hands the target to gax through an instantiating provider: gax cannot dial a
+  `dns:///` target and turns TLS under a client certificate (`docs/adr/0208`); the
+  `plaintextProvider` that did was removed with its last caller, Datastore's lookup (#2329). An SDK
+  with its own emulator entry point that composes with a lease (Bigtable, Spanner) keeps it.
+  **Always pass an API's own `defaultGrpcTransportProviderBuilder()`** (or the provider the SDK's
+  builder uses), never a bare one: the API's defaults include the inbound message limit, and
   losing it fails only on an emulator and only past 4 MiB.
   `NoCredentialsProvider` stays at each call site — the three builder types share no supertype —
   and `PubSubTestClients` cannot use any of this, since `base` depends on test-utils and not the
-  reverse. `plaintextProvider` reaches the channel through the `@BetaApi`
-  `setChannelConfigurator`, so its client-owned emulator sites ride that Beta surface — the
-  caller-owned sites (`openLeasedPlaintextChannel` with `fixedProvider`) do not, though every
-  `GrpcEventLoops.Lease.applyTo` does. An internal call,
+  reverse. Every `GrpcEventLoops.Lease.applyTo` reaches the channel through the `@BetaApi`
+  `setChannelConfigurator`; the caller-owned emulator channels do not. An internal call,
   tier-irrelevant under `docs/adr/0141`; reread the annotation on a gax bump.
 - `GrpcEventLoops` (`docs/adr/0208`, #2237) is the event-loop group every connector gRPC channel
   runs on instead of gRPC's own, whose delayed destroy runs after Flink closes a job jar's class
@@ -347,17 +345,21 @@ record — context, evidence, declined alternatives — is the named ADR under `
   does not wait before releasing the job's class loader, and a client open then can exit a session
   cluster's JobManager under `FAIL`
   (measured 8 of 8 on BigQuery's source before #2237's fix), and its `close()` cancels a call in
-  flight through the call's `ApiFuture` before closing the client. **Such a client goes through
+  flight through the call's `ApiFuture` before closing the client (a cancellation between two gax
+  attempts can miss; the waiter then ends on the interrupt a coordinator's worker gets). **Such a client goes through
   `base.rpc.PerCallClientRunner`** (#2312; BigQuery's session creator, Pub/Sub's subscription
-  admin, Bigtable's sampler and coordinator), never a copy of it: it builds the client outside its
-  monitor and publishes it before its call starts, maps a cancellation to an `IOException`, holds
+  admin, Bigtable's sampler and coordinator, Datastore's planner), never a copy of it. An operation
+  of several calls is one `session(...)`, each call started through `ClientSession.call` so that
+  the call in flight is the one `close()` cancels (#2329), not a client for each of its calls. It builds the
+  client outside its monitor and publishes it before its call starts, maps a cancellation to an
+  `IOException`, holds
   the thread's interrupt back while an `openAutoCloseable` client closes (only the closing thread;
   an interrupt ends a waiter's wait, and a gax client's bounded close answers it at once), restores
   it before the release, and logs an exception from the close after a successful call. A client whose
   synchronous calls
   expose no `ApiFuture` (Spanner's) cancels through the gRPC `Context` the call runs in. BigQuery,
-  Bigtable, Cloud Tasks, Pub/Sub and Spanner are migrated; Firestore is #2243's remaining
-  sub-issue.
+  Bigtable, Cloud Tasks, Pub/Sub, Spanner and Firestore's Datastore mode are migrated; Firestore's
+  Native mode is #2330.
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.datastore;
 
-import com.google.cloud.datastore.DatastoreOptions;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import org.junit.jupiter.api.Test;
 
@@ -31,15 +30,14 @@ class LazyDatastoreClientTest {
     private static final DatabaseDestination DATABASE = DatabaseDestination.of("p");
 
     @Test
-    void buildsItsClientWithTheLibrarysRetries() {
+    void buildsItsClientWithTheLibrarysRetries() throws Exception {
         // The source's reads are idempotent at a fixed read time; a call timeout here would turn
         // every page into a single attempt.
         LazyDatastoreClient client =
                 new LazyDatastoreClient("test", EmulatorEndpoint.parse("localhost:1", "e"));
 
-        assertThat(client.settings(DATABASE).getRetrySettings())
-                .isEqualTo(
-                        DatastoreOptions.newBuilder().setProjectId("p").build().getRetrySettings());
+        assertThat(client.settings().build().runQuerySettings().getRetrySettings())
+                .isEqualTo(DatastoreClients.libraryRetrySettings());
     }
 
     @Test
@@ -49,7 +47,7 @@ class LazyDatastoreClientTest {
 
         client.close();
 
-        assertThatThrownBy(() -> client.rpc(DATABASE))
+        assertThatThrownBy(() -> client.client(DATABASE))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("page reader")
                 .hasMessageContaining("closed before use");

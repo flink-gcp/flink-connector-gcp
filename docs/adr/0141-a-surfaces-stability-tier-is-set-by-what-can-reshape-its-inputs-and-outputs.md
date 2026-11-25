@@ -110,7 +110,8 @@ trees, all internal calls under the fourth clause:
   split; the three caller-owned `openPlaintextChannel`/`fixedProvider` sites do not touch it).
   Since ADR-0208, `GrpcEventLoops.Lease` applies the connector's event-loop group through the same
   setter; Pub/Sub's three such sites (#2263) and BigQuery's two (#2267) moved to caller-owned
-  channels, and `plaintextProvider` is left with Datastore's emulator arm.
+  channels, and `plaintextProvider` was left with Datastore's emulator arm until #2329 moved it
+  too and removed the method.
 - **bigquery**: `BigQueryReadClient` and `BigQueryReadSettings` are class-level `@BetaApi`
   (`BigQueryReadClients`, `ReadClientSessionCreator` — the whole Storage Read source path;
   the Storage Read API service is GA); `TimePartitioning.Builder.setField` and

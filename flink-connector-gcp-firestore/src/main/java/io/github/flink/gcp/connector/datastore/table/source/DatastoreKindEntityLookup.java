@@ -27,6 +27,7 @@ import com.google.datastore.v1.LookupRequest;
 import com.google.datastore.v1.LookupResponse;
 import com.google.datastore.v1.PropertyMask;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreClients;
 import io.github.flink.gcp.connector.datastore.DatastoreCredentials;
@@ -44,7 +45,8 @@ import java.util.Arrays;
  * <p>The generated client's {@code Lookup} returns a future, which the library's {@code Datastore}
  * does not offer; the call keeps the generated client's default retry settings for {@code Lookup}.
  * Nothing is set on the request's read options, so a lookup reads strongly, as of the moment it
- * reaches the service.
+ * reaches the service. The client holds a lease on the connector's gRPC event-loop group from
+ * {@link #open()} to {@link #close()} ({@link DatastoreClients#open}).
  */
 @Internal
 final class DatastoreKindEntityLookup implements DatastoreEntityLookup {
@@ -58,7 +60,7 @@ final class DatastoreKindEntityLookup implements DatastoreEntityLookup {
     private final String[] paths;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
-    @Nullable private transient DatastoreClient client;
+    @Nullable private transient GrpcEventLoops.LeasedClient<DatastoreClient> client;
     @Nullable private transient volatile PropertyMask mask;
 
     /**
@@ -96,21 +98,30 @@ final class DatastoreKindEntityLookup implements DatastoreEntityLookup {
 
     @Override
     public void open() throws Exception {
-        client = DatastoreClient.create(settings());
+        EmulatorEndpoint endpoint = endpoint();
+        client = DatastoreClients.open(database, endpoint, settings(endpoint));
     }
 
     /** Builds the settings the one client is opened on; tests inspect them without a client. */
     @VisibleForTesting
-    DatastoreSettings settings() throws Exception {
-        EmulatorEndpoint endpoint =
-                emulatorEndpoint == null
-                        ? null
-                        : EmulatorEndpoint.parse(
-                                emulatorEndpoint,
-                                DatastoreConnectorOptions.EMULATOR_ENDPOINT.key());
-        return DatastoreClients.lookupSettings(
+    DatastoreSettings.Builder settings() throws Exception {
+        return settings(endpoint());
+    }
+
+    private DatastoreSettings.Builder settings(@Nullable EmulatorEndpoint endpoint)
+            throws Exception {
+        return DatastoreClients.settings(
                 endpoint,
-                endpoint == null ? DatastoreCredentials.load(serviceAccountKeyFile) : null);
+                endpoint == null ? DatastoreCredentials.load(serviceAccountKeyFile) : null,
+                null);
+    }
+
+    @Nullable
+    private EmulatorEndpoint endpoint() {
+        return emulatorEndpoint == null
+                ? null
+                : EmulatorEndpoint.parse(
+                        emulatorEndpoint, DatastoreConnectorOptions.EMULATOR_ENDPOINT.key());
     }
 
     /**
@@ -132,11 +143,11 @@ final class DatastoreKindEntityLookup implements DatastoreEntityLookup {
 
     @Override
     public ApiFuture<LookupResponse> lookupAsync(Key key) {
-        DatastoreClient opened = client;
+        GrpcEventLoops.LeasedClient<DatastoreClient> opened = client;
         if (opened == null) {
             throw new IllegalStateException("The Datastore entity lookup has not been opened.");
         }
-        return opened.lookupCallable().futureCall(request(key));
+        return opened.client().lookupCallable().futureCall(request(key));
     }
 
     /** Builds the one request a lookup of the key sends, with no read options. */

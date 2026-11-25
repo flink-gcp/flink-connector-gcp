@@ -31,9 +31,11 @@ import com.google.datastore.v1.Key;
 import com.google.datastore.v1.LookupResponse;
 import io.github.flink.gcp.connector.datastore.AbstractDatastoreEmulatorITCase;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -179,5 +181,36 @@ class DatastoreKindEntityLookupITCase extends AbstractDatastoreEmulatorITCase {
         } finally {
             elsewhere.close();
         }
+    }
+
+    /**
+     * The lookup's client runs on the connector's event-loop group from open to close and reaches
+     * an emulator given as a scheme-prefixed gRPC target, which the plaintext transport provider it
+     * used to take could not dial (docs/adr/0208, #2329). The harness's own client runs on gRPC's
+     * shared group, so only the connector's group is checked here; {@code DatastoreEventLoopITCase}
+     * checks the shared one for the other clients.
+     */
+    @Test
+    void aLookupThroughADnsTargetRunsOnTheGroupAndStopsItOnClose() throws Exception {
+        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
+                .as("no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        String kind = uniqueKind();
+        client().put(Entity.newBuilder(key(kind, "d")).set("x", 1L).build());
+        DatastoreKindEntityLookup lookup =
+                new DatastoreKindEntityLookup(
+                        database(), new String[] {"x"}, "dns:///" + emulatorEndpoint(), null);
+        lookup.open();
+        try {
+            assertThat(lookUp(lookup, named(keys(kind), "d")).getFoundCount()).isEqualTo(1);
+            assertThat(GrpcEventLoopThreads.alive())
+                    .as("a %s* thread while the lookup is open", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
+        } finally {
+            lookup.close();
+        }
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread once the lookup closed", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
     }
 }

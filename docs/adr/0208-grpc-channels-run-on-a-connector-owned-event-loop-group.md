@@ -24,13 +24,15 @@ limitations under the License.
   [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263),
   [#2264](https://github.com/flink-gcp/flink-connector-gcp/issues/2264),
   [#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265),
+  [#2266](https://github.com/flink-gcp/flink-connector-gcp/issues/2266),
   [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
   [#2268](https://github.com/flink-gcp/flink-connector-gcp/issues/2268),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269),
   [#2282](https://github.com/flink-gcp/flink-connector-gcp/issues/2282),
   [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312),
-  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322)
-- Modules: base, bigquery, bigtable, cloudtasks, pubsub, spanner
+  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322),
+  [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329)
+- Modules: base, bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
 
@@ -571,7 +573,114 @@ releases the group's last lease shuts it down and waits for its threads.**
   silently redirect a production job; the Bigtable connector cannot ignore its variable, because
   the data client's settings read it.
 
-The Firestore connector moves onto the group in #2243.
+**In the Firestore connector's Datastore mode (#2329, 2026-11-25), every client holds a lease the
+same way.**
+
+- **Every Datastore client is the generated `v1.DatastoreClient`**, a gax `BackgroundResource`
+  that `DatastoreClients.open` opens with `open`, or on an emulator with `openLeasedClient` from
+  `DatastoreSettings`' transport defaults, which keep the maximum inbound message size at
+  `Integer.MAX_VALUE`: the sink's database access, the source's page reader and planner, and the
+  table lookup, which already used it.
+  The library's `Datastore`, which the others used, cannot carry a lease on an emulator:
+  `GrpcDatastoreRpc` (google-cloud-datastore 3.11.0) builds a plaintext channel of its own through
+  `ManagedChannelBuilder.forTarget`, and ignores the transport provider it is given, whenever
+  `DatastoreUtils.isEmulator` holds, which a loopback host or `NoCredentials` makes true, and the
+  connector's emulator arm set `NoCredentials`.
+  Its host check also takes `dns` for the host of a `dns:///` target and fails to resolve it.
+  Its close shuts its channel down and waits up to six minutes for it to terminate
+  (`GrpcTransportChannel.close()`, gax 2.91.0) without cancelling the calls it carries, and it has
+  no `shutdownNow()`.
+  The lookup's emulator arm used `EmulatorChannels.plaintextProvider`, and so carried the two
+  failures recorded for Cloud Tasks above; it was that method's last caller, and the method was
+  removed with it.
+  Moving to the library's `Datastore` with a channel provider of the connector's own was declined:
+  on the emulator it would have needed credentials other than `NoCredentials` and a host that is
+  not a loopback address, so that `isEmulator`, an `@InternalApi` check, would let the provider
+  through, and an SDK change to that check would put the channel back on gRPC's group without a
+  failure.
+  Injecting a `DatastoreRpc` of the connector's own through `setServiceRpcFactory` was declined
+  too: the interface is `@InternalExtensionOnly`, and the connector used `Datastore` itself only
+  for `allocateId`.
+- What moved with the client:
+  - The sink's single attempt per call, which `GrpcDatastoreRpc` applied to every unary method,
+    is now set on each unary method of the generated settings, and the source keeps the retry
+    settings `GrpcDatastoreRpc` applied by default (`ServiceOptions.getDefaultRetrySettings()`,
+    which `DatastoreClientsTest` compares with the library's); the lookup keeps the generated
+    client's own.
+  - The production channel pool is gax's default single channel, where `DatastoreOptions` started
+    five and resized between one and 200 with the calls in flight.
+    The sink sends one commit at a time per subtask, a reader one page and the planner one query,
+    so a channel per client carries what each one sends.
+  - An id allocation fails with the gax `ApiException` rather than the library's
+    `DatastoreException` around it; the sink's classifier reads the status of either.
+    The allocated keys are decoded through `Entity.fromPb`, since `Key.fromPb` is package-private.
+  - A configured service-account key still signs its own scoped JWT, as `Datastore` sent it
+    (`ServiceOptions.getScopedCredentials()` with its default `useJwtAccessWithScope`,
+    google-cloud-core 2.81.0), rather than exchanging an assertion at the OAuth token endpoint; the
+    lookup, which took the key as loaded, now does the same.
+    The planner's HTTP splitter still takes the key as loaded and, as before, exchanges an
+    assertion it signs locally for an access token at the token endpoint.
+    These statements describe a key in the default universe domain; a key for another universe
+    domain was not examined.
+  - An emulator endpoint written with `http://` or `https://`, which `Datastore` removed before it
+    dialled (`DatastoreUtils.removeScheme`), is still accepted: the scheme is removed before the
+    caller-owned channel is built, since gRPC would read it as a name-resolver scheme it does not
+    have. A `dns:///` target is kept for gRPC to resolve.
+    This covers the gRPC clients only: the planner's HTTP splitter refuses such an endpoint, as it
+    did before (`DatastoreOptions.Builder.localHost`, datastore-v1-proto-client 3.11.0; read, not
+    measured), so a plan that cuts key ranges fails with it (tracked in
+    [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338)).
+  - The `google-cloud-resource-prefix` header and the client-library token that `GrpcDatastoreRpc`
+    added are no longer sent; the generated stub routes each request by its `project_id` and
+    `database_id`, which every request the connector builds sets.
+- **The planner, on the JobManager, opens a client for each plan and closes it before the plan
+  returns**, through `PerCallClientRunner`'s session form (below): the GQL parse, the read-time
+  probe and the statistics queries are the session's calls, and `close()` cancels the one in
+  flight through its future.
+  It held its client from its first plan until the enumerator closed it.
+  The splitter's calls run after the session, over the HTTP client ADR-0177 describes, which opens
+  no gRPC channel and which the planner's `close()` still closes.
+  That client takes an emulator's endpoint as a host, so a plan that cuts key ranges still fails
+  against an emulator given as `dns:///host:port` (measured 2026-11-25; tracked in
+  [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338)); a plan of one range, or
+  of a query that cannot be split, never calls it.
+- The page reader holds its client from its first page until the reader closes, on the
+  TaskManager, as before, and **its close ends every page still in flight before it closes the
+  client**.
+  A fetcher can outlive the reader's close timeout, and the client's bounded close ends with
+  `shutdownNow()`, which drops a retry gax has scheduled on the client's executor without
+  completing the call's future; a fetcher waiting on that future, between attempts of a page that
+  met `UNAVAILABLE`, would then wait for good.
+  The library's `Datastore` never called `shutdownNow()`: it waited for its channel and then shut
+  its executor down, which still runs a retry already scheduled, so the retry failed on the closed
+  channel and released the fetcher (read from gax 2.91.0, not measured).
+  Flink's split fetcher manager does not interrupt a fetcher it closes (`SplitFetcherManager.close`,
+  Flink 1.20.5 and 2.2.1, shuts its executor down and waits), so only this cancellation ends such a
+  wait; a page also waits interruptibly, where the library's blocking call ignored an interrupt.
+  The page waits on a future derived from the call's (`ApiFutures.transform`), which the close
+  cancels, completing it at once and passing the cancellation on to the call, because gax can miss
+  a cancellation that lands between two of a call's attempts and then schedule the next one
+  (`CallbackChainRetryingFuture.cancel` cancels only the current attempt, gax 2.91.0), which the
+  client's `shutdownNow()` then drops.
+  A full lookup cache load, of either mode, plans, opens, fetches and closes inside
+  `interruptibleReleases()` (`FullCacheInputFormat`, which both modes extend).
+
+**`PerCallClientRunner` runs a session of several calls on one client (#2329).**
+
+- `session(prepare, opener, body)` opens one client and closes it once the body returns or
+  throws; the body starts each call through `ClientSession.call(start)`, which starts it under the
+  runner's monitor and waits for it, so the call in flight is always the one `close()` cancels.
+  A failure the body catches, such as Datastore's refusal of a GQL query with `LIMIT 0` appended,
+  leaves the session open for its next call.
+  A call that a session starts after `close()` is refused without being started, and one started
+  while another of the session's calls is in flight is refused with an `IllegalStateException`.
+  `call(prepare, opener, start)` is a session of one call.
+- A client per call was the alternative: it would set up a channel for each of a plan's three to
+  five calls, and a Firestore query is bound to the client it was built from (#2330).
+  Composing the plan into one future was the other: it loses each step's failure message, and
+  Datastore's fallback on `INVALID_ARGUMENT` would become a chain of futures.
+
+The Firestore connector's Native mode moves onto the group in #2330.
 
 ## Evidence
 
@@ -700,6 +809,29 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   No process exited and no `NoClassDefFoundError` was logged in any arm.
   The emulator's default stream does not go through the pool, so these trials show when the group
   stops, not a job's own writer on pooled connections.
+- **Firestore's Datastore mode** (#2329), measured 2026-11-25 on the same kind of cluster with the
+  Firestore emulator in Datastore mode (`google-cloud-cli:591.0.0-emulators`) and the SQL connector
+  JAR shipped with each job (`sql-client.sh -j`).
+  Each fresh cluster first ran a batch job that wrote eight entities through the sink and
+  finished; when that took a process down, the cluster was recreated before the trial.
+  A trial was then either a bounded scan of that kind into a blackhole sink, through the scan
+  enumerator's planner on the JobManager and the reader on the TaskManager, left to finish, or a
+  streaming job writing generated rows through the sink, cancelled 8 s after it started running.
+  On 1.4.0 the writing batch job exited the TaskManager with code 239 on 12 of 12 clusters, and
+  every one of 8 cancellations exited the TaskManager the same way.
+  Of three finished scans, all three exited the TaskManager and two the JobManager; the second,
+  which the JobManager survived, still showed four `grpc-default-worker-ELG` threads there after
+  the job had finished, and the harness stalled after the third, so the other five were not run.
+  Each exit followed `NoClassDefFoundError: .../IntObjectHashMap$2` from a
+  `grpc-default-worker-ELG` thread.
+  With this change, neither process exited after either of 2 writing batch jobs, 8 finished scans
+  or 8 cancellations, no `grpc-default-worker-ELG` thread appeared, the TaskManager ran four or
+  five `flink-gcp-grpc-elg` threads while a cancelled job wrote, and neither process held a gRPC
+  event-loop thread once a scan had finished.
+  The emulator tests that check the group's threads and dial a `dns:///` target were also run
+  against the code before the change: every Datastore client failed the thread check, the lookup
+  could not dial the target (`IllegalArgumentException: Invalid host or port`), and the other
+  clients could not be created (`UnknownHostException: dns`).
 
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
@@ -819,7 +951,7 @@ writing jobs here were not traced.
   of a default-stream writer is evicted as idle in a `lib/` deployment, and the next client starts
   a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  Until #2243 lands, that is every channel of the Firestore connector.
+  Until #2330 lands, that is every channel of the Firestore connector's Native mode.
 - **A Bigtable data client's built-in Cloud Monitoring export still uses gRPC's group.**
   Its `MetricServiceClient` takes no channel settings from the data client, so while the export
   is on, which is the default for the readers', the sinks' and the lookups' clients, each such

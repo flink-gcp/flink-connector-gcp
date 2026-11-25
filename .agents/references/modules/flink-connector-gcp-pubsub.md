@@ -121,8 +121,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The production providers restate the SDK builders' private defaults
   (`PubSubTransports.publisherDefaults()`/`subscriberDefaults()`); `PubSubTransportsTest` is the
   drift guard. Never set a provider on a `Publisher`/`Subscriber` builder without one of them.
-- Emulator arms are caller-owned channels with the API's channel settings, never
-  `plaintextProvider` (`dns:///` and client-certificate failures, `docs/adr/0208`).
+- Emulator arms are caller-owned channels with the API's channel settings, never an
+  instantiating provider pointed at the emulator (`dns:///` and client-certificate failures,
+  `docs/adr/0208`).
 - The topic and subscription admins open a client per call. `PubSubSubscriptionAdmin` runs on the
   JobManager, so its calls go through base's `PerCallClientRunner` (#2312): `ApiFuture`s awaited
   interruptibly, and a `close()` that cancels the call in flight; keep every new admin call on that

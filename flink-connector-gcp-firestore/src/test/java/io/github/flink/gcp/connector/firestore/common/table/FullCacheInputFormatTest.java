@@ -29,6 +29,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.util.Collector;
 
 import com.google.cloud.Timestamp;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +37,9 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -99,6 +102,36 @@ class FullCacheInputFormatTest {
         assertThat(format.fetches).isEqualTo(4);
         assertThat(format.events)
                 .containsExactly("reader opened with [a, b]", "reader closed", "resource closed");
+    }
+
+    /**
+     * Planning, opening, fetching and releasing a load each run inside {@link
+     * GrpcEventLoops#interruptibleReleases()}, where a release of the connector's last gRPC lease
+     * on an interrupted load stops waiting for the event-loop group after its first second: Flink
+     * gives a load it interrupts 10 s to end.
+     */
+    @Test
+    void everyPhaseOfALoadRunsWhereAnInterruptedReleaseCanStopWaiting() throws IOException {
+        ScriptedFormat format = new ScriptedFormat(List.of("a"), batch("a", List.of("a1"), true));
+        format.configure(new Configuration());
+
+        Split[] splits = format.createInputSplits(1);
+        format.open(splits[0]);
+        while (!format.reachedEnd()) {
+            format.nextRecord(null);
+        }
+        format.close();
+
+        assertThat(format.scopes)
+                .containsExactly(
+                        Map.entry("plan", true),
+                        Map.entry("open", true),
+                        Map.entry("fetch", true),
+                        Map.entry("reader close", true),
+                        Map.entry("resource close", true));
+        assertThat(GrpcEventLoops.inInterruptibleReleases())
+                .as("the scope outlived the load's phases")
+                .isFalse();
     }
 
     @Test
@@ -257,6 +290,10 @@ class FullCacheInputFormatTest {
         private final List<String> queries;
         private final transient Deque<RecordsWithSplitIds<String>> batches;
         private final transient List<String> events = new ArrayList<>();
+
+        /** Each phase, in order, with whether it ran inside an interruptible-releases scope. */
+        private final transient Map<String, Boolean> scopes = new LinkedHashMap<>();
+
         private transient int fetches;
         private transient boolean failQueries;
         private transient boolean failOpen;
@@ -272,19 +309,26 @@ class FullCacheInputFormatTest {
 
         @Override
         protected Split planLoad() {
+            scopes.put("plan", GrpcEventLoops.inInterruptibleReleases());
             return new Split();
         }
 
         @Override
         protected SplitReader<String, Query> openReader() throws IOException {
+            scopes.put("open", GrpcEventLoops.inInterruptibleReleases());
             // The page reader a subclass opens first, held before anything else can fail.
-            closeWithLoad(() -> events.add("resource closed"));
+            closeWithLoad(
+                    () -> {
+                        scopes.put("resource close", GrpcEventLoops.inInterruptibleReleases());
+                        events.add("resource closed");
+                    });
             if (failOpen) {
                 throw new IOException("scripted open failure");
             }
             return new SplitReader<String, Query>() {
                 @Override
                 public RecordsWithSplitIds<String> fetch() throws IOException {
+                    scopes.put("fetch", GrpcEventLoops.inInterruptibleReleases());
                     fetches++;
                     RecordsWithSplitIds<String> batch = batches.poll();
                     if (batch == null) {
@@ -315,6 +359,7 @@ class FullCacheInputFormatTest {
                         events.add("reader close failed");
                         throw new IllegalStateException("scripted close failure");
                     }
+                    scopes.put("reader close", GrpcEventLoops.inInterruptibleReleases());
                     events.add("reader closed");
                 }
             };

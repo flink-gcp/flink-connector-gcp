@@ -17,8 +17,10 @@
 package io.github.flink.gcp.connector.datastore.sink.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.auth.Credentials;
+import com.google.cloud.datastore.v1.DatastoreSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.DatastoreClients;
@@ -59,9 +61,13 @@ public final class DefaultDatastoreDatabaseAccessFactory implements DatastoreDat
     @Override
     public DatastoreDatabaseAccess create() throws IOException {
         return new DatastoreServiceAdapter(
-                DatastoreClients.open(
-                        database,
-                        DatastoreClients.settings(
-                                database, emulatorEndpoint, credentials, requestTimeout)));
+                database, DatastoreClients.open(database, emulatorEndpoint, settings()));
+    }
+
+    /** The client's settings: one attempt per call, bounded by the request timeout. */
+    @VisibleForTesting
+    DatastoreSettings.Builder settings() {
+        return DatastoreClients.settings(
+                emulatorEndpoint, credentials, DatastoreClients.singleAttempt(requestTimeout));
     }
 }
