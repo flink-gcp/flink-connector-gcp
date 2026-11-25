@@ -1127,3 +1127,40 @@ writing jobs here were not traced.
 - If the SDK's location lookup fails, the short-lived client it opened for it is never shut down
   (google-cloud-bigquerystorage 3.38.0 closes it only on success), so its channels stay on the
   group until the last lease is released and the group closes them.
+- **A Spanner client whose emulator check fails leaves open what the client library built before
+  the check** ([#2306](https://github.com/flink-gcp/flink-connector-gcp/issues/2306)).
+  In emulator mode, `GapicSpannerRpc`'s constructor builds its four stubs and its watchdog
+  executor, then checks that an emulator is listening, and when the check fails it rethrows
+  without closing them (google-cloud-spanner 6.128.0; reported upstream as
+  [googleapis/google-cloud-java#15240](https://github.com/googleapis/google-cloud-java/issues/15240),
+  tracked by [#2352](https://github.com/flink-gcp/flink-connector-gcp/issues/2352)).
+  A check cancelled by a close fails the same way, with a `CANCELLED` cause and against an
+  emulator that is listening too, which is why the coordinator waits for its client's creation
+  rather than cancelling it (above).
+  Measured 2026-11-25 through `SpannerClients.open` against a loopback port where nothing
+  listened, with default settings, each failed open left 24 channels, built on the group, and one
+  `Cloud-Spanner-WatchdogProvider` thread.
+  With no other lease, `open` released the last one and the group stopped: the channels stayed
+  registered with gRPC in `TRANSIENT_FAILURE`, made no connection in 150 s once the port listened,
+  and in 1 of 7 runs gRPC logged the stopped group's `RejectedExecutionException` at `SEVERE` as
+  "Uncaught exception in the SynchronizationContext. Panic!"; gRPC catches it there, so it never
+  reaches the thread's uncaught-exception handler or Flink's failure policy.
+  While another lease was held, the 72 channels three failed opens left reconnected on the group,
+  432 connections in 150 s once the port listened; releasing that lease stopped the group with
+  them still registered.
+  A pin keeps the group running the same way, so the channels of a failed open in a job whose
+  BigQuery default-stream sink pinned the same copy of the group would reconnect until the job's
+  class loader is released; a shaded SQL jar relocates its own copy, which only its own clients
+  keep running.
+  The watchdog thread is the client library's and lives as long as the process.
+  On a session cluster, with the client library loaded by the job's class loader, it would keep
+  that loader reachable: inferred from a standalone
+  reproducer, in which a closed child class loader that had failed to create one client stayed
+  reachable in 3 of 3 runs (with the grpc-gcp extension off, whose own static pool otherwise holds
+  it), and not measured in Flink.
+  The connector does not work around it.
+  It happens only against an emulator, an open whose connection is refused fails with an
+  `IOException` whose cause says no emulator was found (a probe that times out after its 10 s
+  reports `DEADLINE_EXCEEDED` instead), and checking for the emulator before
+  building the client would add a call to every emulator open and still race with an emulator
+  that stops in between.
