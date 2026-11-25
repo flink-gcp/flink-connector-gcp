@@ -411,6 +411,10 @@ BIGTABLE_EMULATOR_HOST=localhost:8086 \
     cbt -project my-project -instance my-instance createtable orders families=cf
 ```
 
+`cbt` finds the emulator through `BIGTABLE_EMULATOR_HOST`; the connector does not, and refuses to
+open a client in a process where the variable is set to a non-empty value unless the emulator
+endpoint is configured, so set it for `cbt` alone, as above.
+
 {{< java-snippet file="BigtableExamplesEmulatorSink.java" tag="bigtable-examples-emulator-sink" >}}
 
 The source reaches it the same way:

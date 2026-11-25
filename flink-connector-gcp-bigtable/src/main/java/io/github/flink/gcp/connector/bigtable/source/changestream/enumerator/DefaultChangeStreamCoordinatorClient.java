@@ -28,8 +28,8 @@ import com.google.bigtable.admin.v2.GetAppProfileRequest;
 import com.google.bigtable.admin.v2.GetTableRequest;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableInstanceAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
@@ -123,10 +123,9 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
                 () ->
                         runner.call(
                                 this::instanceAdminSettingsBuilder,
-                                BigtableClients::openInstanceAdmin,
+                                settings -> BigtableClients.openInstanceAdmin(settings, null),
                                 client ->
-                                        client.getBaseClient()
-                                                .getAppProfileCallable()
+                                        client.getAppProfileCallable()
                                                 .futureCall(appProfileRequest())));
     }
 
@@ -184,11 +183,8 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         Table description =
                 runner.call(
                         this::tableAdminSettingsBuilder,
-                        BigtableClients::openTableAdmin,
-                        client ->
-                                client.getBaseClient()
-                                        .getTableCallable()
-                                        .futureCall(tableRequest()));
+                        settings -> BigtableClients.openTableAdmin(settings, null),
+                        client -> client.getTableCallable().futureCall(tableRequest()));
         return retentionOf(description, table);
     }
 
@@ -269,35 +265,21 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     }
 
     @VisibleForTesting
-    BigtableTableAdminSettings tableAdminSettings() throws IOException {
+    BaseBigtableTableAdminSettings tableAdminSettings() throws IOException {
         return tableAdminSettingsBuilder().build();
     }
 
-    private BigtableTableAdminSettings.Builder tableAdminSettingsBuilder() {
-        BigtableTableAdminSettings.Builder settings =
-                BigtableTableAdminSettings.newBuilder()
-                        .setProjectId(table.getProject())
-                        .setInstanceId(table.getInstance());
-        CredentialsProvider provider = credentials;
-        if (provider != null) {
-            settings.setCredentialsProvider(provider);
-        }
-        return settings;
+    private BaseBigtableTableAdminSettings.Builder tableAdminSettingsBuilder() {
+        return BigtableClients.tableAdminSettings(null, credentials);
     }
 
     @VisibleForTesting
-    BigtableInstanceAdminSettings instanceAdminSettings() throws IOException {
+    BaseBigtableInstanceAdminSettings instanceAdminSettings() throws IOException {
         return instanceAdminSettingsBuilder().build();
     }
 
-    private BigtableInstanceAdminSettings.Builder instanceAdminSettingsBuilder() {
-        BigtableInstanceAdminSettings.Builder settings =
-                BigtableInstanceAdminSettings.newBuilder().setProjectId(table.getProject());
-        CredentialsProvider provider = credentials;
-        if (provider != null) {
-            settings.setCredentialsProvider(provider);
-        }
-        return settings;
+    private BaseBigtableInstanceAdminSettings.Builder instanceAdminSettingsBuilder() {
+        return BigtableClients.instanceAdminSettings(null, credentials);
     }
 
     /** Refuses later calls, cancels the one in flight and closes its client. */

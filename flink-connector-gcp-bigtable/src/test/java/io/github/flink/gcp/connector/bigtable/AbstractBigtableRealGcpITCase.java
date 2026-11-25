@@ -39,8 +39,8 @@ import com.google.bigtable.admin.v2.StorageType;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
 import com.google.bigtable.admin.v2.UpdateTableRequest;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClientV2;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
@@ -163,46 +163,47 @@ public abstract class AbstractBigtableRealGcpITCase {
                     .build();
 
     private static String instanceId;
-    private static BigtableInstanceAdminClient instanceAdmin;
-    private static BigtableTableAdminClient tableAdmin;
+    private static BigtableInstanceAdminClientV2 instanceAdmin;
+    private static BigtableTableAdminClientV2 tableAdmin;
     private static BigtableDataClient dataClient;
+    private static boolean instanceCreated;
 
     @BeforeAll
     protected static void createInstanceAndClients() throws IOException {
-        instanceAdmin = BigtableInstanceAdminClient.create(PROJECT);
+        NoEmulatorVariable.require("The real-GCP Bigtable suite");
+        instanceAdmin = BigtableInstanceAdminClientV2.create();
+        // Not bound to an instance: the requests name it, so the sweep shares this client.
+        tableAdmin = BigtableTableAdminClientV2.create();
         sweepStaleInstances();
 
         String runId = TestNames.runId();
         instanceId = INSTANCE_PREFIX + Instant.now().getEpochSecond() + "-" + runId;
         LOG.info("Creating ephemeral Bigtable instance {} in {}", instanceId, ZONE);
         ApiExceptions.callAndTranslateApiException(
-                instanceAdmin
-                        .getBaseClient()
-                        .createInstanceAsync(
-                                CreateInstanceRequest.newBuilder()
-                                        .setParent(ProjectName.of(PROJECT).toString())
-                                        .setInstanceId(instanceId)
-                                        .setInstance(
-                                                Instance.newBuilder()
-                                                        .setDisplayName("flink-connector-gcp E2E")
-                                                        .setType(Instance.Type.PRODUCTION))
-                                        // One node is the minimum a production instance takes,
-                                        // and this suite writes tens of rows. The cluster id is
-                                        // built from the run id rather than from the instance id,
-                                        // which at 28 characters leaves no room under a cluster
-                                        // id's own 30-character limit.
-                                        .putClusters(
-                                                "c-" + runId,
-                                                Cluster.newBuilder()
-                                                        .setLocation(
-                                                                LocationName.of(PROJECT, ZONE)
-                                                                        .toString())
-                                                        .setServeNodes(1)
-                                                        .setDefaultStorageType(StorageType.SSD)
-                                                        .build())
-                                        .build()));
+                instanceAdmin.createInstanceAsync(
+                        CreateInstanceRequest.newBuilder()
+                                .setParent(ProjectName.of(PROJECT).toString())
+                                .setInstanceId(instanceId)
+                                .setInstance(
+                                        Instance.newBuilder()
+                                                .setDisplayName("flink-connector-gcp E2E")
+                                                .setType(Instance.Type.PRODUCTION))
+                                // One node is the minimum a production instance takes,
+                                // and this suite writes tens of rows. The cluster id is
+                                // built from the run id rather than from the instance id,
+                                // which at 28 characters leaves no room under a cluster
+                                // id's own 30-character limit.
+                                .putClusters(
+                                        "c-" + runId,
+                                        Cluster.newBuilder()
+                                                .setLocation(
+                                                        LocationName.of(PROJECT, ZONE).toString())
+                                                .setServeNodes(1)
+                                                .setDefaultStorageType(StorageType.SSD)
+                                                .build())
+                                .build()));
+        instanceCreated = true;
 
-        tableAdmin = BigtableTableAdminClient.create(PROJECT, instanceId);
         dataClient = BigtableDataClient.create(PROJECT, instanceId);
     }
 
@@ -212,13 +213,13 @@ public abstract class AbstractBigtableRealGcpITCase {
                 () -> Closers.closeAll(dataClient, tableAdmin, instanceAdmin)) {
             if (instanceAdmin != null && instanceId != null) {
                 // Disable retention before deleting the billed instance, while clients are open.
-                if (tableAdmin != null) {
+                // Only once the instance exists: the sweep opens the table admin before the
+                // creation, and a creation that failed leaves no tables to list.
+                if (tableAdmin != null && instanceCreated) {
                     disableChangeStreams(tableAdmin, instanceId);
                 }
                 try {
-                    instanceAdmin
-                            .getBaseClient()
-                            .deleteInstance(InstanceName.of(PROJECT, instanceId));
+                    instanceAdmin.deleteInstance(InstanceName.of(PROJECT, instanceId));
                 } catch (NotFoundException absent) {
                     // A failed creation may never have installed the registered instance.
                 }
@@ -228,6 +229,7 @@ public abstract class AbstractBigtableRealGcpITCase {
             tableAdmin = null;
             instanceAdmin = null;
             instanceId = null;
+            instanceCreated = false;
         }
     }
 
@@ -242,8 +244,7 @@ public abstract class AbstractBigtableRealGcpITCase {
      */
     private static void sweepStaleInstances() {
         Instant cutoff = Instant.now().minus(STALE_AFTER);
-        ListInstancesResponse instances =
-                instanceAdmin.getBaseClient().listInstances(ProjectName.of(PROJECT));
+        ListInstancesResponse instances = instanceAdmin.listInstances(ProjectName.of(PROJECT));
         BigtableAdminProtos.checkListedEverywhere(instances.getFailedLocationsList(), "instances");
         for (Instance instance : instances.getInstancesList()) {
             String id = InstanceName.parse(instance.getName()).getInstance();
@@ -253,26 +254,18 @@ public abstract class AbstractBigtableRealGcpITCase {
             }
             LOG.warn("Sweeping stale instance {}, created {}", id, created);
             try {
-                disableChangeStreams(id);
-                instanceAdmin.getBaseClient().deleteInstance(InstanceName.of(PROJECT, id));
+                disableChangeStreams(tableAdmin, id);
+                instanceAdmin.deleteInstance(InstanceName.of(PROJECT, id));
             } catch (Exception e) {
                 LOG.warn("Failed to sweep {}", id, e);
             }
         }
     }
 
-    private static void disableChangeStreams(String staleInstanceId) throws Exception {
-        try (BigtableTableAdminClient staleTableAdmin =
-                BigtableTableAdminClient.create(PROJECT, staleInstanceId)) {
-            disableChangeStreams(staleTableAdmin, staleInstanceId);
-        }
-    }
-
-    private static void disableChangeStreams(BigtableTableAdminClient admin, String instance)
+    private static void disableChangeStreams(BigtableTableAdminClientV2 admin, String instance)
             throws Exception {
         List<String> tableNames = new ArrayList<>();
-        admin.getBaseClient()
-                .listTables(
+        admin.listTables(
                         ListTablesRequest.newBuilder()
                                 .setParent(InstanceName.of(PROJECT, instance).toString())
                                 .setView(Table.View.NAME_ONLY)
@@ -282,15 +275,14 @@ public abstract class AbstractBigtableRealGcpITCase {
         disableChangeStreams(
                 tableNames,
                 name ->
-                        admin.getBaseClient()
-                                .getTable(
-                                        GetTableRequest.newBuilder()
-                                                .setName(name)
-                                                .setView(Table.View.SCHEMA_VIEW)
-                                                .build()),
+                        admin.getTable(
+                                GetTableRequest.newBuilder()
+                                        .setName(name)
+                                        .setView(Table.View.SCHEMA_VIEW)
+                                        .build()),
                 request ->
                         ApiExceptions.callAndTranslateApiException(
-                                admin.getBaseClient().updateTableAsync(request)));
+                                admin.updateTableAsync(request)));
     }
 
     /**
@@ -475,13 +467,11 @@ public abstract class AbstractBigtableRealGcpITCase {
 
     /** Returns the live table description, for asserting what auto-creation actually made. */
     protected static Table describeTable(String tableId) {
-        return tableAdmin
-                .getBaseClient()
-                .getTable(
-                        GetTableRequest.newBuilder()
-                                .setName(TableName.of(PROJECT, instanceId, tableId).toString())
-                                .setView(Table.View.SCHEMA_VIEW)
-                                .build());
+        return tableAdmin.getTable(
+                GetTableRequest.newBuilder()
+                        .setName(TableName.of(PROJECT, instanceId, tableId).toString())
+                        .setView(Table.View.SCHEMA_VIEW)
+                        .build());
     }
 
     /** Reads every row of the table, in row-key order. */
@@ -559,7 +549,7 @@ public abstract class AbstractBigtableRealGcpITCase {
     protected static String createSingleClusterAppProfile(
             String appProfileId, boolean allowTransactionalWrites) {
         ListClustersResponse clusters =
-                instanceAdmin.getBaseClient().listClusters(InstanceName.of(PROJECT, instanceId));
+                instanceAdmin.listClusters(InstanceName.of(PROJECT, instanceId));
         BigtableAdminProtos.checkListedEverywhere(clusters.getFailedLocationsList(), "clusters");
         String clusterId = ClusterName.parse(clusters.getClusters(0).getName()).getCluster();
         createAppProfile(
@@ -584,16 +574,13 @@ public abstract class AbstractBigtableRealGcpITCase {
     }
 
     private static void createAppProfile(String appProfileId, AppProfile.Builder profile) {
-        instanceAdmin
-                .getBaseClient()
-                .createAppProfile(
-                        CreateAppProfileRequest.newBuilder()
-                                .setParent(InstanceName.of(PROJECT, instanceId).toString())
-                                .setAppProfileId(appProfileId)
-                                .setAppProfile(
-                                        profile.setDescription(
-                                                "flink-connector-gcp integration test"))
-                                .build());
+        instanceAdmin.createAppProfile(
+                CreateAppProfileRequest.newBuilder()
+                        .setParent(InstanceName.of(PROJECT, instanceId).toString())
+                        .setAppProfileId(appProfileId)
+                        .setAppProfile(
+                                profile.setDescription("flink-connector-gcp integration test"))
+                        .build());
     }
 
     /**
@@ -618,7 +605,7 @@ public abstract class AbstractBigtableRealGcpITCase {
         for (String splitKey : splitKeys) {
             request.addInitialSplitsBuilder().setKey(ByteString.copyFromUtf8(splitKey));
         }
-        tableAdmin.getBaseClient().createTable(request.build());
+        tableAdmin.createTable(request.build());
         return tableDestination(tableId);
     }
 }

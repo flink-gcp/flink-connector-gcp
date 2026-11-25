@@ -16,19 +16,27 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
+import com.google.api.gax.rpc.ApiException;
+import com.google.api.gax.rpc.StatusCode;
+import com.google.bigtable.admin.v2.GetAppProfileRequest;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClientV2;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.DefaultMutationBatcherFactory;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcher;
+import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -145,6 +153,70 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
         } finally {
             sampler.close();
         }
+    }
+
+    /**
+     * The admin clients' emulator arm runs on a plaintext channel opened on the group for the
+     * client, and closing the client releases it with the call.
+     */
+    @Test
+    void theTableAdminsClientRunsOnTheGroupAndClosesWithTheCall() throws Exception {
+        TableDestination destination = createTable("event-loop-table-admin");
+        BigtableTableAdmin admin = new BigtableTableAdmin(endpoint());
+
+        assertThat(
+                        EventLoopObserver.sawGroupDuring(
+                                () -> {
+                                    admin.validateFamilies(destination, Map.of(), false);
+                                    return null;
+                                }))
+                .as("a %s* thread while the table was read", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread once the read returned", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+    }
+
+    /**
+     * The instance admin has the same arm. The emulator serves no application profiles, so the call
+     * fails; reaching the emulator is what puts the channel on the group.
+     */
+    @Test
+    void theInstanceAdminsClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
+        AtomicReference<ApiException> answer = new AtomicReference<>();
+        assertThat(
+                        EventLoopObserver.sawGroupDuring(
+                                () -> {
+                                    try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClientV2>
+                                            client =
+                                                    BigtableClients.openInstanceAdmin(
+                                                            BigtableClients.instanceAdminSettings(
+                                                                    endpoint(), null),
+                                                            endpoint())) {
+                                        client.client()
+                                                .getAppProfile(
+                                                        GetAppProfileRequest.newBuilder()
+                                                                .setName(
+                                                                        "projects/"
+                                                                                + PROJECT
+                                                                                + "/instances/"
+                                                                                + INSTANCE
+                                                                                + "/appProfiles/"
+                                                                                + "default")
+                                                                .build());
+                                    } catch (ApiException expected) {
+                                        answer.set(expected);
+                                    }
+                                    return null;
+                                }))
+                .as("a %s* thread while the instance admin was open", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread once the instance admin closed", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        // The emulator's answer, which Bigtable itself would not give: the call reached it.
+        assertThat(answer.get()).as("the emulator's answer").isNotNull();
+        assertThat(answer.get().getStatusCode().getCode()).isEqualTo(StatusCode.Code.UNIMPLEMENTED);
     }
 
     private static EmulatorEndpoint endpoint() {

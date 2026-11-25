@@ -64,6 +64,9 @@ are unchanged — verified with `just check-notice` on both rather than assumed.
 Products whose SDK offers an emulator entry point never come here: Bigtable's
 `newBuilderForEmulator(host, port)` and Spanner's `setEmulatorHost` each switch the channel and the
 credentials in one call, and BigQuery's REST admin takes a URL through `BigQueryOptions.setHost`.
+Bigtable's admin clients have come here since
+[#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322): the V2 clients' settings
+have no emulator entry point, and only the data client keeps one (ADR-0208).
 
 **What this does not close.** `plaintextProvider` accepts any provider builder, so a new site can
 still hand it a bare `InstantiatingGrpcChannelProvider.newBuilder()` and lose the API's defaults

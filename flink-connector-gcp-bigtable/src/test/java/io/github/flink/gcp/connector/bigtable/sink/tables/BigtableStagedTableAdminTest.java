@@ -154,18 +154,21 @@ class BigtableStagedTableAdminTest {
     }
 
     @Test
-    void metadataClientsShareRuntimeCredentialsAndUseTheEmulatorEndpoint() throws Exception {
+    void metadataClientsShareRuntimeCredentials() throws Exception {
         NoCredentialsProvider credentials = NoCredentialsProvider.create();
+        var tableAdmin = new BigtableStagedTableAdmin(null, credentials);
+        assertThat(tableAdmin.instanceSettings().getCredentialsProvider()).isSameAs(credentials);
+        assertThat(tableAdmin.tableSettings().getCredentialsProvider()).isSameAs(credentials);
+    }
+
+    @Test
+    void metadataClientsOnAnEmulatorCarryNoCredentials() throws Exception {
         var tableAdmin =
                 new BigtableStagedTableAdmin(
-                        EmulatorEndpoint.parse("localhost:1234", "test"), credentials);
-        assertThat(tableAdmin.instanceSettings(DESTINATION).getStubSettings().getEndpoint())
-                .isEqualTo("localhost:1234");
-        assertThat(tableAdmin.tableSettings(DESTINATION).getStubSettings().getEndpoint())
-                .isEqualTo("localhost:1234");
-        assertThat(tableAdmin.instanceSettings(DESTINATION).getCredentialsProvider())
-                .isSameAs(credentials);
-        assertThat(tableAdmin.tableSettings(DESTINATION).getCredentialsProvider())
-                .isSameAs(credentials);
+                        EmulatorEndpoint.parse("localhost:1234", "test"), null);
+        assertThat(tableAdmin.instanceSettings().getCredentialsProvider())
+                .isInstanceOf(NoCredentialsProvider.class);
+        assertThat(tableAdmin.tableSettings().getCredentialsProvider())
+                .isInstanceOf(NoCredentialsProvider.class);
     }
 }

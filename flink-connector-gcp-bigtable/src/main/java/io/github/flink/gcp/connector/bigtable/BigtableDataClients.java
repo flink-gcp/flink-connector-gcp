@@ -34,10 +34,10 @@ import javax.annotation.Nullable;
  *
  * <p>At the module root rather than beside either direction, because every data-client boundary of
  * this connector takes it — the sink, both sources and the table layer all build the same settings
- * from the same inputs. The admin clients do not come through here: {@code BigtableTableAdmin} and
- * the Change Streams coordinator build their own settings, and each carries its own copy of the
- * emulator branch. A second copy of this branch is exactly the thing that reads green on a machine
- * with credentials and red in CI — the failure ADR-0064 exists to describe.
+ * from the same inputs. The admin clients' one emulator branch is in {@link BigtableClients}, since
+ * their settings hold nothing but credentials and a transport. A second copy of either branch is
+ * exactly the thing that reads green on a machine with credentials and red in CI — the failure
+ * ADR-0064 exists to describe.
  *
  * <p>Only what every path shares lives here. Per-caller tuning — the sink's batch thresholds, and
  * whatever a source may one day need — is applied by the caller on top of the builder this hands
@@ -85,6 +85,10 @@ public final class BigtableDataClients {
      * @param credentialsOverride the runtime-loaded service-account provider, or {@code null} to
      *     preserve application-default credentials
      * @return the settings builder, for the caller to tune and build
+     * @throws IllegalArgumentException if both an emulator endpoint and credentials are given
+     * @throws IllegalStateException if {@code BIGTABLE_EMULATOR_HOST} is set to a non-empty value
+     *     and no emulator endpoint is given, since the client library would then point the client
+     *     at that host, or fail on a value it cannot parse
      */
     public static BigtableDataSettings.Builder settings(
             TableDestination destination,
@@ -92,6 +96,7 @@ public final class BigtableDataClients {
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable CredentialsProvider credentialsOverride) {
         Preconditions.checkNotNull(destination, "destination must not be null");
+        EmulatorHostVariableChecks.checkUnsetFor(emulatorEndpoint);
         BigtableDataSettings.Builder settings =
                 emulatorEndpoint == null
                         ? BigtableDataSettings.newBuilder()

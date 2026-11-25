@@ -31,8 +31,8 @@ import com.google.bigtable.admin.v2.ModifyColumnFamiliesRequest;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
 import com.google.bigtable.admin.v2.Type;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableClients;
@@ -55,7 +55,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
- * Default {@link TableAdmin} backed by the Bigtable {@link BigtableTableAdminClient}.
+ * Default {@link TableAdmin} backed by the Bigtable {@link BigtableTableAdminClientV2}.
  *
  * <p>Each ensure or schema validation opens a short-lived client, closed with the call — together
  * with its channel — so its resources are not held for the writer's remaining lifetime for what is
@@ -118,15 +118,14 @@ public class BigtableTableAdmin implements TableAdmin {
     @Override
     public EnsureResult ensureTable(TableDestination destination, TableCreateOptions options)
             throws IOException {
-        try (GrpcEventLoops.LeasedClient<BigtableTableAdminClient> leased =
-                newClient(destination)) {
-            BigtableTableAdminClient client = leased.client();
+        try (GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> leased = newClient()) {
+            BigtableTableAdminClientV2 client = leased.client();
             return ensureWith(
                     destination,
                     options,
-                    client.getBaseClient()::createTable,
+                    client::createTable,
                     tableId -> familyTypesOf(client, destination),
-                    client.getBaseClient()::modifyColumnFamilies);
+                    client::modifyColumnFamilies);
         } catch (ColumnFamilyTypes.Mismatch e) {
             throw e;
         } catch (RuntimeException e) {
@@ -143,15 +142,15 @@ public class BigtableTableAdmin implements TableAdmin {
      * as the client that performs them.
      *
      * <p>The seam lets tests drive reconciliation races directly (#414), using the same functional
-     * shape as {@code BigtableBatcherAdapter} (ADR-0047). {@link BigtableTableAdminClient} is
-     * final, this repository uses no mocking framework, and the client here is built inside {@link
-     * #ensureTable} and closed with it, so nothing can hand in a scripted one. Nor can the emulator
-     * substitute: what needs driving is a <em>concurrent</em> family addition landing between one
-     * call's read and its modify, and nothing short of interposing on the RPC stream can time it.
-     * Measured on the pre-seam code (2026-08-09): a mutant that returned instead of looping, and
-     * one that looped without re-reading, each survived this module's whole non-gated suite — every
-     * test that reaches this class; the gated real-GCP auto-creation cases are single-threaded and
-     * would not produce the race either.
+     * shape as {@code BigtableBatcherAdapter} (ADR-0047). This repository uses no mocking
+     * framework, and the client here is built inside {@link #ensureTable} and closed with it, so
+     * nothing can hand in a scripted one. Nor can the emulator substitute: what needs driving is a
+     * <em>concurrent</em> family addition landing between one call's read and its modify, and
+     * nothing short of interposing on the RPC stream can time it. Measured on the pre-seam code
+     * (2026-08-09): a mutant that returned instead of looping, and one that looped without
+     * re-reading, each survived this module's whole non-gated suite — every test that reaches this
+     * class; the gated real-GCP auto-creation cases are single-threaded and would not produce the
+     * race either.
      *
      * <p>What the seam leaves outside is one projection, of the live table onto its family types,
      * which {@code BigtableTableAdminEmulatorITCase} pins in both directions — its no-op case fails
@@ -258,9 +257,8 @@ public class BigtableTableAdmin implements TableAdmin {
             Map<String, ColumnFamilyType> expected,
             boolean allowMissing)
             throws IOException {
-        try (GrpcEventLoops.LeasedClient<BigtableTableAdminClient> leased =
-                newClient(destination)) {
-            BigtableTableAdminClient client = leased.client();
+        try (GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> leased = newClient()) {
+            BigtableTableAdminClientV2 client = leased.client();
             ColumnFamilyTypes.check(
                     destination, expected, familyTypesOf(client, destination), allowMissing);
         } catch (NotFoundException e) {
@@ -277,14 +275,13 @@ public class BigtableTableAdmin implements TableAdmin {
 
     /** Reads protobuf types without parsing unrelated families through the SDK type vocabulary. */
     private static Map<String, Type> familyTypesOf(
-            BigtableTableAdminClient client, TableDestination destination) {
+            BigtableTableAdminClientV2 client, TableDestination destination) {
         Table table =
-                client.getBaseClient()
-                        .getTable(
-                                GetTableRequest.newBuilder()
-                                        .setName(tableName(destination))
-                                        .setView(Table.View.SCHEMA_VIEW)
-                                        .build());
+                client.getTable(
+                        GetTableRequest.newBuilder()
+                                .setName(tableName(destination))
+                                .setView(Table.View.SCHEMA_VIEW)
+                                .build());
         Map<String, Type> types = new LinkedHashMap<>();
         table.getColumnFamiliesMap()
                 .forEach((name, family) -> types.put(name, family.getValueType()));
@@ -406,10 +403,11 @@ public class BigtableTableAdmin implements TableAdmin {
     }
 
     /** Opens a short-lived client, on the connector's gRPC event-loop group (ADR-0208). */
-    private GrpcEventLoops.LeasedClient<BigtableTableAdminClient> newClient(
-            TableDestination destination) throws IOException {
+    private GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> newClient() throws IOException {
         try {
-            return BigtableClients.openTableAdmin(settingsBuilder(destination));
+            return BigtableClients.openTableAdmin(
+                    BigtableClients.tableAdminSettings(emulatorEndpoint, credentialsOverride),
+                    emulatorEndpoint);
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Bigtable admin client", e);
         }
@@ -417,20 +415,7 @@ public class BigtableTableAdmin implements TableAdmin {
 
     /** Builds the admin settings, exposed so tests can verify credential injection. */
     @VisibleForTesting
-    BigtableTableAdminSettings settings(TableDestination destination) throws IOException {
-        return settingsBuilder(destination).build();
-    }
-
-    private BigtableTableAdminSettings.Builder settingsBuilder(TableDestination destination) {
-        BigtableTableAdminSettings.Builder settings =
-                emulatorEndpoint == null
-                        ? BigtableTableAdminSettings.newBuilder()
-                        : BigtableTableAdminSettings.newBuilderForEmulator(
-                                emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
-        if (credentialsOverride != null) {
-            settings.setCredentialsProvider(credentialsOverride);
-        }
-        return settings.setProjectId(destination.getProject())
-                .setInstanceId(destination.getInstance());
+    BaseBigtableTableAdminSettings settings() throws IOException {
+        return BigtableClients.tableAdminSettings(emulatorEndpoint, credentialsOverride).build();
     }
 }

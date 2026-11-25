@@ -21,7 +21,7 @@ import com.google.bigtable.admin.v2.GetTableRequest;
 import com.google.bigtable.admin.v2.InstanceName;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
@@ -71,12 +71,12 @@ public abstract class AbstractBigtableEmulatorITCase {
     protected static final BigtableEmulatorContainer EMULATOR =
             BigtableEmulatorContainers.newContainer();
 
-    private static BigtableTableAdminClient adminClient;
+    private static BigtableTableAdminClientV2 adminClient;
     private static BigtableDataClient dataClient;
 
     @BeforeAll
     protected static void startClients() throws IOException {
-        adminClient = BigtableTestClients.adminClient(EMULATOR, PROJECT, INSTANCE);
+        adminClient = BigtableTestClients.adminClient(EMULATOR);
         dataClient = BigtableTestClients.dataClient(EMULATOR, PROJECT, INSTANCE);
     }
 
@@ -112,26 +112,22 @@ public abstract class AbstractBigtableEmulatorITCase {
         for (String family : families) {
             table.putColumnFamilies(family, BigtableAdminProtos.rawFamily());
         }
-        adminClient
-                .getBaseClient()
-                .createTable(
-                        CreateTableRequest.newBuilder()
-                                .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
-                                .setTableId(tableId)
-                                .setTable(table)
-                                .build());
+        adminClient.createTable(
+                CreateTableRequest.newBuilder()
+                        .setParent(InstanceName.of(PROJECT, INSTANCE).toString())
+                        .setTableId(tableId)
+                        .setTable(table)
+                        .build());
         return TableDestination.of(PROJECT, INSTANCE, tableId);
     }
 
     /** Returns the live table description, for asserting what auto-creation actually made. */
     protected static Table describeTable(String tableId) {
-        return adminClient
-                .getBaseClient()
-                .getTable(
-                        GetTableRequest.newBuilder()
-                                .setName(TableName.of(PROJECT, INSTANCE, tableId).toString())
-                                .setView(Table.View.SCHEMA_VIEW)
-                                .build());
+        return adminClient.getTable(
+                GetTableRequest.newBuilder()
+                        .setName(TableName.of(PROJECT, INSTANCE, tableId).toString())
+                        .setView(Table.View.SCHEMA_VIEW)
+                        .build());
     }
 
     /** Reads every row of the table, in row-key order. */

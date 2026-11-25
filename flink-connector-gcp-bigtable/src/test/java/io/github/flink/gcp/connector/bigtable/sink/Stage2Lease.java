@@ -29,9 +29,10 @@ import com.google.bigtable.admin.v2.LocationName;
 import com.google.bigtable.admin.v2.ProjectName;
 import com.google.bigtable.admin.v2.StorageType;
 import com.google.bigtable.admin.v2.Table;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClientV2;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import io.github.flink.gcp.connector.bigtable.BigtableAdminProtos;
+import io.github.flink.gcp.connector.bigtable.NoEmulatorVariable;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import java.io.IOException;
@@ -269,6 +270,16 @@ final class Stage2Lease {
     }
 
     void claim(String table) throws IOException {
+        claim(table, () -> {});
+    }
+
+    /**
+     * Claims a worker's table, running {@code beforeRecording} after the checks this method makes
+     * and before the claim is recorded, so a probe's own refusal neither hides those checks'
+     * diagnostics nor leaves a claim behind. Checks a worker makes after claiming, such as the
+     * production recovery service's preflight check, still come after it.
+     */
+    void claim(String table, Runnable beforeRecording) throws IOException {
         rejectRetiredDiagnostic();
         requireTarget(TableDestination.of(PROJECT, instance, table));
         if (System.currentTimeMillis() >= startedAt() + 45 * 60_000L) {
@@ -313,6 +324,7 @@ final class Stage2Lease {
                                     "Previous production worker is still running");
                         }
                     }
+                    beforeRecording.run();
                     properties.setProperty(key, "STARTED");
                     properties.setProperty(
                             "workerPid", Long.toString(ProcessHandle.current().pid()));
@@ -346,9 +358,14 @@ final class Stage2Lease {
                 throw new IOException("Independent production lease supervisor is not running");
             }
         }
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
+        // After every check above and before anything is provisioned. Planning, cleanup and the
+        // journal's other operations reach no data client and stay possible whatever the shell
+        // holds; each worker is checked by its probe inside claim(), after its admission checks and
+        // before the claim is recorded.
+        NoEmulatorVariable.require("Creating the Stage 2 production lease");
+        try (BigtableInstanceAdminClientV2 admin = BigtableInstanceAdminClientV2.create()) {
             try {
-                admin.getBaseClient().getInstance(instanceName());
+                admin.getInstance(instanceName());
                 throw new IOException(
                         "Pre-existing instance collision; it must not be reused or deleted");
             } catch (NotFoundException absent) {
@@ -369,29 +386,27 @@ final class Stage2Lease {
                         });
             }
             var creation =
-                    admin.getBaseClient()
-                            .createInstanceAsync(
-                                    CreateInstanceRequest.newBuilder()
-                                            .setParent(ProjectName.of(PROJECT).toString())
-                                            .setInstanceId(instance)
-                                            .setInstance(
-                                                    Instance.newBuilder()
-                                                            .setDisplayName(
-                                                                    "Flink Stage 2 experiment")
-                                                            .setType(Instance.Type.PRODUCTION)
-                                                            .putLabels("stage2-owner", token))
-                                            .putClusters(
-                                                    "stage2-c1",
-                                                    Cluster.newBuilder()
-                                                            .setLocation(
-                                                                    LocationName.of(
-                                                                                    PROJECT,
-                                                                                    "us-central1-b")
-                                                                            .toString())
-                                                            .setServeNodes(1)
-                                                            .setDefaultStorageType(StorageType.SSD)
-                                                            .build())
-                                            .build());
+                    admin.createInstanceAsync(
+                            CreateInstanceRequest.newBuilder()
+                                    .setParent(ProjectName.of(PROJECT).toString())
+                                    .setInstanceId(instance)
+                                    .setInstance(
+                                            Instance.newBuilder()
+                                                    .setDisplayName("Flink Stage 2 experiment")
+                                                    .setType(Instance.Type.PRODUCTION)
+                                                    .putLabels("stage2-owner", token))
+                                    .putClusters(
+                                            "stage2-c1",
+                                            Cluster.newBuilder()
+                                                    .setLocation(
+                                                            LocationName.of(
+                                                                            PROJECT,
+                                                                            "us-central1-b")
+                                                                    .toString())
+                                                    .setServeNodes(1)
+                                                    .setDefaultStorageType(StorageType.SSD)
+                                                    .build())
+                                    .build());
             String operation = creation.getName();
             update(properties -> properties.setProperty("operation", operation));
             creation.get(10, java.util.concurrent.TimeUnit.MINUTES);
@@ -406,7 +421,7 @@ final class Stage2Lease {
                             .setMultiClusterRoutingUseAny(
                                     AppProfile.MultiClusterRoutingUseAny.getDefaultInstance()));
         }
-        try (BigtableTableAdminClient admin = BigtableTableAdminClient.create(PROJECT, instance)) {
+        try (BigtableTableAdminClientV2 admin = BigtableTableAdminClientV2.create()) {
             for (String name : tables) {
                 requireCreating();
                 Table.Builder table =
@@ -427,13 +442,12 @@ final class Stage2Lease {
                     table.putColumnFamilies(
                             "agg", BigtableAdminProtos.typedFamily(BigtableAdminProtos.int64Sum()));
                 }
-                admin.getBaseClient()
-                        .createTable(
-                                CreateTableRequest.newBuilder()
-                                        .setParent(instanceName().toString())
-                                        .setTableId(name)
-                                        .setTable(table)
-                                        .build());
+                admin.createTable(
+                        CreateTableRequest.newBuilder()
+                                .setParent(instanceName().toString())
+                                .setTableId(name)
+                                .setTable(table)
+                                .build());
             }
         }
         requireCreating();
@@ -456,15 +470,14 @@ final class Stage2Lease {
     }
 
     private void createAppProfile(
-            BigtableInstanceAdminClient admin, String profile, AppProfile.Builder routing) {
-        admin.getBaseClient()
-                .createAppProfile(
-                        CreateAppProfileRequest.newBuilder()
-                                .setParent(instanceName().toString())
-                                .setAppProfileId(profile)
-                                // What the client's model request defaulted the description to.
-                                .setAppProfile(routing.setDescription(profile))
-                                .build());
+            BigtableInstanceAdminClientV2 admin, String profile, AppProfile.Builder routing) {
+        admin.createAppProfile(
+                CreateAppProfileRequest.newBuilder()
+                        .setParent(instanceName().toString())
+                        .setAppProfileId(profile)
+                        // What the client's model request defaulted the description to.
+                        .setAppProfile(routing.setDescription(profile))
+                        .build());
     }
 
     private InstanceName instanceName() {
@@ -549,7 +562,7 @@ final class Stage2Lease {
         }
         update(p -> p.setProperty("phase", "CLEANING"));
         terminateWorker(properties);
-        try (BigtableInstanceAdminClient admin = BigtableInstanceAdminClient.create(PROJECT)) {
+        try (BigtableInstanceAdminClientV2 admin = BigtableInstanceAdminClientV2.create()) {
             removeOwned(
                     token,
                     new OwnedInstance() {
@@ -557,8 +570,7 @@ final class Stage2Lease {
                         @Override
                         public String owner() {
                             try {
-                                return admin.getBaseClient()
-                                        .getInstance(instanceName())
+                                return admin.getInstance(instanceName())
                                         .getLabelsMap()
                                         .getOrDefault("stage2-owner", "");
                             } catch (NotFoundException absent) {
@@ -579,8 +591,7 @@ final class Stage2Lease {
                                         ownedCreation(
                                                 instance,
                                                 token,
-                                                admin.getBaseClient()
-                                                        .getOperationsClient()
+                                                admin.getOperationsClient()
                                                         .listOperations(
                                                                 "operations/projects/flink-gcp/instances/"
                                                                         + instance,
@@ -592,17 +603,13 @@ final class Stage2Lease {
                                 update(p -> p.setProperty("operation", recovered.getName()));
                                 return recovered.getDone();
                             }
-                            return admin.getBaseClient()
-                                    .getOperationsClient()
-                                    .getOperation(operation)
-                                    .getDone();
+                            return admin.getOperationsClient().getOperation(operation).getDone();
                         }
 
                         @Override
                         public boolean ready() throws IOException {
                             try {
-                                Instance current =
-                                        admin.getBaseClient().getInstance(instanceName());
+                                Instance current = admin.getInstance(instanceName());
                                 boolean ready =
                                         token.equals(current.getLabelsMap().get("stage2-owner"))
                                                 && current.getState() == Instance.State.READY;
@@ -617,13 +624,13 @@ final class Stage2Lease {
 
                         @Override
                         public void delete() {
-                            admin.getBaseClient().deleteInstance(instanceName());
+                            admin.deleteInstance(instanceName());
                         }
 
                         @Override
                         public boolean listed() {
                             ListInstancesResponse listing =
-                                    admin.getBaseClient().listInstances(ProjectName.of(PROJECT));
+                                    admin.listInstances(ProjectName.of(PROJECT));
                             BigtableAdminProtos.checkListedEverywhere(
                                     listing.getFailedLocationsList(), "instances");
                             return listing.getInstancesList().stream()

@@ -25,10 +25,10 @@ import com.google.bigtable.admin.v2.ColumnFamily;
 import com.google.bigtable.admin.v2.GetAppProfileRequest;
 import com.google.bigtable.admin.v2.GetTableRequest;
 import com.google.bigtable.admin.v2.Table;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableInstanceAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClientV2;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableClients;
@@ -63,31 +63,32 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
             throws IOException {
         // Each client holds its own lease on the event-loop group (ADR-0208), released after it
         // closes; the try closes the table client first, then the instance client.
-        try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClient> leasedInstances =
-                        BigtableClients.openInstanceAdmin(instanceSettingsBuilder(destination));
-                GrpcEventLoops.LeasedClient<BigtableTableAdminClient> leasedTables =
-                        BigtableClients.openTableAdmin(tableSettingsBuilder(destination))) {
-            BigtableInstanceAdminClient instances = leasedInstances.client();
-            BigtableTableAdminClient tables = leasedTables.client();
+        try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClientV2> leasedInstances =
+                        BigtableClients.openInstanceAdmin(
+                                BigtableClients.instanceAdminSettings(endpoint, credentials),
+                                endpoint);
+                GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> leasedTables =
+                        BigtableClients.openTableAdmin(
+                                BigtableClients.tableAdminSettings(endpoint, credentials),
+                                endpoint)) {
+            BigtableInstanceAdminClientV2 instances = leasedInstances.client();
+            BigtableTableAdminClientV2 tables = leasedTables.client();
             String instance =
                     "projects/"
                             + destination.getProject()
                             + "/instances/"
                             + destination.getInstance();
             AppProfile actual =
-                    instances
-                            .getBaseClient()
-                            .getAppProfile(
-                                    GetAppProfileRequest.newBuilder()
-                                            .setName(instance + "/appProfiles/" + profile)
-                                            .build());
+                    instances.getAppProfile(
+                            GetAppProfileRequest.newBuilder()
+                                    .setName(instance + "/appProfiles/" + profile)
+                                    .build());
             Table table =
-                    tables.getBaseClient()
-                            .getTable(
-                                    GetTableRequest.newBuilder()
-                                            .setName(instance + "/tables/" + destination.getTable())
-                                            .setView(Table.View.SCHEMA_VIEW)
-                                            .build());
+                    tables.getTable(
+                            GetTableRequest.newBuilder()
+                                    .setName(instance + "/tables/" + destination.getTable())
+                                    .setView(Table.View.SCHEMA_VIEW)
+                                    .build());
             validateMetadata(destination, actual, table, markerFamily, expectedFamilies);
         } catch (RuntimeException failure) {
             throw new IOException(
@@ -98,41 +99,13 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
     }
 
     @VisibleForTesting
-    BigtableInstanceAdminSettings instanceSettings(TableDestination destination)
-            throws IOException {
-        return instanceSettingsBuilder(destination).build();
-    }
-
-    private BigtableInstanceAdminSettings.Builder instanceSettingsBuilder(
-            TableDestination destination) {
-        var builder =
-                endpoint == null
-                        ? BigtableInstanceAdminSettings.newBuilder()
-                        : BigtableInstanceAdminSettings.newBuilderForEmulator(
-                                endpoint.getHost(), endpoint.getPort());
-        builder.setProjectId(destination.getProject());
-        if (credentials != null) {
-            builder.setCredentialsProvider(credentials);
-        }
-        return builder;
+    BaseBigtableInstanceAdminSettings instanceSettings() throws IOException {
+        return BigtableClients.instanceAdminSettings(endpoint, credentials).build();
     }
 
     @VisibleForTesting
-    BigtableTableAdminSettings tableSettings(TableDestination destination) throws IOException {
-        return tableSettingsBuilder(destination).build();
-    }
-
-    private BigtableTableAdminSettings.Builder tableSettingsBuilder(TableDestination destination) {
-        var builder =
-                endpoint == null
-                        ? BigtableTableAdminSettings.newBuilder()
-                        : BigtableTableAdminSettings.newBuilderForEmulator(
-                                endpoint.getHost(), endpoint.getPort());
-        builder.setProjectId(destination.getProject()).setInstanceId(destination.getInstance());
-        if (credentials != null) {
-            builder.setCredentialsProvider(credentials);
-        }
-        return builder;
+    BaseBigtableTableAdminSettings tableSettings() throws IOException {
+        return BigtableClients.tableAdminSettings(endpoint, credentials).build();
     }
 
     static void validateMetadata(

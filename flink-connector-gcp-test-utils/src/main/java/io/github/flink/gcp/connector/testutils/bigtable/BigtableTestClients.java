@@ -18,10 +18,13 @@ package io.github.flink.gcp.connector.testutils.bigtable;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.grpc.ChannelPoolSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import io.grpc.ManagedChannelBuilder;
 import org.testcontainers.containers.BigtableEmulatorContainer;
 
 import java.io.IOException;
@@ -39,22 +42,31 @@ public final class BigtableTestClients {
     private BigtableTestClients() {}
 
     /**
-     * Opens an admin client against the emulator.
+     * Opens a table admin client against the emulator, over one plaintext channel that the client
+     * owns, with no credentials.
+     *
+     * <p>The client takes protobuf requests that name their project and instance in full, so it is
+     * not bound to either.
      *
      * @param emulator the running container
-     * @param project the project the tables are addressed under
-     * @param instance the instance the tables are addressed under
      * @return the client, which the caller closes
      * @throws IOException if the client cannot be created
      */
-    public static BigtableTableAdminClient adminClient(
-            BigtableEmulatorContainer emulator, String project, String instance)
+    public static BigtableTableAdminClientV2 adminClient(BigtableEmulatorContainer emulator)
             throws IOException {
-        return BigtableTableAdminClient.create(
-                BigtableTableAdminSettings.newBuilderForEmulator(
-                                emulator.getHost(), emulator.getEmulatorPort())
-                        .setProjectId(project)
-                        .setInstanceId(instance)
+        return BigtableTableAdminClientV2.create(
+                BaseBigtableTableAdminSettings.newBuilder()
+                        .setCredentialsProvider(NoCredentialsProvider.create())
+                        .setTransportChannelProvider(
+                                BaseBigtableTableAdminSettings.defaultGrpcTransportProviderBuilder()
+                                        .setEndpoint(
+                                                emulator.getHost()
+                                                        + ":"
+                                                        + emulator.getEmulatorPort())
+                                        .setChannelPoolSettings(
+                                                ChannelPoolSettings.staticallySized(1))
+                                        .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
+                                        .build())
                         .build());
     }
 

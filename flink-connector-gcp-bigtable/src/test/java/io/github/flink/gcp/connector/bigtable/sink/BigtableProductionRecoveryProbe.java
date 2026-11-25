@@ -22,14 +22,15 @@ import com.google.bigtable.admin.v2.GetTableRequest;
 import com.google.bigtable.admin.v2.InstanceName;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.v2.CheckAndMutateRowRequest;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClientV2;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ConditionalRowMutation;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.NoEmulatorVariable;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableStagedTableAdmin;
 
@@ -81,7 +82,10 @@ public final class BigtableProductionRecoveryProbe {
                     throw new IllegalArgumentException(
                             "Worker table must match the fixed API and supported Flink line");
                 }
-                lease.claim(table);
+                // After the lease's admission checks and before the claim is recorded and its
+                // budget reserved.
+                lease.claim(
+                        table, () -> NoEmulatorVariable.require("A production recovery worker"));
                 service(lease, table);
             } else {
                 throw new IllegalArgumentException("Unknown production recovery command");
@@ -99,6 +103,9 @@ public final class BigtableProductionRecoveryProbe {
     }
 
     private static void preflight(Stage2Lease lease) throws Exception {
+        // Inside main's try, so a refusal still writes the supervisor's stop signal; the service
+        // command is checked before its claim, and creation in Stage2Lease.create.
+        NoEmulatorVariable.require("The production recovery preflight");
         lease.requireLive();
         lease.update(
                 properties -> {
@@ -187,10 +194,8 @@ public final class BigtableProductionRecoveryProbe {
         Path directory = lease.work.resolve(table);
         Files.createDirectories(lease.work);
         Files.createDirectory(directory);
-        try (var instances = BigtableInstanceAdminClient.create(destination.getProject());
-                var tables =
-                        BigtableTableAdminClient.create(
-                                destination.getProject(), destination.getInstance());
+        try (var instances = BigtableInstanceAdminClientV2.create();
+                var tables = BigtableTableAdminClientV2.create();
                 var data = BigtableDataClient.create(settings.build());
                 var run = ProductionRecoveryJob.newRun(destination)) {
             var backend =
@@ -218,7 +223,7 @@ public final class BigtableProductionRecoveryProbe {
                         @Override
                         public AppProfile profile(GetAppProfileRequest request) throws Exception {
                             lease.requireLive();
-                            var response = instances.getBaseClient().getAppProfile(request);
+                            var response = instances.getAppProfile(request);
                             checkMetadata(response.getSerializedSize());
                             return response;
                         }
@@ -226,7 +231,7 @@ public final class BigtableProductionRecoveryProbe {
                         @Override
                         public Table table(GetTableRequest request) throws Exception {
                             lease.requireLive();
-                            var response = tables.getBaseClient().getTable(request);
+                            var response = tables.getTable(request);
                             checkMetadata(response.getSerializedSize());
                             return response;
                         }
@@ -249,11 +254,8 @@ public final class BigtableProductionRecoveryProbe {
                         table.startsWith("recovery-table"),
                         () -> {
                             lease.requireLive();
-                            instances
-                                    .getBaseClient()
-                                    .getInstance(
-                                            InstanceName.of(
-                                                    destination.getProject(), lease.instance));
+                            instances.getInstance(
+                                    InstanceName.of(destination.getProject(), lease.instance));
                             verifyReadback(
                                     run, proxy, data.readRows(Query.create(table).limit(129)));
                             if (BigtableStage2Probe.directorySize(lease.work) > (2L << 30)) {

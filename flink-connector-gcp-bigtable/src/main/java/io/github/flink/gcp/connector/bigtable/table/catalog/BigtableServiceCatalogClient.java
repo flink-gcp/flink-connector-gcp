@@ -27,8 +27,8 @@ import com.google.bigtable.admin.v2.ListTablesRequest;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
 import com.google.bigtable.admin.v2.Type;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BaseBigtableTableAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClientV2;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableClients;
@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * {@link BigtableCatalogClient} over one instance's {@link BigtableTableAdminClient}.
+ * {@link BigtableCatalogClient} over one instance's {@link BigtableTableAdminClientV2}.
  *
  * <p>The client runs on the connector's gRPC event-loop group and is held, with its lease, from the
  * catalog's first metadata request until the catalog closes (ADR-0208), as every connector catalog
@@ -53,23 +53,24 @@ import java.util.Map;
  * during an {@code ALTER CATALOG}, before it opens the replacement; a catalog left open keeps its
  * client for as long as the process runs.
  *
- * <p>Both requests go through the protobuf client, not the client's model methods, which the pinned
- * client marks {@code @ObsoleteApi}: tables are listed with {@code NAME_ONLY}, and a table's
- * families are read with {@code SCHEMA_VIEW}, as the sink's table admin reads them, so a family
- * whose value type the client's model classes do not know still reaches the catalog's mapping
- * rather than failing inside the client.
+ * <p>Both requests are protobuf requests that name the instance or table in full, never the model
+ * types of the {@code @ObsoleteApi} wrapper client: tables are listed with {@code NAME_ONLY}, and a
+ * table's families are read with {@code SCHEMA_VIEW}, as the sink's table admin reads them, so a
+ * family whose value type the SDK's model classes do not know still reaches the catalog's mapping
+ * rather than failing inside the client. The client's settings carry no project or instance; the
+ * requests do.
  */
 @Internal
 final class BigtableServiceCatalogClient implements BigtableCatalogClient {
 
     /** The admin client and its event-loop lease, released when the catalog closes this. */
-    private final GrpcEventLoops.LeasedClient<BigtableTableAdminClient> client;
+    private final GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> client;
 
     private final String project;
     private final String instance;
 
     private BigtableServiceCatalogClient(
-            GrpcEventLoops.LeasedClient<BigtableTableAdminClient> client,
+            GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> client,
             String project,
             String instance) {
         this.client = client;
@@ -95,52 +96,36 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
             throws IOException {
         return new BigtableServiceCatalogClient(
                 BigtableClients.openTableAdmin(
-                        settingsBuilder(project, instance, emulatorEndpoint, credentials)),
+                        BigtableClients.tableAdminSettings(emulatorEndpoint, credentials),
+                        emulatorEndpoint),
                 project,
                 instance);
     }
 
     @VisibleForTesting
-    static BigtableTableAdminSettings settings(
-            String project,
-            String instance,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable CredentialsProvider credentials)
+    static BaseBigtableTableAdminSettings settings(
+            @Nullable EmulatorEndpoint emulatorEndpoint, @Nullable CredentialsProvider credentials)
             throws IOException {
-        return settingsBuilder(project, instance, emulatorEndpoint, credentials).build();
-    }
-
-    private static BigtableTableAdminSettings.Builder settingsBuilder(
-            String project,
-            String instance,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable CredentialsProvider credentials) {
-        BigtableTableAdminSettings.Builder settings =
-                emulatorEndpoint == null
-                        ? BigtableTableAdminSettings.newBuilder()
-                        : BigtableTableAdminSettings.newBuilderForEmulator(
-                                emulatorEndpoint.getHost(), emulatorEndpoint.getPort());
-        if (credentials != null) {
-            settings.setCredentialsProvider(credentials);
-        }
-        return settings.setProjectId(project).setInstanceId(instance);
+        return BigtableClients.tableAdminSettings(emulatorEndpoint, credentials).build();
     }
 
     @Override
     public List<String> listTables() {
         List<String> tables = new ArrayList<>();
         for (Table table :
-                client.client()
-                        .getBaseClient()
-                        .listTables(
-                                ListTablesRequest.newBuilder()
-                                        .setParent(InstanceName.of(project, instance).toString())
-                                        .setView(Table.View.NAME_ONLY)
-                                        .build())
-                        .iterateAll()) {
+                client.client().listTables(listTablesRequest(project, instance)).iterateAll()) {
             tables.add(TableName.parse(table.getName()).getTable());
         }
         return tables;
+    }
+
+    /** The listing request: the instance's tables, by name only. */
+    @VisibleForTesting
+    static ListTablesRequest listTablesRequest(String project, String instance) {
+        return ListTablesRequest.newBuilder()
+                .setParent(InstanceName.of(project, instance).toString())
+                .setView(Table.View.NAME_ONLY)
+                .build();
     }
 
     @Nullable
@@ -148,16 +133,7 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
     public Map<String, Type> columnFamilies(String table) {
         Table found;
         try {
-            found =
-                    client.client()
-                            .getBaseClient()
-                            .getTable(
-                                    GetTableRequest.newBuilder()
-                                            .setName(
-                                                    TableName.of(project, instance, table)
-                                                            .toString())
-                                            .setView(Table.View.SCHEMA_VIEW)
-                                            .build());
+            found = client.client().getTable(tableRequest(project, instance, table));
         } catch (NotFoundException e) {
             return null;
         }
@@ -165,6 +141,15 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
         found.getColumnFamiliesMap()
                 .forEach((name, family) -> families.put(name, family.getValueType()));
         return families;
+    }
+
+    /** The read of one table's families: its schema view. */
+    @VisibleForTesting
+    static GetTableRequest tableRequest(String project, String instance, String table) {
+        return GetTableRequest.newBuilder()
+                .setName(TableName.of(project, instance, table).toString())
+                .setView(Table.View.SCHEMA_VIEW)
+                .build();
     }
 
     /** Closes the admin client and releases its lease on the event-loop group. */

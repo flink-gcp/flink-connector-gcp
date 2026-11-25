@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0141: A surface's stability tier is set by what can reshape its inputs and outputs
 
 - Status: Accepted
-- Date: 2026-08-23 (measured 2026-08-23); revised by [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068) (2026-11-07) and by [#2319](https://github.com/flink-gcp/flink-connector-gcp/pull/2319) (2026-11-24)
+- Date: 2026-08-23 (measured 2026-08-23); revised by [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068) (2026-11-07), by [#2319](https://github.com/flink-gcp/flink-connector-gcp/pull/2319) (2026-11-24), and by [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322) (2026-11-25)
 - Issues: [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783),
   [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728),
   [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706),
@@ -137,11 +137,16 @@ trees, all internal calls under the fourth clause:
   tier, not an instability one). Both entries became historical when
   [#1622](https://github.com/flink-gcp/flink-connector-gcp/issues/1622) moved every admin call to
   the protobuf client, which builds no `GCRules` and calls no model method. The `GCRules` entry
-  still is. The `@ObsoleteApi` one is current again: google-cloud-bigtable 2.89.0
+  still is. The `@ObsoleteApi` one was current again for a release: google-cloud-bigtable 2.89.0
   ([#2319](https://github.com/flink-gcp/flink-connector-gcp/pull/2319)) marks the admin clients,
-  their `create` factories and their settings classes, through which the module opens both admin
-  clients (`BigtableClients`, `BigtableCredentials`), until
-  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322) moves to the V2 clients.
+  their `create` factories and their settings classes, through which the module opened both admin
+  clients, and [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322) made it
+  historical again by opening them as `BigtableTableAdminClientV2` and
+  `BigtableInstanceAdminClientV2` from the unmarked `Base*AdminSettings` (`BigtableClients`). The
+  default credential scopes are read from unmarked members too (`BigtableCredentials`):
+  `Base*AdminSettings.getDefaultServiceScopes()` and the provider of
+  `EnhancedBigtableStubSettings.newBuilder()`. The default-credentials builders were passed over
+  because gax marks `GoogleCredentialsProvider.Builder` `@BetaApi`.
 - **spanner**: `com.google.cloud.ByteArray` and `com.google.cloud.Date` are class-level
   `@BetaApi` (`RowDataToSpannerValueConverter`, `DataChangeRecordToRowDataConverter`); every
   Spanner client surface the module calls (`DatabaseClient.batchWriteAtLeastOnce`,

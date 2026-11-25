@@ -195,8 +195,10 @@ materializing the public mutation or any public entry/value/range object.
 - `Table.getChangeStreamRetention()` exposes the configured retention to the connector, while a
   fresh `latest()` avoids that admin read through ADR-0094's lazy lookup. Since
   [#1622](https://github.com/flink-gcp/flink-connector-gcp/issues/1622) the coordinator reads the
-  same value from the protobuf `Table`'s `change_stream_config` through `getBaseClient()`, so a
-  family value type the client's model cannot parse no longer fails the read.
+  same value from the protobuf `Table`'s `change_stream_config` through `getBaseClient()` (the
+  `BigtableTableAdminClientV2` it returned is opened directly since
+  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322)), so a family value type
+  the client's model cannot parse no longer fails the read.
 - The first real-service run on 2026-08-12 rejected a partition whose boundary oneofs had been
   cleared with `INVALID_ARGUMENT: partition.row_range must be the form of [start_key, end_key)`.
   java-bigtable 2.80.0 and Apache Beam both preserve `ByteStringRange.create(empty, empty)`, which
