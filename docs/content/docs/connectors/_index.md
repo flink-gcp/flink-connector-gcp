@@ -187,9 +187,23 @@ In a thread dump, `flink-gcp-grpc-elg-*` threads left after every job using the 
 ended mean a client was not closed, and a `NoClassDefFoundError` from one of them after a job
 ended means a close outlasted the class loader.
 If a job's own code uses the Storage Write API's connection pool in the same class loader as the
-connector, with the same location and credentials, the two share the pool's connections, and the
-connector stops the group when its last BigQuery client closes even if the job's writers are still
-using them.
+connector, with the same location and credentials, the two share the pool's connections.
+So when the job's own class loader defines the connectors' shared classes, as it does by default
+for a connector shipped with the job, a BigQuery default-stream writer keeps the group running
+until Flink releases that class loader on the TaskManager, rather than until the last client
+closes.
+The group then stops before the loader closes, and the TaskManager waits for that, up to 11
+seconds, instead of for the last close; a group thread still busy after that can outlive the
+loader.
+Once a client has started the group, its threads stay up while the writer has no destination
+open, and the clients of any other of these connectors the job ships unshaded run on it too, so
+`flink-gcp-grpc-elg-*` threads are expected for as long as such a job runs on the TaskManager.
+When the connector comes from a class loader the job shares, such as Flink's `lib/` directory,
+the group is shared by every job using it and stops when its last client closes, even if a job's
+own writers are still using the pool's connections.
+A writer that cannot tell which class loader defined those classes, because a class loader
+refuses the lookup, goes on without keeping the group itself; the group then stops when its last
+client closes, unless another writer of the job is keeping it.
 
 Two kinds of channel in the Spanner connector stay on gRPC's group, because the client library
 builds them itself.

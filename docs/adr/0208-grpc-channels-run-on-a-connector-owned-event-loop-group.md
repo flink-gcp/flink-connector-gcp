@@ -25,6 +25,7 @@ limitations under the License.
   [#2264](https://github.com/flink-gcp/flink-connector-gcp/issues/2264),
   [#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265),
   [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
+  [#2268](https://github.com/flink-gcp/flink-connector-gcp/issues/2268),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269),
   [#2282](https://github.com/flink-gcp/flink-connector-gcp/issues/2282),
   [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312),
@@ -58,9 +59,72 @@ cluster's JobManager when the client was a source's enumerator.
 releases the group's last lease shuts it down and waits for its threads.**
 
 - `base.rpc.GrpcEventLoops` holds one group per class loader, the way gRPC does.
-  `acquire()` opens a lease and creates the group if none is open; closing the last lease shuts the
-  group down (no quiet period, a 10 s bound) and waits for termination.
+  `acquire()` opens a lease and creates the group if it is not running; closing the last lease
+  shuts the group down (no quiet period, a 10 s bound) and waits for termination.
   A later lease creates a new group.
+- **A group can instead be pinned to the job's class loader** (refined 2026-11-25, #2268).
+  `GrpcEventLoops.pinTo(UserCodeClassLoader)` registers a release hook on the job's user-code class
+  loader, through `registerReleaseHookIfAbsent`, which a writer's or reader's init context offers
+  on a TaskManager (`WriterInitContext` and `SourceReaderContext`, Flink 1.20.5 and 2.2.1).
+  While the hook is registered, the release of the last lease leaves the group running, and the
+  hook shuts it down and waits for its threads, ignoring an interrupt, before Flink closes the
+  loader (`BlobLibraryCacheManager` runs the hooks and then closes the loader).
+  The hook then returns the group to the lease rule.
+  Flink keeps only the first hook registered under a name, so the hook is registered under
+  `GrpcEventLoops`' own class name, which a shaded copy carries relocated: if two copies in one
+  job loader each pinned (the connector's and a SQL connector JAR's), neither hook would displace
+  the other.
+  Only one copy pins today, since the BigQuery sink resolves to one class in a job loader.
+  Flink keeps its hooks in an unsynchronized `HashMap` (`ResolvedClassLoader`, 1.20.5 and 2.2.1),
+  so a registration racing another registration on a different thread can be lost, and the
+  group of a pin whose hook was lost survives the loader; this is Flink's limit, not one the
+  connector can see.
+  A copy that no pinning writer reaches keeps the lease rule.
+  The pin keeps the whole group of that copy running, so in a job that ships several of these
+  connectors unshaded, their clients run on the pinned group too, and their own last close no
+  longer stops it; their channels still close with their clients.
+  Only the BigQuery default-stream writer pins (see the BigQuery section).
+- **A lease can still be open when the hook runs** (#2268).
+  Flink releases the loader without waiting for the job's tasks when the TaskManager shuts down or
+  drops the job (`TaskExecutor.closeJob`, Flink 1.20.5 and 2.2.1), and a client nothing closed
+  holds its lease for good.
+  The group stops under such a lease anyway, with a warning, since its threads must not outlive
+  the loader.
+  The hook drops such leases from the count, so a task still opening clients after the hook gets a
+  new group that stops with its own last lease.
+  The copy does not pin to that loader again, since Flink would never run the new hook; it
+  compares the class loader itself, because Flink hands each `getUserCodeClassLoader()` call a new
+  wrapper.
+  A pin can still be registered after Flink has run the loader's hooks (a TaskManager shutting down
+  or dropping the job while a task is still creating its writer): Flink keeps no record that it
+  has run them, so that pin is never released and the group's threads stay until the process
+  exits.
+  Once the loader has closed, Flink's leak-check wrapper throws on the lookup the ownership check
+  makes, which is then read as "not the job's" and refuses the pin; whether the JVM answers that
+  lookup from its own record without asking the wrapper was not measured.
+- **The pin applies only when the job's own loader defined `GrpcEventLoops`** (#2268): Flink's
+  loader resolves the class to this copy, that loader's parent does not, and the class's loader is
+  neither the system class loader nor one of its ancestors.
+  The system-loader clause is for Flink's JobManager, which hands a job with no JARs or class
+  paths of its own the system class loader itself, whose parent does not resolve the class.
+  The check looks at the parent rather than at the class's own loader because Flink's leak-check
+  wrapper defines nothing itself but shares the parent of the loader that does.
+  A parent that resolves the class shares it with other jobs: the connector in Flink's `lib/`
+  directory or on the application class path (a MiniCluster's or a test's), a copy the job's
+  loader resolves parent-first although the job also ships one, and a parent that delegates to a
+  loader outside its own chain.
+  The class is `GrpcEventLoops` in the base module, not the writer: a job that ships the BigQuery
+  sink but takes the base module from `lib/` is not pinned.
+  What decides is which loader defined the class, not how the job was submitted: a connector a job
+  supplies through `pipeline.classpaths`, or a connector JAR submitted to a MiniCluster, is the
+  job's.
+  In each excluded case the group is shared with other jobs in the process, so a job's hook must
+  not stop it, and the lease rule stays.
+  A runtime exception or a linkage error while reading the loaders or looking the class up, other
+  than not finding it (a closed leak-check wrapper, a parent copy that cannot load, a security
+  manager refusing `getClassLoader`), leaves the answer open, and the writer goes on without
+  adding a pin, which is optional: the group then stops with its last lease unless another
+  writer's pin holds it.
 - That wait, up to 11 s in all, ignores an interrupt, except on a thread inside
   `GrpcEventLoops.interruptibleReleases()` (refined 2026-11-23, #2269).
   There it ignores one for its first second only; after that, an interrupt ends the wait, the
@@ -90,8 +154,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   The lease-less `openPlaintextChannel` and `fixedProvider(ManagedChannel)`, and the overload with
   no provider builder, were removed with their last callers.
   The configurator reads the current group when gax builds a channel and leaves the builder alone
-  when no lease is open, so a configurator that outlives its lease never hands a channel a
-  terminated group.
+  when the group is not running (a pinned group runs with no lease open), so a configurator that
+  outlives its lease never hands a channel a terminated group.
 - `open(factory)` opens a lease, creates the client under it, and releases the lease if the
   creation fails.
   The `LeasedClient` it returns shuts the client down on `close()`, waits 5 s for its channels,
@@ -151,6 +215,9 @@ releases the group's last lease shuts it down and waits for its threads.**
   Setting one replaces the provider the SDK builds, so `productionChannelProvider` restates the
   SDK's settings (one-minute keepalives that run without calls and two channels per CPU,
   `StreamWriter.getBigQueryWriteSettings` in google-cloud-bigquerystorage 3.38.0).
+- **The default-stream writer pins the group to the job's class loader** when it is created
+  (#2268), so that in a job whose loader defined the connector, connections the pool built from
+  the connector's settings never outlive the group while the loader is open.
 - The SDK's `ConnectionWorkerPool` builds its connections from the first writer's settings for the
   life of the class loader.
   A connection it opens after that writer's appender closed still lands on the group, because it
@@ -618,6 +685,22 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   ([ADR-0210](0210-a-session-cluster-can-opt-out-of-grpc-buffer-pools-and-spanner-static-executors-let-idle-threads-exit.md),
   [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296)).
 
+- **The pin** (#2268), measured 2026-11-25 on the same kind of cluster (Flink 2.2.1) with the
+  BigQuery emulator: a streaming SQL job wrote ten rows through a default-stream table sink whose
+  destination idle timeout was 3 s, kept running with no further rows, and was cancelled 17 s after
+  it started running, one trial per arm.
+  With the SQL connector JAR shipped with the job, the group's 8 threads were still running after
+  the destination's eviction, the TaskManager ran the hook once when the job left it (logged under
+  the SQL JAR's relocated class name, `io.github.flink.gcp.connector.bigquery.shaded.io.github.flink.gcp.connector.base.rpc.GrpcEventLoops`),
+  and no group thread remained 8 s after the cancellation.
+  Both arms of this change were run on its final code and on its first form, which registered the
+  hook under a fixed name, with the same results.
+  On the code before this change, and with this change's JAR in `lib/`, the threads were gone after
+  the eviction and no hook ran.
+  No process exited and no `NoClassDefFoundError` was logged in any arm.
+  The emulator's default stream does not go through the pool, so these trials show when the group
+  stops, not a job's own writer on pooled connections.
+
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
 shaded Netty allocator, reachable after six jobs, so that is unrelated to this change.
@@ -661,6 +744,18 @@ writing jobs here were not traced.
   stays.
   Holding its interrupt back would only keep a thread that is being stopped waiting for another
   thread's close, up to that client's whole close (twelve minutes for a Bigtable data client).
+- **Giving the connector a connection pool of its own** (#2268), by passing credentials whose
+  `hashCode` differs from the job's.
+  It means wrapping `Credentials`, and gax and gRPC branch on the concrete credentials type
+  (self-signed JWTs for `ServiceAccountCredentials`, the quota-project header, DirectPath's
+  `ComputeEngineCredentials` check).
+- **Pinning from every TaskManager-side writer and reader** (#2268).
+  Only the Storage Write API's pool keeps channels the connector's settings built after the
+  connector's last lease is released; elsewhere the lease rule already stops the group when its
+  last channel closes.
+  A pin moves the group's shutdown from the task's close to the release of the loader, which Flink
+  runs on the TaskManager's main thread while it holds its library cache's lock, so it is taken
+  only where it fixes something.
 - **A group per client.**
   It would multiply event-loop threads by the number of clients, where one shared group matches
   what gRPC itself does.
@@ -699,13 +794,30 @@ writing jobs here were not traced.
 - The Storage Write API's connection pool is JVM-static per class loader and keyed by location and
   credentials, and it builds every connection from the first writer's settings.
   If a job's own code also writes through that pool in the connector's class loader, its
-  connections share the connector's settings: they land on the group while a connector lease is
-  open, and the connector stops the group when its last lease is released (its last BigQuery
-  client in that class loader closes) even if the job's writers still use those connections;
-  created first, the job's settings leave the connector's connections on gRPC's group instead.
-  The connector cannot give its pool a key of its own, so this is recorded rather than prevented.
-- The group stops whenever its last lease closes, for example when the last destination of a
-  default-stream writer is evicted as idle, and the next client starts a new one.
+  connections share the connector's settings and land on the group while a connector lease is
+  open; created first, the job's settings leave the connector's connections on gRPC's group
+  instead.
+  Since #2268 a job whose loader defined the connector keeps that group until its class loader is
+  released, so the job's writers keep their connections.
+  With the connector in `lib/` there is no pin, and the connector stops the group when its last
+  lease is released even if the job's writers still use those connections.
+- In a job whose loader defined the connector, once a default-stream writer has been created,
+  the group runs from its first client until Flink releases the job's class loader on that
+  TaskManager, idle or not, and it serves every other connector in the same copy of
+  `GrpcEventLoops` until then: a group the earlier consequences say stops with its last lease
+  stops at the release of the loader instead.
+  The hook's wait for the threads runs on the TaskManager's main thread, which releases the
+  loader, while Flink holds its library cache's lock, so it holds up that TaskManager's RPCs and
+  any task obtaining its class loader from the cache for as long as it takes: normally
+  milliseconds, up to 11 s if a group thread is busy, after which the hook gives up and a thread
+  still busy can outlive the loader.
+  A failover inside the job keeps the loader while the TaskManager keeps a slot for the job or
+  still tracks a result partition of it, so the group survives it; a TaskManager left with
+  neither during a restart releases the loader, and the restarted tasks get a new loader with a
+  new copy of the class.
+- Otherwise the group stops whenever its last lease closes, for example when the last destination
+  of a default-stream writer is evicted as idle in a `lib/` deployment, and the next client starts
+  a new one.
 - A channel a client builds without a lease still uses gRPC's group.
   Until #2243 lands, that is every channel of the Firestore connector.
 - **A Bigtable data client's built-in Cloud Monitoring export still uses gRPC's group.**

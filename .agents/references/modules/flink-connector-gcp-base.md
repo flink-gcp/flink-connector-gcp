@@ -319,12 +319,21 @@ record — context, evidence, declined alternatives — is the named ADR under `
   give-up path too (`PubSubTransports`). A client whose settings take a channel configurator
   rather than a provider (Spanner's `SpannerOptions`) composes
   `GrpcEventLoops.channelConfigurator(existing)`, which needs no lease to build and reaches the
-  group only while one is open, so its owner opens the lease before the client builds a channel
+  group only while it runs (a pinned group runs with no lease open), so its owner opens the lease
+  before the client builds a channel
   (`SpannerClients.open`). Apply the lease to a settings *builder*: a gapic `toBuilder()` can drop
   hand-written fields (`BigQueryReadSettings` drops its retry listener). The group is shared by
   every lease on one copy of `GrpcEventLoops` in a class loader (each SQL JAR relocates its own
   copy, so it has its own group) and refcounted, so a test opening leases closes every one in a `finally` (`GrpcEventLoopsTest`
-  asserts it after each test). A module test observing the group's threads uses test-utils'
+  asserts it after each test). **`GrpcEventLoops.pinTo(UserCodeClassLoader)` (#2268)** keeps the
+  group until Flink releases the job's loader, through a release hook, and only when that loader
+  defined `GrpcEventLoops` and its parent does not resolve it (not in `lib/` or on the application
+  class path of a MiniCluster or a test, where the lease rule stays); a lease records the hook
+  generation it was opened in, so a lease the hook stranded never holds up a later group;
+  only the BigQuery default-stream writer calls it (why: `docs/adr/0208`). A test of the pinned
+  state uses package-private `pin` with test-utils' `FakeUserCodeClassLoader` and runs its
+  `release()` in a `finally`; `StubWriterInitContext` hands out an empty child loader, so a
+  writer's pin is a no-op there. A module test observing the group's threads uses test-utils'
   `GrpcEventLoopThreads`. The last release waits up to 11 s for the group whatever the
   interrupt says; only a thread inside `GrpcEventLoops.interruptibleReleases()` stops after the
   first `GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS` (1 s, #2269; why it is opt-in: `docs/adr/0208`).

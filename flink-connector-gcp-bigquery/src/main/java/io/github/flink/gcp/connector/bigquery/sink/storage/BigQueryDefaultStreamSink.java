@@ -26,6 +26,7 @@ import org.apache.flink.streaming.api.lineage.LineageVertex;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.BigQueryLineage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQueryLineageSink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -101,6 +102,13 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T>, BigQue
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        // The Storage Write API's connection pool is static per class loader and builds every
+        // connection from the first writer's settings, so a job's own writer can share the
+        // connections this writer's settings put on the event-loop group. Pinned, the group runs
+        // until Flink releases the job's class loader instead of stopping under those
+        // connections when this writer releases its last lease (ADR-0208, #2268). It holds
+        // nothing a failed creation would have to release.
+        GrpcEventLoops.pinTo(context.getUserCodeClassLoader());
         config.getFailureHandler().open(DefaultFailureHandlerContext.of(context));
         try {
             // The context's processing-time service fires timer callbacks on the mailbox (task)

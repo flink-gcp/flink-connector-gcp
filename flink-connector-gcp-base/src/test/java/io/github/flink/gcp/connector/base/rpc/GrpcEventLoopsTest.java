@@ -16,13 +16,17 @@
 
 package io.github.flink.gcp.connector.base.rpc;
 
+import org.apache.flink.util.UserCodeClassLoader;
+
 import com.google.api.core.ApiFunction;
 import com.google.api.gax.core.BackgroundResource;
 import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.TransportChannelProvider;
+import io.github.flink.gcp.connector.testutils.FakeUserCodeClassLoader;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
@@ -31,19 +35,26 @@ import io.grpc.netty.shaded.io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.grpc.netty.shaded.io.netty.channel.nio.NioIoHandler;
 import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.netty.shaded.io.netty.util.concurrent.DefaultThreadFactory;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.net.ServerSocket;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.assertj.core.api.Assertions.as;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -52,7 +63,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>The group is process-wide state, so every test closes every lease it opens in a {@code
  * finally}, and {@link #noLeaseIsLeftOpen()} checks that it did — a lease left open would keep the
- * group running into the next test and hide a release that never happened.
+ * group running into the next test and hide a release that never happened. A test that pins the
+ * group runs its loader's release hooks in a {@code finally} too, since a pin left behind would
+ * keep every later group running past its last lease.
  */
 class GrpcEventLoopsTest {
 
@@ -61,6 +74,7 @@ class GrpcEventLoopsTest {
 
     @AfterEach
     void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isPinned()).as("a pin was left registered").isFalse();
         assertThat(GrpcEventLoops.isRunning()).as("a lease was left open").isFalse();
     }
 
@@ -236,6 +250,327 @@ class GrpcEventLoopsTest {
         } finally {
             second.close();
         }
+    }
+
+    @Test
+    void aPinnedGroupOutlivesItsLastLeaseUntilTheLoaderIsReleased() throws Exception {
+        FakeUserCodeClassLoader loader = jobLoader();
+        GrpcEventLoops.pin(loader);
+        try {
+            GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+            try {
+                // Starts one of the group's threads, which Netty starts only on demand.
+                GrpcEventLoops.executeOnGroup(() -> {});
+            } finally {
+                lease.close();
+            }
+
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the release of the last lease stopped a pinned group")
+                    .isTrue();
+            assertThat(GrpcEventLoopThreads.alive()).isTrue();
+            assertThat(loader.releaseHookNames()).containsExactly(GrpcEventLoops.RELEASE_HOOK_NAME);
+        } finally {
+            loader.release();
+        }
+
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    void theReleaseHookWaitsForTheGroupWhateverTheInterruptSays() throws Exception {
+        FakeUserCodeClassLoader loader = jobLoader();
+        GrpcEventLoops.pin(loader);
+        CountDownLatch finish = new CountDownLatch(1);
+        AtomicBoolean interruptedAfter = new AtomicBoolean();
+        Thread releasing =
+                new Thread(
+                        () -> {
+                            loader.release();
+                            interruptedAfter.set(Thread.currentThread().isInterrupted());
+                        },
+                        "loader-release");
+        try {
+            CountDownLatch running = new CountDownLatch(1);
+            GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+            try {
+                GrpcEventLoops.executeOnGroup(() -> awaitQuietly(running, finish));
+                assertThat(running.await(10, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                lease.close();
+            }
+
+            releasing.start();
+            releasing.interrupt();
+            releasing.join(UNINTERRUPTIBLE_MILLIS + 500);
+            assertThat(loader.releaseHookNames()).as("the loader's release began").isEmpty();
+            assertThat(releasing.isAlive())
+                    .as("the hook returned while a group thread was still running a task")
+                    .isTrue();
+        } finally {
+            finish.countDown();
+            if (releasing.getState() == Thread.State.NEW) {
+                loader.release();
+            }
+            releasing.join(TimeUnit.SECONDS.toMillis(15));
+        }
+
+        assertThat(releasing.isAlive()).as("the hook is still waiting").isFalse();
+        assertThat(interruptedAfter).as("the interrupt was kept").isTrue();
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    void pinningAgainRegistersNoSecondHook() {
+        FakeUserCodeClassLoader first = jobLoader();
+        FakeUserCodeClassLoader second = jobLoader();
+        GrpcEventLoops.pin(first);
+        try {
+            GrpcEventLoops.pin(second);
+
+            assertThat(first.releaseHookNames()).containsExactly(GrpcEventLoops.RELEASE_HOOK_NAME);
+            assertThat(second.releaseHookNames()).isEmpty();
+        } finally {
+            // Ran with no group ever started: it only unpins.
+            first.release();
+        }
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @Test
+    void aHookRunUnderAnOpenLeaseStopsTheGroupAndReturnsItToTheLeases() {
+        FakeUserCodeClassLoader loader = jobLoader();
+        GrpcEventLoops.pin(loader);
+        GrpcEventLoops.Lease stranded = GrpcEventLoops.acquire();
+        try (LogCapture log = LogCapture.of(GrpcEventLoops.class)) {
+            loader.release();
+
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the group outlived the release of the job's class loader")
+                    .isFalse();
+            assertThat(log.getMessages())
+                    .singleElement(as(InstanceOfAssertFactories.STRING))
+                    .contains("while 1 gRPC event-loop lease(s) are open");
+
+            // A task Flink is still cancelling opens a client after the hook, while the stranded
+            // lease is still open: the new group must stop with the new lease alone.
+            GrpcEventLoops.Lease later = GrpcEventLoops.acquire();
+            try {
+                assertThat(GrpcEventLoops.isRunning()).isTrue();
+            } finally {
+                later.close();
+            }
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("a lease opened before the hook kept a later group running")
+                    .isFalse();
+
+            // A later writer's init context, which wraps the same loader in a new instance.
+            FakeUserCodeClassLoader again = new FakeUserCodeClassLoader(loader.asClassLoader());
+            GrpcEventLoops.pin(again);
+            assertThat(GrpcEventLoops.isPinned())
+                    .as("pinned again to a loader whose hook has run, which Flink never reruns")
+                    .isFalse();
+            assertThat(again.releaseHookNames()).isEmpty();
+            again.release();
+        } finally {
+            stranded.close();
+            loader.release();
+        }
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @Test
+    void aLeaseStrandedByTheHookDoesNotStopALaterGroupWhenItClosesFirst() {
+        FakeUserCodeClassLoader loader = jobLoader();
+        GrpcEventLoops.pin(loader);
+        GrpcEventLoops.Lease stranded = GrpcEventLoops.acquire();
+        GrpcEventLoops.Lease later = null;
+        try {
+            loader.release();
+            later = GrpcEventLoops.acquire();
+
+            stranded.close();
+
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("a lease opened before the hook stopped a group a later lease holds")
+                    .isTrue();
+        } finally {
+            stranded.close();
+            if (later != null) {
+                later.close();
+            }
+            loader.release();
+        }
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @Test
+    void pinningToALoaderThatDidNotLoadTheClassDoesNothing() {
+        // Flink's loader for a job that ships no JAR: the connector comes from its parent.
+        FakeUserCodeClassLoader loader = jobLoader();
+        try {
+            GrpcEventLoops.pinTo(loader);
+
+            assertThat(loader.releaseHookNames()).isEmpty();
+            GrpcEventLoops.acquire().close();
+            assertThat(GrpcEventLoops.isRunning()).isFalse();
+        } finally {
+            loader.release();
+        }
+    }
+
+    @Test
+    void aLoaderThatCannotBeInspectedLeavesTheWriterUnpinned() {
+        // As under a security manager that refuses getClassLoader, or a wrapper whose own class
+        // cannot link: the pin is optional, so the writer's creation must not fail on it.
+        for (Throwable failure :
+                List.of(
+                        new SecurityException("getClassLoader refused"),
+                        new NoClassDefFoundError("a class the wrapper needs"))) {
+            UserCodeClassLoader refusing =
+                    new UserCodeClassLoader() {
+                        @Override
+                        public ClassLoader asClassLoader() {
+                            if (failure instanceof Error) {
+                                throw (Error) failure;
+                            }
+                            throw (RuntimeException) failure;
+                        }
+
+                        @Override
+                        public void registerReleaseHookIfAbsent(String name, Runnable hook) {
+                            throw new AssertionError("registered a hook on an uninspected loader");
+                        }
+                    };
+
+            GrpcEventLoops.pinTo(refusing);
+
+            assertThat(GrpcEventLoops.isPinned()).as("pinned after %s", failure).isFalse();
+        }
+    }
+
+    @Test
+    void pinningToTheLoaderThatDefinedTheClassRegistersItsHook() throws Exception {
+        // A copy of the class defined by its own job loader, as when the connector ships in the
+        // job's JAR; pinTo is called on the copy, which checks its own class.
+        String name = GrpcEventLoops.class.getName();
+        CopyingClassLoader job =
+                new CopyingClassLoader(GrpcEventLoops.class.getClassLoader(), name);
+        Class<?> copy = job.loadClass(name);
+        FakeUserCodeClassLoader loader = new FakeUserCodeClassLoader(job);
+        // Answers asClassLoader() once: the loader the ownership check read is the one pinned.
+        AtomicInteger reads = new AtomicInteger();
+        UserCodeClassLoader readOnce =
+                new UserCodeClassLoader() {
+                    @Override
+                    public ClassLoader asClassLoader() {
+                        if (reads.getAndIncrement() > 0) {
+                            throw new IllegalStateException("read the loader twice");
+                        }
+                        return job;
+                    }
+
+                    @Override
+                    public void registerReleaseHookIfAbsent(String hookName, Runnable hook) {
+                        loader.registerReleaseHookIfAbsent(hookName, hook);
+                    }
+                };
+        Method isPinned = copy.getDeclaredMethod("isPinned");
+        isPinned.setAccessible(true);
+        try {
+            copy.getMethod("pinTo", UserCodeClassLoader.class).invoke(null, readOnce);
+
+            assertThat(loader.releaseHookNames()).containsExactly(name);
+            assertThat(isPinned.invoke(null)).isEqualTo(true);
+        } finally {
+            loader.release();
+        }
+        assertThat(isPinned.invoke(null)).as("the hook unpinned the copy").isEqualTo(false);
+        assertThat(GrpcEventLoops.isPinned()).as("the pin reached the other copy").isFalse();
+    }
+
+    @Test
+    void aClassIsTheJobsOnlyWhenTheJobsLoaderDefinedIt() throws Exception {
+        ClassLoader shared = GrpcEventLoops.class.getClassLoader();
+        ClassLoader system = ClassLoader.getSystemClassLoader();
+        String name = GrpcEventLoops.class.getName();
+        CopyingClassLoader job = new CopyingClassLoader(shared, name);
+        Class<?> copy = job.loadClass(name);
+        assertThat(copy).isNotSameAs(GrpcEventLoops.class);
+        // Flink's leak-check wrapper: a sibling of the defining loader that delegates to it.
+        ClassLoader wrapper =
+                new ClassLoader(shared) {
+                    @Override
+                    protected Class<?> loadClass(String className, boolean resolve)
+                            throws ClassNotFoundException {
+                        return job.loadClass(className);
+                    }
+                };
+        ClassLoader jobWithoutJar = new URLClassLoader(new URL[0], shared);
+
+        assertThat(GrpcEventLoops.isLoadedByJob(copy, job, system))
+                .as("the job's own loader")
+                .isTrue();
+        assertThat(GrpcEventLoops.isLoadedByJob(copy, wrapper, system))
+                .as("the wrapper Flink hands out")
+                .isTrue();
+        assertThat(GrpcEventLoops.isLoadedByJob(GrpcEventLoops.class, jobWithoutJar, system))
+                .as("loaded by the job loader's parent, as from lib/")
+                .isFalse();
+        // The same with a parent that is not the system class loader, as Flink's own can be.
+        assertThat(GrpcEventLoops.isLoadedByJob(copy, new URLClassLoader(new URL[0], job), system))
+                .as("loaded by the job loader's parent, which is not the system class loader")
+                .isFalse();
+        assertThat(GrpcEventLoops.isLoadedByJob(copy, job, job))
+                .as("the system class loader, which Flink never closes")
+                .isFalse();
+        assertThat(GrpcEventLoops.isLoadedByJob(copy, jobWithoutJar, system))
+                .as("a loader that resolves the name to another copy")
+                .isFalse();
+        // A parent outside the defining loader's chain that delegates to it, as an embedding
+        // application can arrange: every job with that parent shares the copy.
+        ClassLoader delegatingParent =
+                new ClassLoader(shared) {
+                    @Override
+                    protected Class<?> loadClass(String className, boolean resolve)
+                            throws ClassNotFoundException {
+                        return className.equals(name)
+                                ? job.loadClass(className)
+                                : super.loadClass(className, resolve);
+                    }
+                };
+        assertThat(
+                        GrpcEventLoops.isLoadedByJob(
+                                copy, new URLClassLoader(new URL[0], delegatingParent), system))
+                .as("a parent that delegates to the defining loader")
+                .isFalse();
+        // Flink's leak-check wrapper after its loader has closed refuses every lookup.
+        ClassLoader closedWrapper =
+                new ClassLoader(shared) {
+                    @Override
+                    protected Class<?> loadClass(String className, boolean resolve) {
+                        throw new IllegalStateException("Trying to access closed classloader.");
+                    }
+                };
+        assertThat(GrpcEventLoops.isLoadedByJob(copy, closedWrapper, system))
+                .as("a job loader that has closed")
+                .isFalse();
+        // A parent whose own copy fails to load, through a sealing violation or a linkage
+        // failure, while the job's loader defines its copy: the answer is open, so no pin.
+        for (RuntimeException failure :
+                List.of(new SecurityException("sealing violation"), new RuntimeException())) {
+            assertThat(isLoadedUnderAFailingParent(shared, name, failure, system))
+                    .as("a parent whose copy fails with %s", failure)
+                    .isFalse();
+        }
+        assertThat(isLoadedUnderAFailingParent(shared, name, null, system))
+                .as("a parent whose copy fails with a LinkageError")
+                .isFalse();
+        assertThat(GrpcEventLoops.isLoadedByJob(String.class, job, system))
+                .as("the bootstrap loader")
+                .isFalse();
     }
 
     @Test
@@ -549,6 +884,73 @@ class GrpcEventLoopsTest {
         public void close() throws InterruptedException {
             finish.countDown();
             thread.join(TimeUnit.SECONDS.toMillis(15));
+        }
+    }
+
+    /** A loader Flink gives a job that ships no JAR: an empty child of the connector's loader. */
+    private static FakeUserCodeClassLoader jobLoader() {
+        return new FakeUserCodeClassLoader(
+                new URLClassLoader(new URL[0], GrpcEventLoops.class.getClassLoader()));
+    }
+
+    /**
+     * Asks whether a copy of the class that a child loader defines is the job's, under a parent
+     * whose own lookup of that class throws {@code failure}, or a {@link LinkageError} if it is
+     * {@code null}. The child is both the defining loader and the job's, so only the parent's
+     * failure can make the answer {@code false}.
+     */
+    private static boolean isLoadedUnderAFailingParent(
+            ClassLoader shared, String name, @Nullable RuntimeException failure, ClassLoader system)
+            throws ClassNotFoundException {
+        ClassLoader failingParent =
+                new ClassLoader(shared) {
+                    @Override
+                    protected Class<?> loadClass(String className, boolean resolve)
+                            throws ClassNotFoundException {
+                        if (className.equals(name)) {
+                            if (failure == null) {
+                                throw new LinkageError("cannot link the parent's copy");
+                            }
+                            throw failure;
+                        }
+                        return super.loadClass(className, resolve);
+                    }
+                };
+        CopyingClassLoader job = new CopyingClassLoader(failingParent, name);
+        return GrpcEventLoops.isLoadedByJob(job.loadClass(name), job, system);
+    }
+
+    /** A loader that defines its own copy of one class and delegates every other to its parent. */
+    private static final class CopyingClassLoader extends ClassLoader {
+
+        private final String copied;
+
+        private CopyingClassLoader(ClassLoader parent, String copied) {
+            super(parent);
+            this.copied = copied;
+        }
+
+        @Override
+        protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            if (!name.equals(copied)) {
+                return super.loadClass(name, resolve);
+            }
+            synchronized (getClassLoadingLock(name)) {
+                Class<?> loaded = findLoadedClass(name);
+                if (loaded != null) {
+                    return loaded;
+                }
+                try (InputStream in =
+                        getParent().getResourceAsStream(name.replace('.', '/') + ".class")) {
+                    if (in == null) {
+                        throw new ClassNotFoundException(name);
+                    }
+                    byte[] bytes = in.readAllBytes();
+                    return defineClass(name, bytes, 0, bytes.length);
+                } catch (IOException e) {
+                    throw new ClassNotFoundException(name, e);
+                }
+            }
         }
     }
 

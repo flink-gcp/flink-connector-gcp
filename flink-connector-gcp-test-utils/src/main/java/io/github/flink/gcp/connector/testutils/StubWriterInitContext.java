@@ -29,6 +29,8 @@ import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.OptionalLong;
 
 /**
@@ -55,6 +57,10 @@ public class StubWriterInitContext implements WriterInitContext {
     private final FakeMailboxExecutor mailboxExecutor = new FakeMailboxExecutor();
 
     private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
+
+    private final FakeUserCodeClassLoader userCodeClassLoader =
+            new FakeUserCodeClassLoader(
+                    new URLClassLoader(new URL[0], StubWriterInitContext.class.getClassLoader()));
 
     /**
      * Creates a context for a single-subtask writer.
@@ -110,9 +116,15 @@ public class StubWriterInitContext implements WriterInitContext {
         return false;
     }
 
+    /**
+     * Returns an empty child of the loader that loaded this class, which is what a TaskManager
+     * gives a job that ships no JAR of its own: the connector's classes come from the parent, so a
+     * writer that pins the gRPC event-loop group to its job's loader leaves the group to its
+     * leases, as it does in a MiniCluster.
+     */
     @Override
     public UserCodeClassLoader getUserCodeClassLoader() {
-        throw new UnsupportedOperationException();
+        return userCodeClassLoader;
     }
 
     @Override
