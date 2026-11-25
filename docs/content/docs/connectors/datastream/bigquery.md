@@ -1738,13 +1738,11 @@ encryption", both because a replacing job sets the table's encryption whatever i
   kept.
 
 A commit retried after an earlier attempt filled some of its temporary tables re-attaches to those
-loads rather than running them again, so those tables keep the encryption they had then, for
-example none of their own when the commit was in flight across an upgrade to a version with this
-behavior.
+loads rather than running them again while the tables survive under the same schema, so those
+tables keep the encryption they had then.
 They are working tables that the commit deletes once it succeeds, on a best-effort basis.
-A table whose delete fails stays until it expires: a table laid out after a partitioned or
-clustered destination carries `tempTableExpiration`, while any other expires only by its dataset's
-default table expiration, and without one it stays until deleted by hand.
+A table whose delete fails stays until its own expiration, `tempTableExpiration`, removes it, if
+this version prepared it (see below for those an earlier version left).
 The destination's key is decided only by the final job: an append states none, and a
 `WRITE_TRUNCATE` copy states the current key.
 
@@ -2571,9 +2569,8 @@ tables.
 `bigquery.tables.update` is not optional there: every leaf load and every copy into a temporary
 table truncates it, and BigQuery refuses a `WRITE_TRUNCATE` load or copy without that permission
 (measured), so a commit whose credentials lack it from the start fails at its first leaf load, or,
-on a retry for a laid-out destination, at the expiration patch that precedes the loads.
-It also covers extending the expiration of a temporary table laid out for a column- or
-integer-range-partitioned or clustered destination.
+on a retry, at the expiration patch that precedes the loads.
+It also covers extending the expiration of every temporary table.
 [BigQuery Data Editor](https://docs.cloud.google.com/bigquery/docs/managing-tables#roles_to_copy_tables_and_partitions)
 on both the temporary and destination datasets is Google's documented predefined-role route for copy
 jobs. Because
@@ -2885,7 +2882,7 @@ copy jobs of at most 1,200 sources. Each group of two or more becomes an interme
 table, while a final singleton is carried to the next level without an unnecessary copy. Every
 level completes before a job that reads it is submitted, and only the final copy appends to or
 overwrites the destination for ordinary dispositions.
-For `WRITE_TRUNCATE_DATA`, the last copy instead creates one aggregate temporary table and a
+For `WRITE_TRUNCATE_DATA`, the last copy instead fills one aggregate temporary table and a
 standard-SQL `SELECT *` query writes that aggregate to the existing destination with BigQuery's
 `WRITE_TRUNCATE_DATA` disposition.
 Streaming names include the checkpoint id, every leaf name hashes the staged files it is loaded
@@ -2893,11 +2890,13 @@ from, and every intermediate name and job id also includes deterministic level, 
 identity, so a retry reconstructs the same hierarchy for an unchanged destination layout.
 
 The connector builds and validates the complete plan before it reconciles a destination table or
-submits a job. Reconciliation then renames a laid-out destination's temporary tables and the jobs
-that fill them and creates those tables, or drops the loads and intermediate copies of one whose
-final copy already succeeded, so it never raises a count. One commit may plan at most 100,000 load jobs and 100,000 copy jobs, matching
-BigQuery's project-wide daily quotas. Each destination retains deterministic load and copy order;
-commit-wide waves keep their combined pending jobs at or below 50,000, matching the
+submits a job. Reconciliation then creates or extends each destination's temporary tables, after
+renaming a laid-out destination's tables and the jobs that fill them, or drops the loads and copies
+into temporary tables of one whose final copy or terminal query already succeeded, and those below
+an intermediate or aggregate copy that already succeeded, so it never raises a count. One commit may
+plan at most 100,000 load jobs and 100,000 copy jobs, matching BigQuery's project-wide daily quotas.
+Each destination retains deterministic load and copy order; commit-wide waves keep their combined
+pending jobs at or below 50,000, matching the
 per-project, per-region limit.
 Interactive `WRITE_TRUNCATE_DATA` terminal queries use a commit-wide 1,000-job wave bound,
 matching their per-project, per-region queued-query limit.
@@ -2911,9 +2910,9 @@ file records the dataset its run resolved, and a commit uses the recorded one, s
 another `tempDataset` finishes its pending commits where their earlier attempts left them, and the
 new dataset applies to files staged after the restore (files that an earlier connector version
 staged record none and use the configured dataset). The
-temporary and final datasets must be in the same BigQuery location. A dedicated temporary dataset
-with a default table expiration is recommended so temporary tables that are not laid out (below),
-orphaned by hard failures, are garbage-collected; laid-out tables carry their own expiration. Copy jobs support no schema update options and require matching
+temporary and final datasets must be in the same BigQuery location. Every temporary table carries
+its own expiration (below), so one a hard failure orphans is removed without a default table
+expiration on its dataset. Copy jobs support no schema update options and require matching
 schemas, so all leaves are loaded with the same reconciled schema and intermediate copies inherit
 it. The final table stays unchanged if a leaf load, intermediate copy, aggregate copy, or terminal
 query fails.
@@ -2941,34 +2940,78 @@ The copy into a laid-out destination takes the id the unchanged plan's copy has,
 Before it runs, each of the two copies looks for a job that has not failed under the other's id,
 and re-attaches to one it finds, so a copy that already succeeded is not repeated when clustering
 is added or removed between attempts.
-That lookup costs at least one more job read per copy into the destination, up to six after failed
-earlier attempts; before its loads, a destination on this path also reads its own and the
-equivalent id's jobs, up to twelve reads, to learn whether its final copy already succeeded.
+That lookup costs at least one more job read per copy into the destination, plus one for each
+earlier attempt whose copy failed under the other's id; before its loads, a destination on this
+path also reads its own and the equivalent id's jobs in the same way to learn whether its final copy
+already succeeded.
 `WRITE_TRUNCATE_DATA`, whose last copy fills a temporary table, does neither.
+Before its loads it reads its terminal query's job instead, one read plus one for each earlier
+attempt whose query failed, to learn whether that query already succeeded.
+A destination with an intermediate level or an aggregate table also reads at least one job for each
+table a copy fills, except those below a copy that already succeeded, as described next.
+A final copy or terminal query that an earlier attempt left pending or running is waited for before
+the destination prepares anything: it may read a temporary table that expired, and would then copy
+the empty table a preparation created in its place and succeed with those rows missing.
+If it succeeds, the destination re-attaches to it; if it fails, the destination fills its tables
+again as described below.
+The connector sets no limit on that wait; it logs "Waiting for BigQuery job ..., left running by a
+previous attempt, to finish" at INFO when it starts.
+The same holds one level down: the tables that copies fill are prepared first, from those the last
+copy reads down to the leaves, and an intermediate copy or the copy into the aggregate table that an
+earlier attempt left unfinished is waited for before any table it reads is prepared, since its id
+names the table it fills, not the incarnation of those it reads.
+When such a copy already succeeded, the tables it read and everything below them are only extended
+where they survive, not created, loaded or copied again: the table it filled holds their rows, so a
+commit whose aggregate copy succeeded finishes from the aggregate, as long as the aggregate
+survives, even if its leaves expired and their staged files are gone.
 
-A laid-out temporary table is created before the job that fills it, with a table expiration of
-`tempTableExpiration` (1 day by default), because a load job cannot set one and BigQuery does not
-give a partitioned table its dataset's default table expiration when the dataset also sets a
-default partition expiration.
+Every temporary table is created before the job that fills it, with a table expiration of
+`tempTableExpiration` (1 day by default).
+A load job cannot set an expiration, so a table the load created took its dataset's default table
+expiration, and kept none in a dataset without one, such as the destination's own dataset used by
+default; BigQuery also does not give a partitioned table that default when the dataset sets a
+default partition expiration as well.
+A laid-out table is created with the destination's layout, and every other one unpartitioned and
+unclustered.
 Every attempt of the commit extends the expiration again when it prepares the destination, so a
 table the commit still needs is removed only if no attempt prepares it again within that time, for
 example while the job is stopped or when one attempt outlasts it.
-The jobs that fill a laid-out table also carry the time the table was created, so a retry that
+Set it above the longest commit attempt, reconciliation of every destination included: an attempt
+that outlasts it before its first load finds its first tables gone, and so does every restart.
+The jobs that fill a temporary table also carry the time the table was created, so a retry that
 finds the table expired creates it anew and fills it again from the staged files instead of
 re-attaching to the job that filled its predecessor.
+They carry a hash of the schema reconciliation gave the destination as well: a copy refuses sources
+whose schemas differ, so a retry under a changed schema fills every table again rather than leaving
+the copy surviving tables of the earlier schema beside one created anew under the new one.
+Since every attempt extends the surviving tables, they would otherwise never expire to resolve it.
 Those jobs never create a table themselves: one that vanished after its preparation fails the
 attempt, and the next attempt creates it with its expiration.
-A destination whose final copy, under either id, already succeeded in an earlier attempt is
-neither prepared nor loaded again, whether it needs a layout now or not; its final copy re-attaches
-to that job.
-An orphaned laid-out table, whether a hard failure or an earlier layout left it, therefore expires
-on its own wherever it lives.
-Temporary tables that are not laid out are still created by the jobs that fill them, and an
-orphaned one is left to the temporary dataset's default table expiration; a dataset without one,
-such as the destination's own dataset used by default, keeps it until it is deleted.
-That includes the unpartitioned temporary tables of a commit an earlier connector version could not
-finish: after an upgrade the commit runs on laid-out tables, and the earlier ones are left for that
-expiration, or to be deleted by hand.
+A commit left pending for longer than `tempTableExpiration` therefore loads its staged files again,
+and needs them still in the staging bucket, as the lifecycle rule sizing under **Staging cleanup**
+below already requires.
+A destination whose final copy already succeeded under either id in an earlier attempt, or, under
+`WRITE_TRUNCATE_DATA`, whose terminal query did, is neither prepared nor loaded again, whether it
+needs a layout now or not; its final job re-attaches to that job.
+Without that check, every restore after a successful commit, which commits its last checkpoint's
+files again, would recreate the tables the commit deleted and load the staged files it deleted too.
+A temporary table this version prepared and a hard failure or an earlier layout orphaned therefore
+expires on its own wherever it lives.
+A commit an earlier connector version left unfinished keeps its temporary tables' names, and its
+first attempt after the upgrade extends them and fills them again from its staged files, because
+the ids of the jobs that fill them now carry a hash of the schema and, for tables without a layout,
+each table's incarnation.
+Tables an earlier version created without an expiration and this version never prepares keep none:
+those left under other names, for example the unpartitioned tables of a commit it could not finish
+into a destination that is now laid out, and those of a commit whose final job had succeeded but
+whose cleanup did not finish; they are left to the temporary dataset's default table expiration,
+or to be deleted by hand.
+If an earlier attempt's job under another schema is still running when the destination's schema
+changed, it can finish after the retry and write its table back in the earlier schema, and a schema
+that changes and changes back between attempts can leave a table the same way; the copy reading
+it is then refused on every restart, naming incompatible schemata.
+Deleting the named temporary table before the next restart gives it a new incarnation, which the
+commit fills again; do not discard the job's state for it.
 
 A load, copy, or query failure before every destination succeeds retains all temporary tables and
 staged objects for retry.
@@ -3002,9 +3045,8 @@ throughput or slot-sizing estimate.
 The connector does not set `maximumBytesBilled`, so project custom quotas and BigQuery's default
 200 TiB per-project daily on-demand query quota remain the spending boundary; administrators can
 change that quota.
-Monitor load, copy, query, and destination-table modification usage, set the temporary dataset's
-default table expiration (laid-out tables use `tempTableExpiration`) and a staging-bucket lifecycle
-rule, and prefer larger staging files or smaller commits before
+Monitor load, copy, query, and destination-table modification usage, size `tempTableExpiration`
+and a staging-bucket lifecycle rule, and prefer larger staging files or smaller commits before
 operating near these service boundaries.
 
 **Schema evolution.** The `schemaUpdateOptions(...)` flags drive the pre-load reconciliation:
@@ -3068,7 +3110,9 @@ restoring a streaming job after the rule already expired them leaves every pendi
 has to read one of them failing on every retry while that file is missing. Starting without state
 drops those committables. Restoring an earlier retained checkpoint or savepoint can also get past
 them, when the BigQuery jobs its commits need already completed successfully and the restored job
-can still find them: re-attaching to a job reads no staged file, but BigQuery keeps job history
+can still find them, except a commit through temporary tables left pending longer than
+`tempTableExpiration`, whose loads run again: re-attaching to a job reads no staged file, but
+BigQuery keeps job history
 for six months, and the restored job must look in the project those jobs ran in (see **Job
 project** above). A run restored under the old Flink job id numbers its checkpoints as the old run
 did, which is safe: the commits it makes name their temporary tables after their own files, and
@@ -3093,8 +3137,8 @@ method. Every mapping above is covered end to end against the service, described
 The integration tests (`BigQueryFileLoadsITCase` for batch, `BigQueryFileLoadsStreamingITCase`
 for checkpoint-triggered streaming loads, `BigQueryFileLoadsSchemaEvolutionITCase` for loads
 against a pre-existing table whose schema the serializer's extends,
-`BigQueryFileLoadsTempTableLayoutRealGcpITCase` for the temporary-table path into partitioned and
-clustered destinations) run real jobs against
+`BigQueryFileLoadsTempTableLayoutRealGcpITCase` for the temporary-table path, its layouts and its
+retries) run real jobs against
 BigQuery and GCS and are gated on
 `BQ_IT_PROJECT`, `BQ_IT_DATASET` and `BQ_IT_GCS_BUCKET` (application-default credentials); they
 are skipped when the variables are unset, keeping `./mvnw verify` credential-free. They also carry
@@ -3663,8 +3707,12 @@ credential-less CI:
   [above](#file-loads)). `BigQueryFileLoadsTempTableLayoutRealGcpITCase` forces the
   temporary-table path into partitioned and clustered destinations under every write
   disposition, and replays four retries: after an upgrade, within one incarnation of the
-  temporary tables, after one of them expired, and after the final copy succeeded; it also drops a
-  destination just before its direct load and retries that commit. `BigQueryFileLoadsITCase` also carries the staging-format fidelity
+  temporary tables, after one of them expired, and after the final copy succeeded. For an
+  unpartitioned destination it retries a commit whose temporary tables all expired and one that
+  already succeeded, under `WRITE_APPEND` and `WRITE_TRUNCATE_DATA`, one after a partial expiry
+  and a schema change, and one whose aggregate copy succeeded after its leaves and staged files
+  were deleted; it also drops a destination just before its direct load and retries that
+  commit. `BigQueryFileLoadsITCase` also carries the staging-format fidelity
   suite — every column type this write method supports, loaded and read back with typed
   accessors, which is the only way a staged encoding the service refuses can be caught
   ([#282]({{< param BookRepo >}}/issues/282))

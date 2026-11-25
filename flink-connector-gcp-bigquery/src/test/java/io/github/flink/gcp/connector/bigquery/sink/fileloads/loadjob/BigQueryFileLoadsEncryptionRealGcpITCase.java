@@ -299,6 +299,11 @@ class BigQueryFileLoadsEncryptionRealGcpITCase {
         }
 
         @Override
+        public boolean querySucceeded(String jobId, QueryJobSpec spec) throws IOException {
+            return delegate.querySucceeded(jobId, spec);
+        }
+
+        @Override
         public void submitQuery(String jobId, QueryJobSpec spec) throws IOException {
             delegate.submitQuery(jobId, spec);
         }

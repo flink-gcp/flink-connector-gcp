@@ -41,12 +41,13 @@ final class PlannedCopy {
 
     /**
      * Returns this copy under {@code jobId}, with every table passed through {@code rename}, which
-     * renames a laid-out temporary table and leaves the destination as it is. The copy creates
-     * nothing: a laid-out temporary table exists before any job writes it, and the destination is
-     * reconciled first. {@code equivalentJobId} replaces the spec's own equivalent id, which for an
-     * unchanged final copy names the laid-out id this copy is about to take.
+     * renames a laid-out temporary table, or is the identity for a table that keeps its name, and
+     * leaves the destination as it is. The copy creates nothing: a temporary table exists before
+     * any job writes it, and the destination is reconciled first. {@code equivalentJobId} replaces
+     * the spec's own equivalent id, which for an unchanged final copy names the laid-out id this
+     * copy is about to take.
      */
-    PlannedCopy laidOut(
+    PlannedCopy reissued(
             UnaryOperator<TableDestination> rename,
             String jobId,
             @Nullable String equivalentJobId) {

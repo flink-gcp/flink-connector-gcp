@@ -122,6 +122,12 @@ class BigQueryDefaultStreamWriterTest {
         }
 
         @Override
+        public boolean extendTemporaryTable(TableDestination table, Duration expiration) {
+            throw new UnsupportedOperationException(
+                    "FILE_LOADS temporary tables are not used here");
+        }
+
+        @Override
         public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) {
             return List.of();
         }

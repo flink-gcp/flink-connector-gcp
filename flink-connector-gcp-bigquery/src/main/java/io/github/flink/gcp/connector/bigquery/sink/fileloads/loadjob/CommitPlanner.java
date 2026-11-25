@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.JobInfo;
+import com.google.cloud.bigquery.Schema;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -70,16 +71,17 @@ import java.util.TreeMap;
  *
  * <p><b>Temporary tables plus a copy hierarchy.</b> If any staging format for a table exceeds the
  * limits, or replacement rows span formats, every format for that table is loaded
- * partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED},
- * so a retried partition load is idempotent; a destination whose copy needs its layout has its
- * temporary tables created first instead, and filled under {@code CREATE_NEVER}, ADR-0183). At most
- * 1,200 sources feed one copy job. A larger source set is reduced through deterministic
- * intermediate tables. An ordinary disposition then uses one final copy. Because a copy job cannot
- * use {@code WRITE_TRUNCATE_DATA}, that disposition first copies into one aggregate temporary table
- * and then atomically replaces the final table's data with a terminal query job. Copy jobs support
- * no schema update options and require matching schemas, so every leaf is loaded with the
- * reconciled schema and every intermediate inherits it. Streaming temporary-table names include the
- * checkpoint id so consecutive checkpoints do not collide.
+ * partition-by-partition into temporary tables ({@code WRITE_TRUNCATE}, so a retried partition load
+ * is idempotent). The commit creates every temporary table before the jobs that fill it, with an
+ * expiration, and those jobs then run under {@code CREATE_NEVER} and name the table's incarnation
+ * (ADR-0183; {@link DestinationCommitPlan#prepareTempTables(TableLayout,
+ * DestinationCommitPlan.TempTables)}). At most 1,200 sources feed one copy job. A larger source set
+ * is reduced through deterministic intermediate tables. An ordinary disposition then uses one final
+ * copy. Because a copy job cannot use {@code WRITE_TRUNCATE_DATA}, that disposition first copies
+ * into one aggregate temporary table and then atomically replaces the final table's data with a
+ * terminal query job. Copy jobs support no schema update options and require matching schemas, so
+ * every leaf is loaded with the reconciled schema and every intermediate inherits it. Streaming
+ * temporary-table names include the checkpoint id so consecutive checkpoints do not collide.
  *
  * <p><b>Determinism.</b> Files are sorted by URI before bin-packing, so a retried run over the same
  * committables produces identical partitions, temporary table names and job ids (hashes over
@@ -94,8 +96,8 @@ import java.util.TreeMap;
  * id, a restore of an older checkpoint, or a second sink into the same table repeats them, and a
  * name derived from them alone lets such a commit re-attach to an earlier commit's copy and drop
  * its own rows (#2289). Those older names remain only for files a version before #2289 staged
- * ({@link FileLoadsCommittable#isStagedByOlderVersion()}), whose restored commits must re-attach to
- * the jobs their earlier attempt ran under them.
+ * ({@link FileLoadsCommittable#isStagedByOlderVersion()}), whose restored commits must find the
+ * tables their earlier attempt left and re-attach to its final copy or terminal query.
  */
 @Internal
 final class CommitPlanner {
@@ -193,7 +195,9 @@ final class CommitPlanner {
                                                     olderNames ? load.destination : tempTable,
                                                     uris,
                                                     "p" + partitionIndex),
-                                            JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                            // The commit creates every temporary table, with
+                                            // an expiration, before any job fills it.
+                                            JobInfo.CreateDisposition.CREATE_NEVER,
                                             JobInfo.WriteDisposition.WRITE_TRUNCATE,
                                             List.of()));
                     copySources
@@ -271,7 +275,7 @@ final class CommitPlanner {
                                 new CopyJobSpec(
                                         groupSources,
                                         intermediate,
-                                        JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                        JobInfo.CreateDisposition.CREATE_NEVER,
                                         JobInfo.WriteDisposition.WRITE_TRUNCATE)));
             }
             intermediateLevels.add(jobs);
@@ -281,13 +285,11 @@ final class CommitPlanner {
 
         PlannedQuery terminalQuery = null;
         TableDestination copyDestination = destination;
-        JobInfo.CreateDisposition copyCreateDisposition = JobInfo.CreateDisposition.CREATE_NEVER;
         JobInfo.WriteDisposition copyWriteDisposition =
                 toWriteDisposition(options.getWriteDisposition());
         if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE_DATA) {
             copyDestination = aggregateTable(destination, tempDataset, sources);
             cleanupTables.add(copyDestination);
-            copyCreateDisposition = JobInfo.CreateDisposition.CREATE_IF_NEEDED;
             copyWriteDisposition = JobInfo.WriteDisposition.WRITE_TRUNCATE;
             terminalQuery =
                     new PlannedQuery(
@@ -305,7 +307,7 @@ final class CommitPlanner {
                         new CopyJobSpec(
                                 sources,
                                 copyDestination,
-                                copyCreateDisposition,
+                                JobInfo.CreateDisposition.CREATE_NEVER,
                                 copyWriteDisposition,
                                 // A copy into the destination may have run laid out in an earlier
                                 // attempt, before the destination's clustering was removed.
@@ -468,10 +470,10 @@ final class CommitPlanner {
 
     /**
      * The leaf temporary table a version before #2289 named, which a restored commit of the files
-     * it staged must reproduce byte for byte to re-attach to that attempt's jobs. Its job id,
-     * unlike the current one, hashes the destination rather than this table (see {@link
-     * #plan(List)}). Remove it with {@link FileLoadsCommittable#isStagedByOlderVersion()} once no
-     * such state is restored.
+     * it staged must reproduce byte for byte to find the tables that attempt left, whose final copy
+     * or terminal query it re-attaches to. Its job id, unlike the current one, hashes the
+     * destination rather than this table (see {@link #plan(List)}). Remove it with {@link
+     * FileLoadsCommittable#isStagedByOlderVersion()} once no such state is restored.
      */
     private TableDestination olderVersionTempTable(
             TableDestination destination,
@@ -601,6 +603,22 @@ final class CommitPlanner {
         return sha256Hex(layout.fingerprint()).substring(0, 8);
     }
 
+    /**
+     * The salt every job that fills a temporary table takes from the schema reconciliation gave its
+     * destination. Copy jobs require identical schemas, so a schema that changed between attempts
+     * must refill every temporary table rather than re-attach to the jobs that filled some of them
+     * under the earlier one. It hashes the schema's whole description, so any difference, a field's
+     * description included, refills the tables; a refill is the safe direction.
+     */
+    static String schemaSalt(Schema schema) {
+        return sha256Hex(schema.toString()).substring(0, 8);
+    }
+
+    /** The id of a job that fills a temporary table, for the schema with {@code schemaSalt}. */
+    static String schemaJobId(String jobId, String schemaSalt) {
+        return jobId + "-s" + schemaSalt;
+    }
+
     /** The id of a job that fills a laid-out temporary table. */
     static String laidOutJobId(String jobId, String salt) {
         return jobId + "-layout-" + salt;
@@ -613,27 +631,24 @@ final class CommitPlanner {
     }
 
     /**
-     * The id of a job that fills a laid-out temporary table, for the incarnation of that table
-     * created at {@code creationTime}. A table that expired and was created anew is filled by a new
-     * job rather than re-attached to the one that filled its predecessor.
+     * The id of a job that fills a temporary table, for the incarnation of that table created at
+     * {@code creationTime}. A table that expired and was created anew is filled by a new job rather
+     * than re-attached to the one that filled its predecessor.
      */
     static String incarnationJobId(String jobId, long creationTime) {
         return jobId + "-t" + creationTime;
     }
 
     /**
-     * The id of a job that fills the laid-out temporary table {@code table}: salted with the layout
-     * and naming the table's incarnation.
+     * The id of a job that fills the prepared temporary table {@code table}, naming the table's
+     * incarnation.
      */
-    static String laidOutIncarnationJobId(
-            String jobId,
-            String salt,
-            Map<TableDestination, Long> creationTimes,
-            TableDestination table) {
+    static String incarnationJobId(
+            String jobId, Map<TableDestination, Long> creationTimes, TableDestination table) {
         Long creationTime = creationTimes.get(table);
         Preconditions.checkState(
                 creationTime != null, "Temporary table %s was not prepared", table);
-        return incarnationJobId(laidOutJobId(jobId, salt), creationTime);
+        return incarnationJobId(jobId, creationTime);
     }
 
     /** The id of the copy from laid-out temporary tables into the destination. */

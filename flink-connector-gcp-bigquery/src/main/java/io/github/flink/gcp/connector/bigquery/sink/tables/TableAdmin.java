@@ -36,9 +36,9 @@ import java.util.List;
 /**
  * Administers destination tables: creation for {@link
  * io.github.flink.gcp.connector.bigquery.sink.CreateDisposition#CREATE_IF_NEEDED} and schema
- * reads/updates for schema evolution, and the {@code FILE_LOADS} temporary tables laid out for a
- * partitioned or clustered destination, which are created here rather than by the jobs that fill
- * them so they share the creation retry {@link RetryingTableAdmin} gives.
+ * reads/updates for schema evolution, and the {@code FILE_LOADS} temporary tables, which are
+ * created or extended here rather than by the jobs that fill them so they share the retry {@link
+ * RetryingTableAdmin} gives.
  *
  * <p>Abstracts the BigQuery REST client so writer logic is unit-testable.
  */
@@ -97,18 +97,19 @@ public interface TableAdmin {
             throws IOException;
 
     /**
-     * Creates a {@code FILE_LOADS} temporary table that a copy will write into its destination, or
+     * Creates a {@code FILE_LOADS} temporary table, which a copy or a terminal query will read, or
      * extends the expiration of one that exists, and returns which incarnation of the table this
      * is.
      *
      * <p>The table takes {@code layout}, its time partitioning with {@link
      * TableLayout#getTemporaryTimePartitioning()}, and a table expiration {@code expiration} from
-     * now. A load cannot set a table's expiration, and a partitioned table does not take its
-     * dataset's default table expiration when the dataset also sets a default partition expiration,
-     * so the temporary table is created ahead of the job that fills it (ADR-0183). A created table
-     * is encrypted with {@code kmsKeyName} when one is given, and the jobs that fill it state the
-     * same key. A job an earlier attempt already completed is re-attached to rather than run again,
-     * so a table it filled keeps the encryption it had then.
+     * now; {@link TableLayout#NONE} creates it unpartitioned and unclustered. A load cannot set a
+     * table's expiration, and a partitioned table does not take its dataset's default table
+     * expiration when the dataset also sets a default partition expiration, so the temporary table
+     * is created ahead of the job that fills it (ADR-0183). A created table is encrypted with
+     * {@code kmsKeyName} when one is given, and the jobs that fill it state the same key. A job an
+     * earlier attempt already completed is re-attached to rather than run again, so a table it
+     * filled keeps the encryption it had then.
      *
      * @param table the temporary table
      * @param schema its schema
@@ -129,6 +130,20 @@ public interface TableAdmin {
             @Nullable String kmsKeyName,
             Duration expiration)
             throws IOException;
+
+    /**
+     * Extends the expiration of a {@code FILE_LOADS} temporary table to {@code expiration} from
+     * now, if it exists, and creates nothing: a commit keeps a table it no longer needs to fill
+     * alive as long as the table above it, without creating one that expired empty for an earlier
+     * job to read.
+     *
+     * @param table the temporary table
+     * @param expiration how long from now the table lives, unless a later call extends it
+     * @return whether the table existed and was extended
+     * @throws RetriableTableAdminException if repeating the call can succeed
+     * @throws IOException if the table exists and cannot be extended
+     */
+    boolean extendTemporaryTable(TableDestination table, Duration expiration) throws IOException;
 
     /**
      * Reads the primary key an existing table declares, in key order, with each column's type and

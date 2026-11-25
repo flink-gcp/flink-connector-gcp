@@ -65,14 +65,22 @@ public interface LoadJobRunner {
     /**
      * Returns whether this copy already succeeded, under its id, one of its retry ids, its
      * equivalent id ({@link CopyJobSpec#getEquivalentJobId()}) or one of that id's retry ids. A
-     * commit asks for every destination it routes through temporary tables, except under {@code
-     * WRITE_TRUNCATE_DATA}, before its loads and before it prepares any table: a destination whose
-     * final copy succeeded needs none of them, and loading them anew would reload rows already
-     * copied, which fails if a lifecycle rule removed the staged files. A copy still running is not
-     * a success; the commit then prepares its tables as usual and re-attaches to it.
+     * commit asks about the final copy of every destination it routes through temporary tables,
+     * except under {@code WRITE_TRUNCATE_DATA}, whose last job is a terminal query it asks {@link
+     * #querySucceeded} about instead, before its loads and before it prepares any table: a
+     * destination whose final copy succeeded needs none of them, and preparing them anew after the
+     * commit deleted them would load staged files the commit deleted too. A copy still pending or
+     * running is waited for before the answer, and a failed one is not a success: an unfinished
+     * copy may read a temporary table the commit is about to create anew after it expired, and
+     * would then succeed with that table's rows missing. A commit also asks about each copy that
+     * fills a temporary table it prepares, once it has prepared that table and before it prepares
+     * any table the copy reads, for the same wait, and does not fill those tables again when the
+     * copy succeeded.
      *
-     * <p>The default answers {@code false}, which only forgoes that shortcut; a runner that can see
-     * previous attempts' jobs overrides it.
+     * <p>The default answers {@code false}, for a runner that cannot see previous attempts' jobs.
+     * That is not a harmless shortcut: a commit retried after its final copy succeeded then
+     * prepares and loads its temporary tables anew, which fails on every attempt once the staged
+     * files are gone. A runner used in production overrides it.
      *
      * @param jobId the deterministic job id
      * @param spec the copy job
@@ -80,6 +88,28 @@ public interface LoadJobRunner {
      * @throws IOException if the jobs cannot be looked up
      */
     default boolean copySucceeded(String jobId, CopyJobSpec spec) throws IOException {
+        return false;
+    }
+
+    /**
+     * Returns whether this terminal query already succeeded, under its id or one of its retry ids.
+     * A {@code WRITE_TRUNCATE_DATA} commit asks for every destination it routes through temporary
+     * tables before it prepares any table, as other dispositions ask {@link #copySucceeded}: a
+     * destination whose terminal query succeeded needs none of its temporary tables, and preparing
+     * them anew after the commit deleted them would load staged files the commit deleted too. A
+     * query still pending or running is waited for before the answer, for the reason {@link
+     * #copySucceeded(String, CopyJobSpec)} gives, and a failed one is not a success.
+     *
+     * <p>The default answers {@code false}, for a runner that cannot see previous attempts' jobs,
+     * with the consequence {@link #copySucceeded(String, CopyJobSpec)} describes. A runner used in
+     * production overrides it.
+     *
+     * @param jobId the deterministic job id
+     * @param spec the query job
+     * @return whether such a job succeeded
+     * @throws IOException if the jobs cannot be looked up
+     */
+    default boolean querySucceeded(String jobId, QueryJobSpec spec) throws IOException {
         return false;
     }
 

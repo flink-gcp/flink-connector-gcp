@@ -31,8 +31,8 @@ import java.util.List;
  * One deterministic leaf load: everything the job needs except the reconciled schema, which is the
  * one value that cannot be known before execution. The dispositions differ between a direct load
  * and a temporary-table load, so planning picks them rather than leaving the executor to re-derive
- * which kind of load it is holding; reconciliation switches a laid-out temporary-table load to
- * {@code CREATE_NEVER}, since its table is created first.
+ * which kind of load it is holding. Both run under {@code CREATE_NEVER}: a direct load's
+ * destination is reconciled first, and a temporary table is created before the job that fills it.
  */
 @Internal
 final class PlannedLoad {
@@ -91,13 +91,19 @@ final class PlannedLoad {
     }
 
     /**
-     * Returns this temporary-table load into {@code table}, a laid-out temporary table the commit
-     * has already created, with the destination's layout, under {@code jobId}. The load does not
-     * create the table: one that vanished since fails the attempt, and the next attempt's
-     * preparation creates it with its expiration (see {@link
-     * DestinationCommitPlan#layOutTempTables(TableLayout, DestinationCommitPlan.TempTables)}).
+     * Returns this temporary-table load into {@code table}, a temporary table the commit has
+     * already created, with {@code layout}, under {@code jobId}, which names that table's
+     * incarnation. The load does not create the table: one that vanished since fails the attempt,
+     * and the next attempt's preparation creates it with its expiration (see {@link
+     * DestinationCommitPlan#prepareTempTables(TableLayout, DestinationCommitPlan.TempTables)}).
+     *
+     * @param table the prepared temporary table, renamed with the layout's salt when laid out
+     * @param jobId the id of the job that fills it
+     * @param layout the destination's layout for a laid-out table, or {@code null} for one the copy
+     *     accepts without a layout
      */
-    PlannedLoad laidOut(TableDestination table, String jobId, TableLayout layout) {
+    PlannedLoad intoPreparedTable(
+            TableDestination table, String jobId, @Nullable TableLayout layout) {
         return new PlannedLoad(
                 table,
                 format,

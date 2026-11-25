@@ -614,10 +614,16 @@ class LoadJobOrchestratorTest {
                             assertThat(spec.getDestination().getTable()).doesNotContain("_c");
                             assertThat(spec.getWriteDisposition())
                                     .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+                            // The commit created the table with an expiration first (#2290).
                             assertThat(spec.getCreateDisposition())
-                                    .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+                                    .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
                             assertThat(spec.getSchemaUpdateOptions()).isEmpty();
                         });
+        assertThat(harness.tableAdmin.preparedTemporaryTables)
+                .containsExactlyElementsOf(
+                        harness.runner.loads.values().stream()
+                                .map(LoadJobSpec::getDestination)
+                                .toList());
 
         assertThat(harness.runner.copies).hasSize(1);
         // The counter names load jobs, so the copy job that follows them is not counted.
@@ -667,7 +673,9 @@ class LoadJobOrchestratorTest {
         assertThat(aggregateCopy.getDestination()).isNotEqualTo(T1);
         assertThat(aggregateCopy.getDestination().getTable()).endsWith("_aggregate");
         assertThat(aggregateCopy.getCreateDisposition())
-                .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
+        assertThat(harness.tableAdmin.preparedTemporaryTables)
+                .contains(aggregateCopy.getDestination());
         assertThat(aggregateCopy.getWriteDisposition())
                 .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
         assertThat(harness.runner.queries.values())
@@ -968,7 +976,11 @@ class LoadJobOrchestratorTest {
 
         assertThat(harness.runner.loads).hasSize(3);
         assertThat(harness.runner.loads.keySet())
-                .allSatisfy(id -> assertThat(id).contains("-c7-").containsPattern("-p\\d$"));
+                .allSatisfy(
+                        id ->
+                                assertThat(id)
+                                        .contains("-c7-")
+                                        .containsPattern("-p\\d-s[0-9a-f]{8}-t\\d+$"));
         assertThat(harness.runner.loads.values())
                 .allSatisfy(
                         spec -> {
@@ -978,7 +990,7 @@ class LoadJobOrchestratorTest {
                             assertThat(spec.getWriteDisposition())
                                     .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
                             assertThat(spec.getCreateDisposition())
-                                    .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+                                    .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
                             assertThat(spec.getSchemaUpdateOptions()).isEmpty();
                         });
         assertThat(harness.loadJobsSubmitted.getCount()).isEqualTo(3);
@@ -1110,7 +1122,7 @@ class LoadJobOrchestratorTest {
         assertThat(intermediate.getSourceTables()).hasSize(Limits.MAX_SOURCE_TABLES_PER_COPY);
         assertThat(intermediate.getDestination().getTable()).contains("_c7_l1_g0");
         assertThat(intermediate.getCreateDisposition())
-                .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
         assertThat(intermediate.getWriteDisposition())
                 .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
 

@@ -18,9 +18,12 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-10-10; base names derived from staged files by
-  [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289) (2026-11-23)
+  [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289) (2026-11-23); temporary
+  tables without a layout prepared too by
+  [#2290](https://github.com/flink-gcp/flink-connector-gcp/issues/2290) (2026-11-24)
 - Issues: [#1671](https://github.com/flink-gcp/flink-connector-gcp/issues/1671),
-  [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289)
+  [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289),
+  [#2290](https://github.com/flink-gcp/flink-connector-gcp/issues/2290)
 - Modules: bigquery
 - Current behavior: [File loads](../content/docs/connectors/datastream/bigquery.md#file-loads)
 
@@ -58,7 +61,8 @@ Without an expiration of its own, a table inherits its dataset's default partiti
 a leaf in a dataset with one would drop the rows of older partitions that the destination, created
 without it or with a longer one, keeps (measured).
 
-Two cases keep unpartitioned, unclustered temporary tables, and their ids and names.
+Two cases keep unpartitioned, unclustered temporary tables, and their ids and names (the revision of
+2026-11-24 below stamps the ids of the jobs that fill them).
 One is a destination partitioned by ingestion time alone, whose copy accepts such sources, so its
 names and ids stay as an earlier version made them.
 The other is `WRITE_TRUNCATE_DATA`, whose last step is a terminal query rather than a copy into the
@@ -122,7 +126,8 @@ succeeded would otherwise load its files again into its unchanged plan's tables 
 re-attached to.
 A copy still running is not a success: the commit then prepares, re-attaches to the loads of the
 same incarnation, and attaches to the running copy, so a copy that later fails does not leave the
-attempt reading tables it neither prepared nor extended.
+attempt reading tables it neither prepared nor extended (the revision of 2026-11-24 waits for such
+a copy to finish before preparing instead).
 Without that question, a destination whose final copy succeeded in an attempt that failed
 elsewhere would have its expired tables recreated and reloaded on the retry, which needs staged
 files a lifecycle rule may have removed, for rows already in the destination.
@@ -130,9 +135,10 @@ files a lifecycle rule may have removed, for rows already in the destination.
 The tables an earlier attempt left under other names are not deleted by the commit; a laid-out one
 expires on its own.
 A destination whose copy needs no layout keeps its ids and names, and its temporary tables are
-still created by the jobs that fill them; except under `WRITE_TRUNCATE_DATA`, it now also asks
-whether its final copy succeeded under either id before its loads, up to twelve job reads, and its
-final copy looks for the laid-out id before it runs, one job read, up to six past failed copies.
+still created by the jobs that fill them (until the revision of 2026-11-24 below); except under
+`WRITE_TRUNCATE_DATA`, it now also asks whether its final copy succeeded under either id before its
+loads, two job reads plus one for each failed copy under either id, and its final copy looks for
+the laid-out id before it runs, one job read plus one for each failed copy under it.
 
 ## Evidence
 
@@ -244,26 +250,29 @@ reproduced only by the throwaway dataset with default expirations above.
 
 ## Consequences
 
-A commit into a destination on this path, laid out or not, first makes up to twelve `jobs.get` to
-learn whether its final copy already succeeded, except under `WRITE_TRUNCATE_DATA`; if it did, only
-the final copy's own lookup and re-attachment and the cleanup follow.
+A commit into a destination on this path, laid out or not, first makes two `jobs.get`, plus one
+for each failed copy under either id, to learn whether its final copy already succeeded, except
+under `WRITE_TRUNCATE_DATA`; if it did, only the final copy's own lookup and re-attachment and the
+cleanup follow.
 Otherwise a laid-out destination makes, one after another before any of its jobs, one
 `tables.insert` per temporary table, followed by a `tables.patch` of that table on an attempt that
 finds it already created; a destination that needs no layout prepares nothing, and its loads create
-its temporary tables as before.
+its temporary tables as before (the revision of 2026-11-24 prepares those too).
 The patch needs `bigquery.tables.update` on the temporary dataset, which this path already
 needed: BigQuery refuses every `WRITE_TRUNCATE` load or copy, and so every leaf load and every copy into
 a temporary table, without it (measured above). BigQuery Data Editor, which the docs recommend,
 includes it; the docs' permission list had left it out.
 
 A job stopped for longer than `tempTableExpiration` while a commit is pending loses its laid-out
-temporary tables, and the restored commit reloads them from the staged files, unless the final copy
-already succeeded; it fails only if a staging bucket lifecycle removed those files first.
+temporary tables (every temporary table, after the revision of 2026-11-24), and the restored
+commit reloads them from the staged files, unless the final copy already succeeded; it fails only
+if a staging bucket lifecycle removed those files first.
 One case is left: if only some of a destination's temporary tables expired and the reconciled
 schema changed between attempts, the reloaded tables take the new schema while the re-attached ones
 keep the old, and the copy, which needs identical schemas, is refused on every attempt until the
 remaining tables expire or are deleted. It needs both a schema change and a partial expiry within
-one pending commit, and it fails loudly rather than losing rows.
+one pending commit, and it fails loudly rather than losing rows. (The revision of 2026-11-24 closes
+it with a schema salt in the jobs that fill the tables.)
 
 ## Alternatives declined
 
@@ -314,5 +323,176 @@ derives the same bases, the salt still follows the destination's layout and the 
 table's creation time, and the final copy's equivalent id still spans a change of clustering.
 Because the dataset is recorded, a restore under another configured one still names the tables
 the attempt used.
-A committable an older version staged records none and keeps the old base, so a retry across the upgrade still finds
-the tables and jobs its attempt left, as the first of the three retries above requires.
+A committable an older version staged records none and keeps the old base, so a retry across the
+upgrade still finds the tables its attempt left and its final copy or terminal query, as the first
+of the three retries above requires (the revision below refills those tables once).
+
+## Revision: temporary tables without a layout are prepared too (2026-11-24)
+
+The Decision prepared and stamped laid-out temporary tables alone.
+Every other one, an unclustered destination's that is unpartitioned or partitioned by ingestion
+time, and every one under `WRITE_TRUNCATE_DATA`, was still created by the job that filled it, so
+it took the temporary dataset's default table expiration, and no job id named its incarnation
+([#2290](https://github.com/flink-gcp/flink-connector-gcp/issues/2290)).
+When such a table expired between a commit's leaf loads and its final copy, the retry re-attached
+to the loads, which had succeeded and create nothing, and the copy failed with "Not found: Table"
+on every attempt.
+The staged files were still there, but the only way past the failure was to discard the state,
+and with it the rows.
+
+Every temporary table is now prepared as the Decision prepares a laid-out one: created ahead of
+its jobs with a table expiration of `tempTableExpiration`, or extended, on every attempt.
+A table whose copy needs no layout keeps its name and is created with no partitioning or
+clustering.
+The leaf loads and intermediate copies that fill it, and under `WRITE_TRUNCATE_DATA` the copy into
+the aggregate table, name its incarnation and create nothing.
+The final copy into the destination and the terminal query keep their ids, so an earlier attempt's
+success under them still stands.
+
+Stamping these jobs needs one more question first.
+`WRITE_TRUNCATE_DATA` never asked whether its final job had succeeded, because a retry re-attached
+to every job by id and read no table it had deleted.
+With incarnations, the restore that follows a successful commit, which commits its last
+checkpoint's files again, would recreate the tables the commit deleted, and the loads under their
+new ids would read staged files the commit deleted too, on every restart.
+Such a commit now asks whether its terminal query succeeded, under its id or a retry id, before it
+prepares anything, as the other dispositions ask about their final copy.
+A job that failed does not count: a query refused because the aggregate expired is followed by a
+retry that refills it.
+
+A commit of files an older version staged takes the same stamps.
+Its table names and its final copy and terminal query ids stay those of 1.4.0, so a completed
+commit is still re-attached to at its final job before any table is prepared.
+An incomplete one refills its tables once after the upgrade, even where they survived, because
+the ids of the jobs that fill them now carry the schema salt below and, for tables without a
+layout, an incarnation its earlier attempt never used; every temporary-table job truncates its
+table, so the refill adds no rows.
+The owner chose this over keeping those commits on the earlier path, which would have left the
+failure in every state restored from 1.4.0 and kept a branch that serves only that upgrade.
+
+Two further changes close what the stamps alone leave open.
+
+The question whether a final copy or terminal query succeeded now waits for one an earlier attempt
+left pending or running, where the Decision treated it as not succeeded and went on to prepare.
+Such a job may not yet have read its sources.
+If one of them expired meanwhile, the preparation would create it empty, and the job would then
+copy the empty table and succeed with that table's rows missing, after which every retry
+re-attaches to it.
+Waiting keeps the preparation from creating anything until the job has finished: if it succeeded,
+the destination re-attaches to it, and if it failed, for example because its source was gone, the
+destination fills its tables again.
+An intermediate copy, or the copy into the aggregate table, has the same exposure one level down:
+its id names the incarnation of the table it fills, not of the tables it reads, so the retry
+derives the id of an earlier attempt's copy into a surviving table and re-attaches to it, whatever
+that copy read.
+So the tables copies fill are prepared first, from those the last copy reads down, and the leaves
+last; once a table is prepared, the copy that fills it under that incarnation is waited for if an
+earlier attempt left it unfinished, before any of its sources is prepared.
+When that copy succeeded, the tables it read, and every table below them, are not filled or copied
+from again: the table it filled already holds their rows and the copy stage re-attaches to that
+copy, as the final copy's success already left every temporary table alone.
+One that survives is still extended, so it keeps its rows as long as the table above does, for a
+later attempt that finds that table expired and needs them; one that expired is not created anew,
+because an empty table there could be read only by an earlier attempt's copy still running under
+another id (another schema salt), which would then empty the table above.
+Without that, a leaf that expired under an aggregate copy that had succeeded was loaded again from
+its staged files, and failed on every restart once a lifecycle rule had removed them, where the
+commit could finish from the aggregate.
+
+Every job that fills a temporary table also takes a salt of the schema reconciliation gave the
+destination, after the layout's and before the incarnation.
+The Decision's Consequences left a partial expiry together with a schema change failing until the
+remaining tables expired: the table created anew takes the new schema, the surviving ones keep the
+old, and a copy refuses sources whose schemas differ.
+Once every attempt extends every table it prepares, the surviving tables never expire while the
+job keeps restarting, so that failure would last as long as the restarts.
+With the salt, a retry under another schema fills every table again from the staged files, which
+the pending commit still has.
+The salt hashes the whole schema as the client library prints it, so a change that a copy might
+accept, such as a field's description, also refills the tables; a refill costs loads, never rows.
+That printing is not a contract of the library: an upgrade of it that prints a schema differently
+refills every pending commit's tables once, which needs their staged files as any refill does.
+The tests pin one salt literally, so such an upgrade shows up on the change that brings it.
+
+Measured on 2026-11-24 against BigQuery with `BigQueryFileLoadsTempTableLayoutRealGcpITCase`,
+using an unpartitioned destination, three one-file loads and one intermediate copy level:
+
+| Case | Without the preparation (`WRITE_APPEND` and `WRITE_TRUNCATE_DATA`) | Prepared, without the terminal-query question | This revision |
+|---|---|---|---|
+| Every leaf loaded, the first copy refused, every temporary table deleted, the commit retried | "Not found: Table" on the intermediate copy, both dispositions | not run | 3 rows, both dispositions |
+| A successful commit run again with its staged files deleted | 3 rows, both dispositions | `WRITE_APPEND` 3 rows; `WRITE_TRUNCATE_DATA` fails, "Not found: URI" on every leaf load | 3 rows, both dispositions |
+
+Measured on 2026-11-25 the same way: every leaf loaded and the first copy refused, the destination
+then gained a column, one leaf was deleted, and the commit was retried.
+Without the schema salt the intermediate copy was refused, "Incompatible table schemata between
+tables"; with it the destination held 3 rows.
+
+Measured on 2026-11-25 the same way: a `WRITE_TRUNCATE_DATA` commit whose aggregate copy succeeded
+and whose terminal query was refused, retried after its leaves and its staged files were deleted.
+When the leaves under the succeeded copy were filled again, the retry's loads failed with "Not
+found: URI"; when they were not, the destination held 3 rows.
+
+The waiting has no gated case, because the suite cannot hold a real copy job pending while a table
+it reads expires; the runner's unit tests hold it against scripted job states instead.
+
+### Consequences of the revision
+
+An orphaned temporary table now expires on its own wherever it lives, where one without a layout
+used to stay in a dataset without a default table expiration, such as the destination's own,
+until it was deleted by hand.
+That expiration also replaces the dataset's default for a table the commit still needs.
+A commit left pending longer than `tempTableExpiration` therefore loads its staged files again,
+where in a dataset without a default it would have re-attached to its loads, so it fails on every
+restart if a staging lifecycle rule removed those files in the meantime.
+The documented lifecycle sizing, longer than any outage the job is meant to recover from, already
+excludes that; the same holds for a 1.4.0 commit whose refill after the upgrade finds its files
+removed.
+
+Every commit on this path makes one `tables.insert` per temporary table it prepares, and a
+`tables.patch` on a retry, one after another per destination before its jobs; a
+`WRITE_TRUNCATE_DATA` destination also reads its terminal query's job, plus one read per failed
+attempt of it, and a destination with an intermediate level or an aggregate table reads at least
+one job for each table a copy fills, except those below a copy that already succeeded.
+A destination whose final job, or a copy into one of its temporary tables, an earlier attempt left
+unfinished waits for it, and a retry under a changed schema loads every temporary table again.
+Leaves hold up to 10,000 files each, so a commit has few tables unless it is enormous.
+The permissions are those the path already needed (`bigquery.tables.create` and
+`bigquery.tables.update` on the temporary dataset).
+What remains of the overlapping-attempt exposure is narrower than the Decision's.
+An earlier attempt still running that submits a copy or a terminal query only after the retry
+waited for it, once the retry recreated an expired source and before it refilled it, would read
+that source empty.
+An earlier attempt's unfinished copy under another id is not waited for: one into a table that was
+itself created anew since, or one under another schema salt. The retry runs its own copy under its
+own id after refilling the sources, so the earlier one writes the same rows unless it began reading
+before the refill and finished writing after the retry's copy.
+Under another schema salt, an earlier load or copy that finishes after the retry's job writes the
+table back in the earlier schema; the copy reading it is then refused, and every later attempt,
+which re-attaches to its own job under the same incarnation, is refused again. That fails loudly
+rather than losing rows, and deleting the named temporary table before the next restart gives it a
+new incarnation, which is filled again.
+A Flink restart cancels the earlier attempt's tasks before it deploys the next, so the overlapping
+cases above need a committer that kept running past its cancellation.
+
+Two loud failures need no overlapping attempt.
+A schema that changes and then changes back between attempts can leave a surviving table filled
+under the other schema and re-attached to under the original salt, so the copy is refused on every
+restart; the same recovery applies.
+An attempt that outlasts `tempTableExpiration` before its first load, reconciling and preparing
+many destinations, finds its first tables expired and fails with "Not found: Table" on every
+restart; the option must exceed the longest commit attempt.
+
+### Alternatives declined in the revision
+
+- **Reloading under fresh ids when a copy finds its source missing.** An id that every retry
+  derives alike needs something that changes with the table, which is its incarnation.
+  Advancing past a load that succeeded whose table is gone would change the runner's re-attach
+  rule, which passes only failed jobs, for every job type; an existence check before the copy
+  leaves a race with the expiration; and the tables would still not be extended while a commit is
+  retried.
+- **Stamping without an expiration of the commit's own.** It keeps the dataset's default, so it
+  avoids reloading a commit pending in a dataset without one, but such a dataset also keeps every
+  orphan, and the temporary tables would expire under two rules.
+- **Keeping commits of files an older version staged on the earlier path.** Their pins would stay
+  byte-identical, but the failure would remain for every state restored from 1.4.0, behind a
+  branch that only that upgrade needs.

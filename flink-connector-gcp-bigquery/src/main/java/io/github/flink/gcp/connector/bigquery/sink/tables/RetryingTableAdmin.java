@@ -61,9 +61,10 @@ import java.util.List;
  *
  * <p>{@link #create}, {@link #ensureCdcTable} and {@link #prepareTemporaryTable(TableDestination,
  * Schema, TableLayout, String, Duration)} retry; the last covers both the creation and the
- * extension of an existing table's expiration. {@link #getPrimaryKey(TableDestination)} retries
- * too: it runs where a destination is opened, beside the provisioning read that does. {@link
- * #getSchema(TableDestination)} and {@link #updateSchema} pass straight through — the latter
+ * extension of an existing table's expiration, and {@link #extendTemporaryTable(TableDestination,
+ * Duration)}, the extension alone, retries as well. {@link #getPrimaryKey(TableDestination)}
+ * retries too: it runs where a destination is opened, beside the provisioning read that does.
+ * {@link #getSchema(TableDestination)} and {@link #updateSchema} pass straight through — the latter
  * reports its own lost race as {@code false} for the caller to re-read and re-derive from, which a
  * blind repeat here would turn into a stale-proposal loop.
  */
@@ -246,6 +247,17 @@ public final class RetryingTableAdmin implements TableAdmin {
                                 delegate.prepareTemporaryTable(
                                         table, schema, layout, kmsKeyName, expiration));
         return creationTime[0];
+    }
+
+    @Override
+    public boolean extendTemporaryTable(TableDestination table, Duration expiration)
+            throws IOException {
+        boolean[] extended = new boolean[1];
+        retry(
+                table,
+                "extend temporary",
+                () -> extended[0] = delegate.extendTemporaryTable(table, expiration));
+        return extended[0];
     }
 
     @Override

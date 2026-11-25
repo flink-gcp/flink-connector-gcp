@@ -330,8 +330,8 @@ public final class DestinationCommitExecutor implements AutoCloseable {
                             try {
                                 deleteTables(plan, worker());
                             } catch (IOException failure) {
-                                // Best-effort cleanup: a dataset expiration and staging-bucket
-                                // lifecycle are the durable fallback.
+                                // Best-effort cleanup: each temporary table's own expiration
+                                // and the staging bucket's lifecycle are the durable fallback.
                                 LOG.warn(
                                         "FILE_LOADS temporary-table cleanup did not finish for {}",
                                         plan.destination,
