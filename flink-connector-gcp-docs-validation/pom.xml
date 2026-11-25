@@ -44,18 +44,6 @@ limitations under the License.
             <artifactId>flink-connector-gcp-bigquery</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
-            <exclusions>
-                <!-- No repository publishes this POM, which the enforcer's collection reaches
-                     through BigQuery's provided parquet-avro, Hadoop, wildfly-openssl and
-                     jboss-logging. Its not-found is asked again on any later day, so a 503 or
-                     429 from JBoss or Central that outlasted the resolver's retries failed the
-                     docs builds (ADR-0159, issue #2331).
-                     The zip lands on no classpath. -->
-                <exclusion>
-                    <groupId>org.apache.logging.log4j</groupId>
-                    <artifactId>log4j-api-java9</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.github.flink-gcp</groupId>

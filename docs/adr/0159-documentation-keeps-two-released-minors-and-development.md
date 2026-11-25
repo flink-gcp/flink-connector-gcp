@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0159: Documentation keeps two released minors and Development
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331) (2026-11-25: released lines skip the Maven enforcer)
-- Issues: [#731](https://github.com/flink-gcp/flink-connector-gcp/issues/731), [#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331)
+- Date: 2026-09-06; revised by [#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331) (2026-11-25: released lines skip the Maven enforcer) and [#2340](https://github.com/flink-gcp/flink-connector-gcp/issues/2340) (2026-11-25: Development's enforcer no longer requests the unpublished POM)
+- Issues: [#731](https://github.com/flink-gcp/flink-connector-gcp/issues/731), [#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331), [#2340](https://github.com/flink-gcp/flink-connector-gcp/issues/2340)
 - Modules: docs, CI
 - Current behavior: [Documentation versions](../content/docs/versions.md)
 - Supersedes: ADR-0056's single unversioned publication; its API filtering and validation decisions continue below
@@ -73,11 +73,11 @@ Released pages disable the main edit link and point source links to their exact 
 A released line builds with the Maven enforcer skipped ([#2331](https://github.com/flink-gcp/flink-connector-gcp/issues/2331)): the documentation helper adds `-Denforcer.skip=true` to `MAVEN_ARGS` for every released line, so CI and a local reproduction run the same build.
 The enforcer guards dependency changes, and a tag's dependency declarations cannot change after it is cut; its source also selects the Maven and Java toolchain the other rules check.
 Development checked the same declarations before the release, so on a tag the enforcer would repeat that check and could fail a build that changed nothing.
-The docs-validation enforcer's dependency collection reaches a POM that no repository publishes, through BigQuery's provided Parquet and Hadoop dependencies.
+Under maven-enforcer-plugin 3.1.0, which every tag cut before [#2340](https://github.com/flink-gcp/flink-connector-gcp/issues/2340) builds with, the dependency collection of the docs-validation module's `requireUpperBoundDeps` rule reaches the POM of `log4j-api-java9`, which no repository publishes, through BigQuery's provided Parquet and Hadoop dependencies.
 The resolver records the not-found, and on any later day asks each release repository on that path again, including the JBoss repositories that the Hadoop and wildfly-openssl parent POMs declare.
 A restored Maven cache does not prevent this, because its record keeps the day the entry was saved.
 A 503 or 429 that persists through the resolver's retries, from any of those repositories, means the POM can no longer be called missing, and the collection fails.
-The docs-validation module now excludes that POM, but on a tag cut before the exclusion the enforcer could still make the request if it ran.
+Development builds with 3.7.0, which does not request that POM, but of the tags cut before that change, `v1.3.0` and `v1.4.0` carry that rule and would still make the request if their enforcer ran.
 Development keeps the enforcer, because a pull request can change its dependencies.
 
 ADR-0056's other decisions remain in force: aggregate Javadoc includes every API tier, doclint stays off with warnings fatal, and runnable examples are checked against exact compiled regions.
