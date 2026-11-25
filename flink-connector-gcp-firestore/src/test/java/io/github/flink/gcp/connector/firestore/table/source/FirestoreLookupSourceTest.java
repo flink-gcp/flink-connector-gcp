@@ -218,8 +218,8 @@ class FirestoreLookupSourceTest {
                         source(KEYED, "database", "db", "emulator-endpoint", "localhost:8080")
                                 .getLookupRuntimeProvider(context(new int[] {0})));
 
-        assertThat(lookup.settings().getProjectId()).isEqualTo("my-project");
-        assertThat(lookup.settings().getDatabaseId()).isEqualTo("db");
+        assertThat(lookup.settings().build().getProjectId()).isEqualTo("my-project");
+        assertThat(lookup.settings().build().getDatabaseId()).isEqualTo("db");
     }
 
     @Test

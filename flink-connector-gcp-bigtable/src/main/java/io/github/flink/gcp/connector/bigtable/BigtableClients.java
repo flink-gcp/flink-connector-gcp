@@ -46,12 +46,13 @@ import java.io.IOException;
  *
  * <p>The data client, {@code BigtableDataClient}, is not a gax {@code BackgroundResource} but a
  * plain {@link AutoCloseable} (google-cloud-bigtable 2.89.0), so it is opened with {@link
- * GrpcEventLoops#openAutoCloseable}, whose holder closes the client with its own {@code close()}
- * and then releases the lease. That {@code close()} drains the client's session pool for up to six
- * minutes, then shuts its classic channels down and waits up to six minutes for them to terminate
- * (gax 2.91.0 {@code GrpcTransportChannel.close()}), without cancelling the classic calls still in
- * flight; on an interrupted thread, or one interrupted during that wait, it gives the wait up at
- * once, consuming the interrupt, and skips the rest of the client's cleanup.
+ * GrpcEventLoops#openAutoCloseable(GrpcEventLoops.ClientFactory)}, whose holder closes the client
+ * with its own {@code close()} and then releases the lease. That {@code close()} drains the
+ * client's session pool for up to six minutes, then shuts its classic channels down and waits up to
+ * six minutes for them to terminate (gax 2.91.0 {@code GrpcTransportChannel.close()}), without
+ * cancelling the classic calls still in flight; on an interrupted thread, or one interrupted during
+ * that wait, it gives the wait up at once, consuming the interrupt, and skips the rest of the
+ * client's cleanup.
  *
  * <p>The admin clients are opened as {@code BigtableTableAdminClientV2} and {@code
  * BigtableInstanceAdminClientV2}, which extend the generated {@code BaseBigtable*AdminClient}s and

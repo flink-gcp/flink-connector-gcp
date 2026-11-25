@@ -22,6 +22,7 @@ import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.WriteResult;
 import com.google.firestore.v1.BatchWriteRequest;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreEmulatorITCase;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
@@ -35,6 +36,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -58,7 +60,7 @@ class DocumentSizeEstimatorITCase extends AbstractFirestoreEmulatorITCase {
     private BulkWriterDatabaseAccess access;
 
     @BeforeEach
-    void openCapturingAccess() {
+    void openCapturingAccess() throws IOException {
         // The library reads this variable whenever setEmulatorHost was not called, and then
         // replaces the channel below, interceptor included, with one of its own.
         assertThat(System.getenv("FIRESTORE_EMULATOR_HOST"))
@@ -101,7 +103,7 @@ class DocumentSizeEstimatorITCase extends AbstractFirestoreEmulatorITCase {
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
         access =
                 new BulkWriterDatabaseAccess(
-                        options.getService(),
+                        GrpcEventLoops.openAutoCloseable(lease -> options.getService()),
                         executor,
                         DefaultFirestoreDatabaseAccessFactory.bulkWriterOptions(
                                 FirestoreWriterOptions.builder().build(), executor),

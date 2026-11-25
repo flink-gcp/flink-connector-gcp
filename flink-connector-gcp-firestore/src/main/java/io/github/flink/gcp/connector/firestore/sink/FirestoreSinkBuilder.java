@@ -146,9 +146,10 @@ public class FirestoreSinkBuilder<T> {
      * Points the sink at a Firestore emulator instead of the real service. Optional; for tests.
      *
      * <p>The emulator needs no credentials, so setting this also stops the client from looking for
-     * any. This setting is the only way the sink reaches an emulator: the client library would also
-     * read the {@code FIRESTORE_EMULATOR_HOST} environment variable on its own, and the writer logs
-     * a warning when that variable is set and this setting is not.
+     * any. Without this setting, the client library reads the {@code FIRESTORE_EMULATOR_HOST}
+     * environment variable on its own and, when it names a host, sends every request to that host,
+     * and the writer logs a warning; with it, this endpoint wins over the variable, and a warning
+     * names both when the variable is set too.
      *
      * @param emulatorEndpoint the emulator's gRPC endpoint as {@code host:port}
      * @return this builder

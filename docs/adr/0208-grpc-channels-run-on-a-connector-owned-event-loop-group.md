@@ -32,7 +32,8 @@ limitations under the License.
   [#2305](https://github.com/flink-gcp/flink-connector-gcp/issues/2305),
   [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312),
   [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322),
-  [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329)
+  [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329),
+  [#2330](https://github.com/flink-gcp/flink-connector-gcp/issues/2330)
 - Modules: base, bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -686,12 +687,101 @@ same way.**
   A call that a session starts after `close()` is refused without being started, and one started
   while another of the session's calls is in flight is refused with an `IllegalStateException`.
   `call(prepare, opener, start)` is a session of one call.
+  `ClientSession.client()` hands the body the client for work that makes no call, such as
+  building a Firestore query, which is bound to the client it is built from (#2330); every call
+  still goes through `call`, the only one `close()` cancels.
 - A client per call was the alternative: it would set up a channel for each of a plan's three to
   five calls, and a Firestore query is bound to the client it was built from (#2330).
   Composing the plan into one future was the other: it loses each step's failure message, and
   Datastore's fallback on `INVALID_ARGUMENT` would become a chain of futures.
 
-The Firestore connector's Native mode moves onto the group in #2330.
+**In the Firestore connector's Native mode (#2330, 2026-11-25), every client holds a lease the
+same way.**
+
+- **`FirestoreClients.open` builds the options twice.**
+  `FirestoreOptions.Builder.setChannelProvider` accepts only an `InstantiatingGrpcChannelProvider`
+  and `FirestoreOptions` is `final` (google-cloud-firestore 3.53.0), so a caller-owned channel
+  can reach the client only through a hand-written `FirestoreRpc` (`setServiceRpcFactory`), which
+  [#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343) weighs.
+  The first build sets up the provider the library would use, with its tracing configurator; the
+  second takes that provider with the lease applied after its configurator.
+  An emulator's arm sets a plaintext provider from `FirestoreSettings`' transport defaults, which
+  keep the maximum inbound message size at `Integer.MAX_VALUE`, with the emulator's fixed token,
+  in place of `setEmulatorHost`, whose provider the library builds itself at gRPC's 4 MiB and off
+  the group.
+  `GrpcFirestoreRpc` takes the provider for any client whose service host is not a `localhost`
+  name and whose credentials are not `NoCredentials`; the connector sets neither.
+- **A client closes with `shutdownNow()` before `close()`** (`FirestoreClients.close`, through
+  `GrpcEventLoops.openAutoCloseable(factory, closer)`).
+  Cancelling the future of `Query.get()` or of a read-only transaction ends the caller's wait but
+  not the `RunQuery` stream, since the library discards the stream's controller, and
+  `Firestore.close()` alone then waits for the stream until its deadline: a planner closed while a
+  plan waited on a server that never answered took 300 s to close; with `shutdownNow()` first it
+  took 25 ms, and the group stopped (measured 2026-11-25, `ClientQueryPlannerCloseITCase`).
+  `close()` then waits up to a second each for the channel pool, the executor and the stream
+  watchdog (`GrpcFirestoreRpc.close()` over the client context's background resources).
+  A component closes its client once it has stopped using it or stopped waiting for it, so a call
+  this cancels fails rather than holding the close: a sink's `BulkWriter` has flushed or been
+  abandoned, and a lookup's caller has gone.
+  `shutdownNow()` also drops a retry gax has scheduled on the client's executor without completing
+  the call's future, as in Datastore mode above, so **the page reader's close ends every page
+  still in flight before it closes the client**, by cancelling the future the page waits on,
+  derived from the read's; the library's own `close()` shut its executor down gracefully, which
+  still ran such a retry, and the fetcher was released by its failure (read from gax 2.91.0, not
+  measured).
+  The table lookup's close ends its reads in flight the same way, so an asynchronous lookup's
+  future completes rather than waiting for good.
+- **The planner, on the JobManager, opens a client for each plan and closes it before the plan
+  returns**, through `PerCallClientRunner`'s session form: the snapshot-time probe, the probe at
+  the read time, the offset resolution and `PartitionQuery` are the session's calls, and the
+  user's query factory and the collection group are built from `ClientSession.client()`.
+  It held its client from its first plan until the enumerator closed it.
+- The sink's database access, the page reader and the table lookup hold their clients until they
+  close, as before; a full lookup cache load plans, opens, fetches and closes inside
+  `interruptibleReleases()`, through `FullCacheInputFormat`.
+- **Residuals** ([#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343)):
+  - An emulator endpoint written as `dns:///host:port` or `http://host:port` fails at client
+    creation, since gax parses the provider's endpoint as `host:port`
+    (`URISyntaxException: Expected closing bracket for IPv6 address`, measured 2026-11-25 through
+    the planner, with the same result before this change).
+  - `GOOGLE_API_USE_CLIENT_CERTIFICATE` makes an instantiating provider build TLS credentials,
+    which the plaintext configurator cannot override, as recorded for Cloud Tasks above (read, not
+    measured, for Firestore).
+  - `FIRESTORE_EMULATOR_HOST` takes a client off the group.
+    `FirestoreOptions.Builder.build()` reads it whenever no emulator host was set and replaces the
+    channel provider with a bare plaintext one.
+    With an emulator endpoint configured, the connector reads the variable before the library
+    does and builds the client on that endpoint through `setEmulatorHost`, so the configured
+    endpoint still wins and the library never parses the variable's value, which it refuses when
+    empty or malformed; a warning says the client runs on gRPC's shared group.
+    Without an endpoint, the warning ADR-0171 kept says so too.
+    Failing the job on the variable stays declined (ADR-0171).
+  - A connector-owned `FirestoreRpc` through `setServiceRpcFactory` would remove the first two
+    and could keep the third's channel on the group, though `build()` would still read the
+    variable and replace the provider and credentials it was given.
+    `FirestoreRpc` is public and not `@InternalApi`, but not documented as an extension point; it
+    has twelve RPC callables besides its executor and shutdown methods, and its implementation,
+    `GrpcFirestoreRpc`, wires a `ClientContext` and per-method retry settings the connector would
+    have to copy; #2343 weighs that route.
+- **A later `PartitionQuery` page can stay blocked**
+  ([#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346)).
+  A `PartitionQuery` answered over several pages fetches the later pages inside the library's
+  transform of the first, synchronously and without heeding an interrupt (`getUnchecked`), on the
+  thread that completed the first page's call.
+  If the planner closes while a later page is in flight, waiting on a retry gax has scheduled or
+  on a call `shutdownNow()` fails with `UNAVAILABLE`, which `PartitionQuery` retries, and that
+  retry is scheduled before the executor stops, the plan ends, since its future is cancelled, but
+  `shutdownNow()` drops the retry, and that thread stays blocked for good, keeping the job's class
+  loader reachable; it runs no further code, so it cannot fail after the loader closes (read from
+  google-cloud-firestore 3.53.0 and gax 2.91.0, not measured).
+  The library's graceful close had let the retry run and fail; the connector has no handle on the
+  library's page fetch to cancel it, and
+  [#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346) weighs paging the call in
+  the planner.
+  If the first page answers before the library registers its transform, the plan's own thread
+  runs the transform while it starts the call, under `PerCallClientRunner`'s monitor, so a close
+  meanwhile waits for the later pages, up to their calls' deadlines, as the library's own close
+  waited for a call in flight before this change (read, not measured).
 
 ## Evidence
 
@@ -843,6 +933,21 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   against the code before the change: every Datastore client failed the thread check, the lookup
   could not dial the target (`IllegalArgumentException: Invalid host or port`), and the other
   clients could not be created (`UnknownHostException: dns`).
+- **Firestore's Native mode** (#2330), measured 2026-11-25 the same way with the emulator in
+  Native mode (the same image), a collection seeded by the writing batch job and a bounded scan
+  of that collection.
+  On 1.4.0 the writing batch job exited the TaskManager with code 239 on 18 of 18 clusters, every
+  one of 8 cancellations exited the TaskManager the same way, and every one of 8 finished scans
+  exited the TaskManager, four of them the JobManager too.
+  The four scans the JobManager survived each left five `grpc-default-worker-ELG` threads there
+  after the job had finished.
+  Each exit followed `NoClassDefFoundError: .../IntObjectHashMap$2` from a
+  `grpc-default-worker-ELG` thread.
+  With this change, neither process exited after either of 2 writing batch jobs, 8 finished scans
+  or 8 cancellations, no `grpc-default-worker-ELG` thread was in any thread sample or log line,
+  the TaskManager ran seven
+  `flink-gcp-grpc-elg` threads while a cancelled job wrote, and neither process held a gRPC
+  event-loop thread once a scan had finished or 6 s after a cancellation.
 
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
@@ -962,7 +1067,8 @@ writing jobs here were not traced.
   of a default-stream writer is evicted as idle in a `lib/` deployment, and the next client starts
   a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  Until #2330 lands, that is every channel of the Firestore connector's Native mode.
+  A Firestore Native client built while `FIRESTORE_EMULATOR_HOST` is set is one
+  ([#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343)).
 - **A Bigtable data client's built-in Cloud Monitoring export still uses gRPC's group.**
   Its `MetricServiceClient` takes no channel settings from the data client, so while the export
   is on, which is the default for the readers', the sinks' and the lookups' clients, each such

@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -67,6 +69,52 @@ class LeasedClientTest {
 
         assertThat(client.closes).hasValue(1);
         assertThat(client.leaseHeldAtClose).as("the lease outlived the client's close").isTrue();
+    }
+
+    /** A client given a closer is closed by it, once, before its lease is released. */
+    @Test
+    void aClientGivenACloserIsClosedByItInsteadOfItsOwnClose() throws Exception {
+        FakeClient client = new FakeClient();
+        List<String> steps = new ArrayList<>();
+        GrpcEventLoops.LeasedClient<FakeClient> leased =
+                GrpcEventLoops.openAutoCloseable(
+                        lease -> client,
+                        closed -> {
+                            steps.add("closer");
+                            steps.add(GrpcEventLoops.isRunning() ? "lease held" : "lease released");
+                        });
+
+        leased.close();
+        leased.close();
+
+        assertThat(steps).containsExactly("closer", "lease held");
+        assertThat(client.closes).as("the client's own close").hasValue(0);
+        assertThat(GrpcEventLoops.isRunning()).as("a lease was left open").isFalse();
+    }
+
+    /** The closer's interrupt is handled as a client's own close: consumed, then restored. */
+    @Test
+    void anInterruptTheCloserConsumesIsRestored() throws Exception {
+        GrpcEventLoops.LeasedClient<FakeClient> leased =
+                GrpcEventLoops.openAutoCloseable(
+                        lease -> new FakeClient(),
+                        client -> {
+                            if (Thread.interrupted()) {
+                                throw new IOException(
+                                        "close interrupted", new InterruptedException());
+                            }
+                        });
+
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(leased::close).hasRootCauseInstanceOf(InterruptedException.class);
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the interrupt the closer consumed")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(GrpcEventLoops.isRunning()).as("a lease was left open").isFalse();
     }
 
     @Test

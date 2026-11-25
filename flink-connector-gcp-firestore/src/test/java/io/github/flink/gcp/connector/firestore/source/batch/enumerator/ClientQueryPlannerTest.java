@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.firestore.source.batch.enumerator;
 
+import com.google.auth.oauth2.AccessToken;
+import com.google.auth.oauth2.GoogleCredentials;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -57,5 +59,19 @@ class ClientQueryPlannerTest {
         assertThat(ClientQueryPlanner.partitionFailure(denied, DATABASE, 4)).isSameAs(denied);
         assertThat(ClientQueryPlanner.partitionFailure(interrupted, DATABASE, 4))
                 .isSameAs(interrupted);
+    }
+
+    /** A closed planner keeps no reference to the credentials it was given. */
+    @Test
+    void closingThePlannerDropsItsCredentials() throws Exception {
+        GoogleCredentials credentials = GoogleCredentials.create(new AccessToken("t", null));
+        ClientQueryPlanner planner = new ClientQueryPlanner(null);
+        planner.useCredentials(credentials);
+        assertThat(planner.settings(DATABASE).build().getCredentials()).isSameAs(credentials);
+
+        planner.close();
+
+        // Not through settings(...).build(), which would look for Application Default Credentials.
+        assertThat(planner.credentials()).isNull();
     }
 }

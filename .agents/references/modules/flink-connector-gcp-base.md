@@ -309,7 +309,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `close()` (Bigtable's three clients, Spanner's `Spanner`) is opened with
   `GrpcEventLoops.openAutoCloseable` (#2312): its `LeasedClient` calls that `close()` once,
   restores an interrupt it consumed, and then releases the lease; never open a gax client that
-  way, which would skip the bounded wait. Settings that take a transport provider without
+  way, which would skip the bounded wait. A client whose own `close()` waits for calls a cancelled
+  future does not end passes a closer instead (`openAutoCloseable(factory, closer)`, #2330:
+  Firestore's `shutdownNow()` then `close()`, since its `close()` waits for a query stream until
+  the stream's deadline). Settings that take a transport provider without
   extending `ClientSettings` (Bigtable's stub settings) use the public
   `Lease.applyTo(TransportChannelProvider)`. A client whose shutdown is a protocol of its own
   (Pub/Sub's `Publisher` and `Subscriber`) cannot be a `LeasedClient`: its owner holds the lease
@@ -348,18 +351,21 @@ record — context, evidence, declined alternatives — is the named ADR under `
   flight through the call's `ApiFuture` before closing the client (a cancellation between two gax
   attempts can miss; the waiter then ends on the interrupt a coordinator's worker gets). **Such a client goes through
   `base.rpc.PerCallClientRunner`** (#2312; BigQuery's session creator, Pub/Sub's subscription
-  admin, Bigtable's sampler and coordinator, Datastore's planner), never a copy of it. An operation
+  admin, Bigtable's sampler and coordinator, Datastore's and Firestore Native's planners), never a
+  copy of it. An operation
   of several calls is one `session(...)`, each call started through `ClientSession.call` so that
-  the call in flight is the one `close()` cancels (#2329), not a client for each of its calls. It builds the
+  the call in flight is the one `close()` cancels (#2329), not a client for each of its calls;
+  `ClientSession.client()` is for work that makes no call, such as building a Firestore query
+  (#2330), never for a call. It builds the
   client outside its monitor and publishes it before its call starts, maps a cancellation to an
   `IOException`, holds
   the thread's interrupt back while an `openAutoCloseable` client closes (only the closing thread;
   an interrupt ends a waiter's wait, and a gax client's bounded close answers it at once), restores
   it before the release, and logs an exception from the close after a successful call. A client whose
   synchronous calls
-  expose no `ApiFuture` (Spanner's) cancels through the gRPC `Context` the call runs in. BigQuery,
-  Bigtable, Cloud Tasks, Pub/Sub, Spanner and Firestore's Datastore mode are migrated; Firestore's
-  Native mode is #2330.
+  expose no `ApiFuture` (Spanner's) cancels through the gRPC `Context` the call runs in. Every
+  connector is migrated (Firestore's Native mode in #2330, with `FIRESTORE_EMULATOR_HOST` still
+  taking a client off the group, #2343).
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

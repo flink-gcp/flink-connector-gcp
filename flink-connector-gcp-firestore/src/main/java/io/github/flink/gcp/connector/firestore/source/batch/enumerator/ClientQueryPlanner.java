@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.core.ApiFuture;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.auth.Credentials;
 import com.google.cloud.Timestamp;
@@ -27,14 +28,16 @@ import com.google.cloud.firestore.CollectionGroup;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryPartition;
 import com.google.cloud.firestore.QuerySnapshot;
 import com.google.firestore.v1.RunQueryRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
-import io.github.flink.gcp.connector.firestore.LazyFirestoreClient;
+import io.github.flink.gcp.connector.firestore.FirestoreClients;
 import io.github.flink.gcp.connector.firestore.source.FirestoreQueryFactory;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceConfig;
 import io.github.flink.gcp.connector.firestore.source.batch.QueryCursors;
@@ -46,6 +49,7 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Plans a read through a {@code google-cloud-firestore} client.
@@ -77,7 +81,9 @@ import java.util.List;
 @Internal
 public class ClientQueryPlanner implements QueryPlanner {
 
-    private final LazyFirestoreClient client;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final PerCallClientRunner runner = new PerCallClientRunner("Firestore query planner");
+    @Nullable private volatile Credentials credentials;
 
     /**
      * Creates the planner.
@@ -85,37 +91,72 @@ public class ClientQueryPlanner implements QueryPlanner {
      * @param emulatorEndpoint the emulator endpoint, or {@code null} for the real service
      */
     public ClientQueryPlanner(@Nullable EmulatorEndpoint emulatorEndpoint) {
-        this.client = new LazyFirestoreClient("query planner", emulatorEndpoint);
+        this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
     public void useCredentials(@Nullable Credentials credentials) {
-        client.useCredentials(credentials);
+        this.credentials = credentials;
     }
 
+    /**
+     * Plans the read on a client opened for this call and closed when it returns (ADR-0208); {@link
+     * #close()} cancels the step in flight, except while the client library fetches a {@code
+     * PartitionQuery}'s later pages inside the step's start, which it waits for (ADR-0208).
+     */
     @Override
     public QueryPlan plan(FirestoreSourceConfig<?> config, int defaultPartitionCount)
             throws IOException {
         Preconditions.checkNotNull(config, "config must not be null");
-        Firestore firestore = client.get(config.getDatabase());
+        DatabaseDestination database = config.getDatabase();
+        return runner.session(
+                () -> settings(database),
+                settings -> FirestoreClients.open(database, emulatorEndpoint, settings),
+                session -> plan(session, config, defaultPartitionCount));
+    }
+
+    /** Returns the credentials a plan's client is built with, or {@code null} for ADC. */
+    @VisibleForTesting
+    @Nullable
+    Credentials credentials() {
+        return credentials;
+    }
+
+    /** Returns the settings a plan's client is built from. */
+    @VisibleForTesting
+    FirestoreOptions.Builder settings(DatabaseDestination database) {
+        return FirestoreClients.settings(database, emulatorEndpoint, credentials, null);
+    }
+
+    private QueryPlan plan(
+            PerCallClientRunner.ClientSession<Firestore> session,
+            FirestoreSourceConfig<?> config,
+            int defaultPartitionCount)
+            throws IOException {
+        Firestore firestore = session.client();
         String collectionGroup = config.getCollectionGroup();
         Query base =
                 collectionGroup != null
                         ? project(firestore.collectionGroup(collectionGroup), config)
                         : userQuery(firestore, config);
-        Timestamp readTime = readTime(base, config);
-        probe(base, readTime, config);
+        Timestamp readTime = readTime(session, base, config);
+        probe(session, base, readTime, config);
         List<RunQueryRequest> queries = new ArrayList<>();
         if (collectionGroup == null) {
-            queries.add(withoutOffset(base, readTime).toProto());
+            queries.add(withoutOffset(session, base, readTime).toProto());
         } else {
             int partitionCount =
                     config.getPartitionCount() != null
                             ? config.getPartitionCount()
                             : Math.max(1, defaultPartitionCount);
+            CollectionGroup group = firestore.collectionGroup(collectionGroup);
             List<QueryPartition> partitions;
             try {
-                partitions = partitions(firestore.collectionGroup(collectionGroup), partitionCount);
+                partitions =
+                        call(
+                                session,
+                                () -> partitions(group, partitionCount),
+                                "Failed to partition the Firestore collection group scan.");
             } catch (IOException e) {
                 throw partitionFailure(e, config.getDatabase(), partitionCount);
             }
@@ -135,15 +176,30 @@ public class ClientQueryPlanner implements QueryPlanner {
      * @param group the collection group
      * @param partitionCount the desired number of partitions, an upper bound the service may answer
      *     below
-     * @return the partitions, in document-name order, together covering the whole group
-     * @throws IOException if the call fails
+     * @return the call's result: the partitions, in document-name order, together covering the
+     *     whole group
      */
     @VisibleForTesting
-    protected List<QueryPartition> partitions(CollectionGroup group, int partitionCount)
+    protected ApiFuture<List<QueryPartition>> partitions(
+            CollectionGroup group, int partitionCount) {
+        return group.getPartitions(partitionCount);
+    }
+
+    /**
+     * Makes one of a plan's calls through its session, so that {@link #close()} cancels it (save
+     * the {@code PartitionQuery} pages {@link #plan(FirestoreSourceConfig, int)} describes), with a
+     * failure of the call carried by an {@link IOException} that names the step.
+     */
+    private static <R> R call(
+            PerCallClientRunner.ClientSession<Firestore> session,
+            Supplier<ApiFuture<R>> start,
+            String failure)
             throws IOException {
-        return ReadTimeQueries.await(
-                group.getPartitions(partitionCount),
-                "Failed to partition the Firestore collection group scan.");
+        try {
+            return session.call(client -> start.get());
+        } catch (RuntimeException e) {
+            throw new IOException(failure, e);
+        }
     }
 
     /**
@@ -215,7 +271,10 @@ public class ClientQueryPlanner implements QueryPlanner {
         }
     }
 
-    private static Timestamp readTime(Query base, FirestoreSourceConfig<?> config)
+    private static Timestamp readTime(
+            PerCallClientRunner.ClientSession<Firestore> session,
+            Query base,
+            FirestoreSourceConfig<?> config)
             throws IOException {
         Instant configured = config.getReadTime();
         if (configured != null) {
@@ -223,8 +282,9 @@ public class ClientQueryPlanner implements QueryPlanner {
                     configured.getEpochSecond(), configured.getNano());
         }
         Timestamp now =
-                ReadTimeQueries.await(
-                                base.offset(0).limit(1).get(),
+                call(
+                                session,
+                                () -> base.offset(0).limit(1).get(),
                                 "Failed to read the Firestore snapshot time.")
                         .getReadTime();
         if (now == null) {
@@ -237,12 +297,16 @@ public class ClientQueryPlanner implements QueryPlanner {
         return now;
     }
 
-    private static void probe(Query base, Timestamp readTime, FirestoreSourceConfig<?> config)
+    private static void probe(
+            PerCallClientRunner.ClientSession<Firestore> session,
+            Query base,
+            Timestamp readTime,
+            FirestoreSourceConfig<?> config)
             throws IOException {
         QuerySnapshot snapshot =
-                ReadTimeQueries.get(
-                        base.offset(0).limit(1),
-                        readTime,
+                call(
+                        session,
+                        () -> ReadTimeQueries.start(base.offset(0).limit(1), readTime),
                         config.getReadTime() == null
                                 ? "Failed to read Firestore at the snapshot time " + readTime + "."
                                 : "Failed to read Firestore at the configured read time "
@@ -264,15 +328,19 @@ public class ClientQueryPlanner implements QueryPlanner {
      * Resolves a query's {@code offset} into a cursor after the last document it skips, at the read
      * time. A query the offset skips entirely becomes one with a limit of zero.
      */
-    private static Query withoutOffset(Query query, Timestamp readTime) throws IOException {
+    private static Query withoutOffset(
+            PerCallClientRunner.ClientSession<Firestore> session, Query query, Timestamp readTime)
+            throws IOException {
         int offset = query.toProto().getStructuredQuery().getOffset();
         if (offset == 0) {
             return query;
         }
         List<? extends DocumentSnapshot> lastSkipped =
-                ReadTimeQueries.get(
-                                query.offset(offset - 1).limit(1),
-                                readTime,
+                call(
+                                session,
+                                () ->
+                                        ReadTimeQueries.start(
+                                                query.offset(offset - 1).limit(1), readTime),
                                 "Failed to resolve the Firestore query's offset.")
                         .getDocuments();
         if (lastSkipped.isEmpty()) {
@@ -281,8 +349,19 @@ public class ClientQueryPlanner implements QueryPlanner {
         return QueryCursors.continueAfter(query, lastSkipped.get(0), 0);
     }
 
+    /**
+     * Cancels the step of a plan in flight, closes its client, and refuses later plans; the
+     * credentials are dropped once nothing can build a client from them. While the client library
+     * fetches a {@code PartitionQuery}'s later pages inside the step's start, this waits for them
+     * (ADR-0208).
+     */
     @Override
     public void close() throws IOException {
-        client.close();
+        try {
+            // The runner is closed first, so no plan reads the credentials after they are cleared.
+            runner.close();
+        } finally {
+            credentials = null;
+        }
     }
 }
