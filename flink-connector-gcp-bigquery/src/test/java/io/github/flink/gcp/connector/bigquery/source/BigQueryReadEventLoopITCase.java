@@ -65,9 +65,9 @@ class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
      * The session creator closes its client, and with it the group, as soon as the session exists —
      * before the creator itself is closed. On the JobManager Flink closes the enumerator only after
      * releasing the job's class loader, so a client still open then would tear the group down on a
-     * closed loader. The creation must show a group thread while a lease is open, since finding no
-     * group afterwards alone would pass for a client whose channels ran on gRPC's group too ({@link
-     * EventLoopObserver}).
+     * closed loader. The creation must start one of the group's event loops while the group is
+     * running, since finding no group afterwards alone would pass for a client whose channels ran
+     * on gRPC's group too ({@link EventLoopObserver}).
      */
     @Test
     void theSessionCreatorRunsOnTheGroupAndLeavesNoGroupOnceTheSessionExists() throws Exception {
@@ -83,6 +83,7 @@ class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
             assertThat(
                             EventLoopObserver.sawGroupDuring(
                                     GrpcEventLoops::isRunning,
+                                    GrpcEventLoops::loopsStartedWhileRunning,
                                     () -> {
                                         ReadSession session = creator.create(request());
                                         // Read the moment create() returns, not polled: a client
@@ -91,7 +92,7 @@ class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
                                         heldAtReturn.set(GrpcEventLoops.isRunning());
                                         assertThat(session.getStreamsCount()).isPositive();
                                     }))
-                    .as("a %s* thread while the session was created", GrpcEventLoopThreads.PREFIX)
+                    .as("a group event loop started while the session was created")
                     .isTrue();
 
             assertThat(heldAtReturn.get())

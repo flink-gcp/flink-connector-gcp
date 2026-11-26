@@ -121,9 +121,10 @@ class PubSubSourceEventLoopITCase extends AbstractPubSubSourceEmulatorITCase {
     }
 
     /**
-     * The admin's client runs on the group and closes when each call returns. The call must show a
-     * group thread while a lease is open, since finding none afterwards alone would pass for a
-     * client whose channels ran on gRPC's group too ({@link EventLoopObserver}).
+     * The admin's client runs on the group and closes when each call returns. The call must start
+     * one of the group's event loops while the group is running, since finding none afterwards
+     * alone would pass for a client whose channels ran on gRPC's group too ({@link
+     * EventLoopObserver}).
      */
     @Test
     void theSubscriptionAdminRunsOnTheGroupAndClosesItsClientWhenEachCallReturns()
@@ -135,12 +136,13 @@ class PubSubSourceEventLoopITCase extends AbstractPubSubSourceEmulatorITCase {
             assertThat(
                             EventLoopObserver.sawGroupDuring(
                                     GrpcEventLoops::isRunning,
+                                    GrpcEventLoops::loopsStartedWhileRunning,
                                     () -> {
                                         SubscriptionInfo info = admin.describe(subscription);
                                         heldAtReturn.set(GrpcEventLoops.isRunning());
                                         assertThat(info).isNotNull();
                                     }))
-                    .as("a %s* thread while the call ran", GrpcEventLoopThreads.PREFIX)
+                    .as("a group event loop started while the call ran")
                     .isTrue();
 
             // The admin is still open, as the enumerator's is until the job ends; nothing holds a

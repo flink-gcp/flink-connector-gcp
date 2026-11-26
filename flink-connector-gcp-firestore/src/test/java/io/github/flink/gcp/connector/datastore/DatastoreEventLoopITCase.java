@@ -147,8 +147,9 @@ class DatastoreEventLoopITCase {
 
     /**
      * The planner runs on the JobManager, so its client closes when the plan returns, before the
-     * enumerator that owns the planner closes it. The plan must show a group thread while a lease
-     * is open, and hold no lease the moment it returns ({@link EventLoopObserver}).
+     * enumerator that owns the planner closes it. The plan must start one of the group's event
+     * loops while the group is running, and hold no lease the moment it returns ({@link
+     * EventLoopObserver}).
      */
     @ParameterizedTest(name = "endpoint prefix \"{0}\"")
     @ValueSource(strings = {"", "dns:///", "http://"})
@@ -169,12 +170,13 @@ class DatastoreEventLoopITCase {
             assertThat(
                             EventLoopObserver.sawGroupDuring(
                                     GrpcEventLoops::isRunning,
+                                    GrpcEventLoops::loopsStartedWhileRunning,
                                     () -> {
                                         QueryPlan plan = planner.plan(config, 1);
                                         heldAtReturn.set(GrpcEventLoops.isRunning());
                                         planned.set(plan);
                                     }))
-                    .as("a %s* thread while the plan ran", GrpcEventLoopThreads.PREFIX)
+                    .as("a group event loop started while the plan ran")
                     .isTrue();
 
             assertThat(planned.get().getRequests()).hasSize(1);

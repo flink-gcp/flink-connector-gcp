@@ -136,9 +136,9 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
 
     /**
      * The planner's client runs on the group and closes when the plan returns, and the reader's on
-     * close. The plan must show a group thread while a lease is open, since finding none afterwards
-     * alone would pass for a client whose channels ran on gRPC's group too ({@link
-     * EventLoopObserver}).
+     * close. The plan must start one of the group's event loops while the group is running, since
+     * finding none afterwards alone would pass for a client whose channels ran on gRPC's group too
+     * ({@link EventLoopObserver}).
      */
     @Test
     void thePlannerRunsOnTheGroupAndClosesItsClientWhenThePlanReturnsAndTheReaderOnClose()
@@ -152,6 +152,7 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
             assertThat(
                             EventLoopObserver.sawGroupDuring(
                                     GrpcEventLoops::isRunning,
+                                    GrpcEventLoops::loopsStartedWhileRunning,
                                     () -> {
                                         PartitionPlan plan =
                                                 planner.plan(
@@ -163,7 +164,7 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
                                         heldAtReturn.set(GrpcEventLoops.isRunning());
                                         planned.set(plan);
                                     }))
-                    .as("a %s* thread while the plan ran", GrpcEventLoopThreads.PREFIX)
+                    .as("a group event loop started while the plan ran")
                     .isTrue();
 
             // Nothing else holds a lease, so the planner's own close of its client, before the

@@ -102,9 +102,10 @@ class PubSubSinkEventLoopITCase extends AbstractPubSubEmulatorITCase {
     }
 
     /**
-     * The admin's client runs on the group and closes when the creation returns. The call must show
-     * a group thread while a lease is open, since finding none afterwards alone would pass for a
-     * client whose channels ran on gRPC's group too ({@link EventLoopObserver}).
+     * The admin's client runs on the group and closes when the creation returns. The call must
+     * start one of the group's event loops while the group is running, since finding none
+     * afterwards alone would pass for a client whose channels ran on gRPC's group too ({@link
+     * EventLoopObserver}).
      */
     @Test
     void theTopicAdminRunsOnTheGroupAndClosesItsClientWhenTheCreationReturns() throws Exception {
@@ -115,11 +116,12 @@ class PubSubSinkEventLoopITCase extends AbstractPubSubEmulatorITCase {
             assertThat(
                             EventLoopObserver.sawGroupDuring(
                                     GrpcEventLoops::isRunning,
+                                    GrpcEventLoops::loopsStartedWhileRunning,
                                     () -> {
                                         admin.createTopic(destination, null);
                                         heldAtReturn.set(GrpcEventLoops.isRunning());
                                     }))
-                    .as("a %s* thread while the creation ran", GrpcEventLoopThreads.PREFIX)
+                    .as("a group event loop started while the creation ran")
                     .isTrue();
 
             // Nothing else holds a lease, so the client's close, before the creation returned, is

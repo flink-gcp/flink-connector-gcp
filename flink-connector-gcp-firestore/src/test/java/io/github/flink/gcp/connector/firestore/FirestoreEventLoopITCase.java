@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.firestore.source.batch.enumerator.ClientQue
 import io.github.flink.gcp.connector.firestore.source.batch.enumerator.QueryPlan;
 import io.github.flink.gcp.connector.firestore.source.batch.reader.ClientQueryPageReader;
 import io.github.flink.gcp.connector.firestore.table.source.TestDocumentLookups;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.firestore.FirestoreEmulatorContainers;
@@ -48,6 +49,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -169,7 +172,9 @@ class FirestoreEventLoopITCase {
 
     /**
      * The planner runs on the JobManager, so its client closes when the plan returns, before the
-     * enumerator that owns the planner closes it.
+     * enumerator that owns the planner closes it. The plan must start one of the group's event
+     * loops while the group is running, and hold no lease the moment it returns ({@link
+     * EventLoopObserver}).
      */
     @Test
     void thePlannerClosesItsClientWhenThePlanReturns() throws Exception {
@@ -181,11 +186,9 @@ class FirestoreEventLoopITCase {
                                                 .emulatorEndpoint(target()))
                         .getConfig();
         try (ClientQueryPlanner planner = new ClientQueryPlanner(endpoint())) {
-            QueryPlan plan = planner.plan(config, 1);
+            QueryPlan plan = planOnTheGroup(planner, config);
 
             assertThat(plan.getQueries()).hasSize(1);
-            // Nothing else holds a lease, so the plan's own close of its client stopped the group,
-            // before the planner closed.
             assertGroupStopped("the planner's client, once the plan returned");
         }
     }
@@ -205,7 +208,7 @@ class FirestoreEventLoopITCase {
                                                 .emulatorEndpoint(target()))
                         .getConfig();
         try (ClientQueryPlanner planner = new ClientQueryPlanner(endpoint())) {
-            QueryPlan plan = planner.plan(config, 1);
+            QueryPlan plan = planOnTheGroup(planner, config);
 
             assertThat(plan.getQueries())
                     .singleElement()
@@ -243,6 +246,33 @@ class FirestoreEventLoopITCase {
         assertThat(sharedGroupThreadAlive())
                 .as("a %s thread while %s is open", SHARED_GROUP_PREFIXES, client)
                 .isFalse();
+    }
+
+    /**
+     * Plans the source, with a default partition count of one, and checks that the plan started one
+     * of the group's event loops while the group was running and that its client no longer held a
+     * lease when it returned. Nothing else holds a lease, so a lease still open at that moment is
+     * the plan's own.
+     */
+    private static QueryPlan planOnTheGroup(
+            ClientQueryPlanner planner, FirestoreSourceConfig<String> config) throws Exception {
+        AtomicReference<QueryPlan> planned = new AtomicReference<>();
+        AtomicBoolean heldAtReturn = new AtomicBoolean();
+        assertThat(
+                        EventLoopObserver.sawGroupDuring(
+                                GrpcEventLoops::isRunning,
+                                GrpcEventLoops::loopsStartedWhileRunning,
+                                () -> {
+                                    QueryPlan plan = planner.plan(config, 1);
+                                    heldAtReturn.set(GrpcEventLoops.isRunning());
+                                    planned.set(plan);
+                                }))
+                .as("a group event loop started while the plan ran")
+                .isTrue();
+        assertThat(heldAtReturn.get())
+                .as("the planner's client was still holding the group when the plan returned")
+                .isFalse();
+        return planned.get();
     }
 
     private static void assertGroupStopped(String client) throws InterruptedException {

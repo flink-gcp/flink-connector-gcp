@@ -336,10 +336,16 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `release()` in a `finally`; `StubWriterInitContext` hands out an empty child loader, so a
   writer's pin is a no-op there. A module test observing the group's threads uses test-utils'
   `GrpcEventLoopThreads`, and a test of a client opened and closed within one call also asserts
-  `EventLoopObserver.sawGroupDuring` (#2303). The last release waits up to 11 s for the group
-  whatever the
-  interrupt says; only a thread inside `GrpcEventLoops.interruptibleReleases()` stops after the
-  first `GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS` (1 s, #2269; why it is opt-in: `docs/adr/0208`).
+  `EventLoopObserver.sawGroupDuring` (#2303), which reads
+  `GrpcEventLoops.loopsStartedWhileRunning()` before and after the call (#2350): the group's
+  thread factory counts, under the lock, a thread started while its own group is the attached
+  one, so a shutdown's threads (started after the release detached the group) and an earlier
+  group's never count. The count shows nothing for an operation that begins while a group runs,
+  and the observer refuses one. A test that must hold a group between its detach and its shutdown
+  sets `beforeShutdown` and clears it in a `finally`. The last release waits up to 11 s for the
+  group whatever the interrupt says; only a thread inside
+  `GrpcEventLoops.interruptibleReleases()` stops after the first
+  `GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS` (1 s, #2269; why it is opt-in: `docs/adr/0208`).
   Open that scope only where Flink stops the thread by interrupt with a deadline (the full lookup
   cache load: 10 s), around every call that can release a lease there, and keep the
   uninterruptible part well under the deadline. A quiet-period-0 group terminates in
