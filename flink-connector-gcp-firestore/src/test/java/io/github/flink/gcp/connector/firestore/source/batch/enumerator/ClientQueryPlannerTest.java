@@ -35,7 +35,12 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** What the planner adds to a partitioning failure; the planning itself is the emulator ITs'. */
+/**
+ * What the planner adds to a partitioning failure, that its close drops its credentials, and its
+ * own paging of {@code PartitionQuery} (#2346): it follows the page token to the last page, and a
+ * failed page fails the paging. {@code QueryPartitionsTest} covers turning the cursors into
+ * partitions, and the ITs the rest of the planning.
+ */
 class ClientQueryPlannerTest {
 
     private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "db");
@@ -83,7 +88,10 @@ class ClientQueryPlannerTest {
         assertThat(planner.credentials()).isNull();
     }
 
-    /** Tests of the planner's own paging of {@code PartitionQuery} (#2346). */
+    /**
+     * The documents root that the paging tests' cursors name their documents under, and that {@code
+     * followsThePageTokenToTheLastPage} sends as its request's parent.
+     */
     private static final String ROOT = "projects/p/databases/(default)/documents";
 
     @Test
