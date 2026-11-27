@@ -35,7 +35,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** What the planner adds to a partitioning failure; the planning itself is the emulator ITs'. */
+/** What the planner adds to a partitioning failure, and how it pages {@code PartitionQuery}. */
 class ClientQueryPlannerTest {
 
     private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "db");
@@ -83,7 +83,7 @@ class ClientQueryPlannerTest {
         assertThat(planner.credentials()).isNull();
     }
 
-    /** Tests of the planner's own paging of {@code PartitionQuery} (#2346). */
+    /** The documents root of the database the paging tests' cursors name. */
     private static final String ROOT = "projects/p/databases/(default)/documents";
 
     @Test
