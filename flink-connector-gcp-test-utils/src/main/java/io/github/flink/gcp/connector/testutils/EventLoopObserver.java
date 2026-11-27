@@ -20,31 +20,32 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import java.time.Duration;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 
 /**
  * Observes the connectors' own gRPC event-loop group around an operation that opens its client and
  * closes it before returning, such as an enumerator's or an admin's call.
  *
  * <p>A check that only finds no group thread afterwards passes as well when the operation never
- * used the group, so {@link #sawGroupDuring(BooleanSupplier, ThrowingRunnable)} also records
- * whether a group thread was alive while a lease was open. Both halves matter: the group's threads
- * start when a channel registers, but the release of the last lease also starts any that never ran,
- * to shut them down ({@link GrpcEventLoopThreads}), so a lease opened and released around a client
- * whose channels ran elsewhere still shows threads for a moment. Those appear only after the
- * release has detached the group, when no lease is open, which is why a thread seen alive counts
- * only if a lease is still open right after.
+ * used the group, so {@link #sawGroupDuring(BooleanSupplier, LongSupplier, ThrowingRunnable)} also
+ * asks whether a group the operation opened gave one of its event loops a first task while it was
+ * running. A live group thread cannot answer that: the release of the last lease starts every event
+ * loop that never ran, to shut it down ({@link GrpcEventLoopThreads}), and a group still shutting
+ * down from before the operation shows threads while the operation's own lease is open. So the
+ * answer comes from base instead: {@code base.rpc.GrpcEventLoops.loopsStartedWhileRunning()} counts
+ * the event-loop threads that started while their own group was the running one, and leaves out
+ * both kinds.
  *
- * <p>Whether a lease is open is {@code base.rpc.GrpcEventLoops.isRunning()}, which every caller
- * passes in: base depends on this module, not the other way round. It also reads true while the
- * group is pinned to a job's class loader with no lease open, and a pinned group keeps its threads,
- * so under a pin {@link #sawGroupDuring(BooleanSupplier, ThrowingRunnable)} reads an earlier
- * channel's thread as the operation's. What rules a pin out is where these tests run: on the
- * application class path the pin is a no-op. {@link #awaitNoGroup(BooleanSupplier, Duration)} waits
- * for a pinned group's release as it does for a lease's, but a pin registered before any lease
- * opened holds no group yet, and passes it.
+ * <p>Base's state reaches this class as suppliers the caller passes in, {@code
+ * GrpcEventLoops::isRunning} and {@code GrpcEventLoops::loopsStartedWhileRunning}, because base
+ * depends on this module, not the other way round.
+ *
+ * <p>{@code isRunning()} also reads true while the group is pinned to a job's class loader with no
+ * lease open. What rules a pin out is where these tests run: on the application class path the pin
+ * is a no-op. {@link #awaitNoGroup(BooleanSupplier, Duration)} waits for a pinned group's release
+ * as it does for a lease's, but a pin registered before any lease opened holds no group yet, and
+ * passes it.
  */
 @Internal
 public final class EventLoopObserver {
@@ -52,84 +53,59 @@ public final class EventLoopObserver {
     private EventLoopObserver() {}
 
     /**
-     * Runs the operation while polling for a live group thread. The operation starts only once the
-     * poller thread is running, so a fast operation does not finish before the poller was ever
-     * scheduled; that a poll lands while the operation's lease is open is still a matter of timing.
+     * Runs the operation and returns whether Netty asked a group it opened for an event loop's
+     * thread while that group was running. An event loop's thread starts once the loop has a first
+     * task, such as a channel's registration, so a client whose channels run on the group starts
+     * one, and a client whose channels run elsewhere starts none while its lease is open. The count
+     * is taken just before Netty starts the thread, so a start that fails counts too. The answer is
+     * read after the operation, so no sample has to land while its lease is open.
      *
-     * @param leaseOpen whether a lease is open: {@code GrpcEventLoops::isRunning}
+     * <p>The operation must start with no group running: a task on a loop that has already started
+     * starts no thread, so the count cannot show an operation's use of a group that was already
+     * running. It must also be the only user of the group while it runs, since the count does not
+     * say which client started a loop.
+     *
+     * @param running whether a group is running: {@code GrpcEventLoops::isRunning}
+     * @param loopsStarted the count of event-loop threads started while their group was running:
+     *     {@code GrpcEventLoops::loopsStartedWhileRunning}
      * @param operation the operation, which opens and closes its own client
-     * @return whether a group thread was alive, with a lease open, at some point while it ran;
-     *     meaningful only while no pin holds the group
+     * @return whether the count grew while the operation ran
+     * @throws IllegalStateException if a group is already running when the operation would start
      * @throws Exception if the operation does
      */
     public static boolean sawGroupDuring(
-            BooleanSupplier leaseOpen, ThrowingRunnable<? extends Exception> operation)
+            BooleanSupplier running,
+            LongSupplier loopsStarted,
+            ThrowingRunnable<? extends Exception> operation)
             throws Exception {
-        AtomicBoolean seen = new AtomicBoolean();
-        AtomicBoolean done = new AtomicBoolean();
-        CountDownLatch polling = new CountDownLatch(1);
-        Thread poller =
-                new Thread(
-                        () -> {
-                            polling.countDown();
-                            while (!done.get() && !seen.get()) {
-                                // Threads first, then the lease: a thread the shutdown started
-                                // is alive only once no lease is open.
-                                if (GrpcEventLoopThreads.alive() && leaseOpen.getAsBoolean()) {
-                                    seen.set(true);
-                                }
-                            }
-                        },
-                        "event-loop-observer");
-        poller.setDaemon(true);
-        poller.start();
-        try {
-            uninterruptibly(polling::await);
-            operation.run();
-        } finally {
-            done.set(true);
-            uninterruptibly(poller::join);
+        if (running.getAsBoolean()) {
+            throw new IllegalStateException(
+                    "A gRPC event-loop group is already running, so the operation's own use of one"
+                            + " cannot be told apart");
         }
-        return seen.get();
+        long before = loopsStarted.getAsLong();
+        operation.run();
+        return loopsStarted.getAsLong() > before;
     }
 
     /**
-     * Waits for the poller to start or to stop without letting an interrupt skip the operation or
-     * replace what it threw: a client runner restores the interrupt flag before it throws, and the
-     * poller starts at once and stops on its own once the operation is done. An interrupt received
-     * meanwhile is restored afterwards.
-     */
-    private static void uninterruptibly(ThrowingRunnable<InterruptedException> wait) {
-        boolean interrupted = false;
-        while (true) {
-            try {
-                wait.run();
-                break;
-            } catch (InterruptedException e) {
-                interrupted = true;
-            }
-        }
-        if (interrupted) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    /**
-     * Waits until no lease is open and no group thread is alive, so that a group an earlier class
-     * in a reused fork left behind is ruled out before a test relies on its absence. A lease whose
-     * client never registered a channel starts no thread, which is why the lease is checked too. It
-     * cannot rule out a group none of whose event loops ever ran, caught between its release and
-     * its shutdown, which for a moment has neither ({@link GrpcEventLoopThreads}).
+     * Waits until no group is running and no group thread is alive, so that a group an earlier
+     * class in a reused fork left behind is ruled out before a test relies on its absence. A lease
+     * whose client never registered a channel starts no thread, which is why the group is checked
+     * too. It cannot rule out a group none of whose event loops ever ran, caught between its
+     * release and its shutdown, which for a moment has neither ({@link GrpcEventLoopThreads});
+     * {@link #sawGroupDuring(BooleanSupplier, LongSupplier, ThrowingRunnable)} does not count that
+     * group's threads.
      *
-     * @param leaseOpen whether a lease is open: {@code GrpcEventLoops::isRunning}
+     * @param running whether a group is running: {@code GrpcEventLoops::isRunning}
      * @param timeout how long to wait
      * @return whether both were gone in time
      * @throws InterruptedException if interrupted while waiting
      */
-    public static boolean awaitNoGroup(BooleanSupplier leaseOpen, Duration timeout)
+    public static boolean awaitNoGroup(BooleanSupplier running, Duration timeout)
             throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
-        while (leaseOpen.getAsBoolean()) {
+        while (running.getAsBoolean()) {
             if (System.nanoTime() >= deadline) {
                 return false;
             }

@@ -47,14 +47,18 @@ record — context, evidence, declined alternatives — is the named ADR under `
   freshly built SQL jars, one absolute path per line. Reuse those floor-built paths for the
   ceiling measurement; do not rebuild them on the ceiling.
 - `GrpcEventLoopThreads` and `EventLoopObserver` observe base's gRPC event-loop group
-  (ADR-0208) without depending on base: the thread-name prefix is restated, and the lease state is
-  the caller's `GrpcEventLoops::isRunning`, which also reads true while a pin holds the group
-  (#2268; a no-op on the class path these tests run on). Releasing the last lease starts a
-  thread for every event loop that never ran, to stop it, so finding no thread after an operation
-  that opens and closes its own client passes for an unleased client too. Such a test also asserts
-  `EventLoopObserver.sawGroupDuring`, which counts a thread only while a lease is open (#2303) and
-  is meaningful only with no pin holding the group, which the class path these tests run on
-  ensures; `awaitNoGroup` misses a pin registered before any lease opened.
+  (ADR-0208) without depending on base: the thread-name prefix is restated, and base's state
+  comes from the caller as suppliers, `GrpcEventLoops::isRunning` (which also reads true while a
+  pin holds the group; #2268, a no-op on the class path these tests run on) and
+  `GrpcEventLoops::loopsStartedWhileRunning`. Releasing the last lease starts a thread for every
+  event loop that never ran, to stop it, so finding no thread after an operation that opens and
+  closes its own client passes for an unleased client too. Such a test also asserts
+  `EventLoopObserver.sawGroupDuring` (#2303), which compares base's count of event-loop threads
+  started while their own group ran before and after the operation instead of sampling thread
+  names (#2350): a sample could miss a short call, and a thread name cannot tell an earlier group
+  still shutting down from the operation's. It throws if a group is already running when the
+  operation would start. A bare `alive()` while a long-lived client is open still reads any
+  group's thread (#2354); `awaitNoGroup` misses a pin registered before any lease opened.
 
 ## Harnesses (`docs/adr/0051`)
 

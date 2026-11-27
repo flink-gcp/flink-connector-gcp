@@ -29,12 +29,14 @@ import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.DefaultMuta
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcher;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySample;
 import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -142,14 +144,23 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
         seedRows(destination, "k1", "k2");
         DataClientRowKeySampler sampler = new DataClientRowKeySampler(null, endpoint());
         try {
+            AtomicBoolean heldAtReturn = new AtomicBoolean();
             assertThat(
                             EventLoopObserver.sawGroupDuring(
                                     GrpcEventLoops::isRunning,
-                                    () -> assertThat(sampler.sample(destination)).isNotEmpty()))
-                    .as("a %s* thread while the sample ran", GrpcEventLoopThreads.PREFIX)
+                                    GrpcEventLoops::loopsStartedWhileRunning,
+                                    () -> {
+                                        List<RowKeySample> keys = sampler.sample(destination);
+                                        heldAtReturn.set(GrpcEventLoops.isRunning());
+                                        assertThat(keys).isNotEmpty();
+                                    }))
+                    .as("a group event loop started while the sample ran")
                     .isTrue();
 
-            // Nothing else holds a lease, so the sample's own close is what stopped the group.
+            // Nothing else holds a lease, so a lease open when the sample returned is its own.
+            assertThat(heldAtReturn.get())
+                    .as("the sampler's client was still holding the group when the sample returned")
+                    .isFalse();
             assertThat(GrpcEventLoopThreads.awaitNone())
                     .as("no %s* thread once the sample returned", GrpcEventLoopThreads.PREFIX)
                     .isTrue();
@@ -171,11 +182,12 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
         assertThat(
                         EventLoopObserver.sawGroupDuring(
                                 GrpcEventLoops::isRunning,
+                                GrpcEventLoops::loopsStartedWhileRunning,
                                 () -> {
                                     admin.validateFamilies(destination, Map.of(), false);
                                     heldAtReturn.set(GrpcEventLoops.isRunning());
                                 }))
-                .as("a %s* thread while the table was read", GrpcEventLoopThreads.PREFIX)
+                .as("a group event loop started while the table was read")
                 .isTrue();
         assertThat(heldAtReturn.get())
                 .as("the admin's client was still holding the group when the read returned")
@@ -197,6 +209,7 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
         assertThat(
                         EventLoopObserver.sawGroupDuring(
                                 GrpcEventLoops::isRunning,
+                                GrpcEventLoops::loopsStartedWhileRunning,
                                 () -> {
                                     try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClientV2>
                                             client =
@@ -215,7 +228,7 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
                                         }
                                     }
                                 }))
-                .as("a %s* thread while the instance admin was open", GrpcEventLoopThreads.PREFIX)
+                .as("a group event loop started while the instance admin was open")
                 .isTrue();
         assertThat(GrpcEventLoopThreads.awaitNone())
                 .as("no %s* thread once the instance admin closed", GrpcEventLoopThreads.PREFIX)

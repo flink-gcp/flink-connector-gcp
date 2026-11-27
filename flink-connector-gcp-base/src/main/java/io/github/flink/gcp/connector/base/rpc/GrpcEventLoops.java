@@ -162,6 +162,17 @@ public final class GrpcEventLoops {
     @Nullable
     private static ClassLoader releasedLoader;
 
+    /** What {@link #loopsStartedWhileRunning()} returns. */
+    @GuardedBy("LOCK")
+    private static long loopsStartedWhileRunning;
+
+    /**
+     * Run by a release after it has detached the group and before it shuts the group down, on the
+     * releasing thread; {@code null} outside tests. For tests that hold a group between the two
+     * steps while a later lease opens another, which nothing else can.
+     */
+    @VisibleForTesting @Nullable static volatile Runnable beforeShutdown;
+
     private GrpcEventLoops() {}
 
     /**
@@ -178,6 +189,7 @@ public final class GrpcEventLoops {
         synchronized (LOCK) {
             if (group == null) {
                 group = Group.create();
+                group.threads.attached = true;
             }
             leases++;
             return new Lease(generation);
@@ -525,6 +537,9 @@ public final class GrpcEventLoops {
             leases = 0;
             toStop = group;
             group = null;
+            if (toStop != null) {
+                toStop.threads.attached = false;
+            }
         }
         if (open > 0) {
             LOG.warn(
@@ -587,6 +602,31 @@ public final class GrpcEventLoops {
         }
     }
 
+    /**
+     * Returns how many event-loop threads have started, since this class was loaded, while their
+     * own group was the running one. For tests that check an operation's client ran a channel on
+     * the group: an event loop's thread starts once the loop has a first task, such as a channel's
+     * registration, on a thread that submitted a task to it. A thread is counted when Netty asks
+     * for it, just before Netty starts it, so a start that fails is counted too. A test reads this
+     * before and after an operation that starts with no group running, and a larger count shows
+     * that a group the operation opened gave one of its event loops a first task while it was
+     * running.
+     *
+     * <p>The threads a group's shutdown starts, to stop the event loops that never ran, are not
+     * counted: the release that shuts the group down detaches it first. Neither are those of an
+     * earlier group that is still shutting down when a later one runs. A task on a loop that has
+     * already started starts no thread, so the count says nothing about an operation that begins
+     * while a group is running.
+     *
+     * @return the number of such threads
+     */
+    @VisibleForTesting
+    public static long loopsStartedWhileRunning() {
+        synchronized (LOCK) {
+            return loopsStartedWhileRunning;
+        }
+    }
+
     /** Runs a task on one of the group's threads; a lease must be open. */
     @VisibleForTesting
     static void executeOnGroup(Runnable task) {
@@ -627,6 +667,9 @@ public final class GrpcEventLoops {
             if (--leases == 0 && !pinned) {
                 toStop = group;
                 group = null;
+                if (toStop != null) {
+                    toStop.threads.attached = false;
+                }
             }
         }
         if (toStop != null) {
@@ -917,22 +960,29 @@ public final class GrpcEventLoops {
 
         private final EventLoopGroup eventLoopGroup;
         private final Class<? extends Channel> channelType;
+        private final LoopThreads threads;
 
-        private Group(EventLoopGroup eventLoopGroup, Class<? extends Channel> channelType) {
+        private Group(
+                EventLoopGroup eventLoopGroup,
+                Class<? extends Channel> channelType,
+                LoopThreads threads) {
             this.eventLoopGroup = eventLoopGroup;
             this.channelType = channelType;
+            this.threads = threads;
         }
 
         static Group create() {
-            DefaultThreadFactory threads = new DefaultThreadFactory(THREAD_NAME_PREFIX, true);
+            LoopThreads threads = new LoopThreads();
             if (Epoll.isAvailable()) {
                 return new Group(
                         new MultiThreadIoEventLoopGroup(0, threads, EpollIoHandler.newFactory()),
-                        EpollSocketChannel.class);
+                        EpollSocketChannel.class,
+                        threads);
             }
             return new Group(
                     new MultiThreadIoEventLoopGroup(0, threads, NioIoHandler.newFactory()),
-                    NioSocketChannel.class);
+                    NioSocketChannel.class,
+                    threads);
         }
 
         /**
@@ -944,6 +994,10 @@ public final class GrpcEventLoops {
          * threads.
          */
         void shutdown(boolean interruptible) {
+            Runnable hook = beforeShutdown;
+            if (hook != null) {
+                hook.run();
+            }
             Future<?> termination =
                     eventLoopGroup.shutdownGracefully(0, GROUP_SHUTDOWN_SECONDS, TimeUnit.SECONDS);
             long uninterruptible =
@@ -968,6 +1022,46 @@ public final class GrpcEventLoops {
                         "Interrupted while waiting for the gRPC event-loop group to terminate; its"
                                 + " threads may outlive the job's class loader");
             }
+        }
+    }
+
+    /**
+     * Names a group's threads and counts those that start while the group is the running one, for
+     * {@link #loopsStartedWhileRunning()}. Netty calls it on a thread that submits a task to an
+     * event loop that has not started, before the loop's thread starts.
+     *
+     * <p>{@code attached} is set under {@code LOCK} when {@code acquire} attaches the group and
+     * cleared under it when either release detaches the group, before the release shuts the group
+     * down on the same thread. So the threads a shutdown itself starts, for the loops that never
+     * ran, see it cleared and are not counted, and starting them takes no lock. (A submitter that
+     * read it set just before the detach still takes the lock, and while it waits for it that loop
+     * cannot finish, so the release's wait for the group can run to its bound.) The threads a
+     * failed group construction starts are not counted either, and take no lock, since the group
+     * was never attached. While it is set, whether the running group is still this one is checked
+     * again under {@code LOCK}, so a thread started as a release detaches the group is not counted
+     * either. A group's shutdown can run after the job's class loader was released, as a JobManager
+     * enumerator's late close can, so this uses no class that the group's creation has not already
+     * loaded.
+     */
+    private static final class LoopThreads extends DefaultThreadFactory {
+
+        /** Whether this factory's group is the attached one; written under {@code LOCK}. */
+        private volatile boolean attached;
+
+        LoopThreads() {
+            super(THREAD_NAME_PREFIX, true);
+        }
+
+        @Override
+        protected Thread newThread(Runnable task, String name) {
+            if (attached) {
+                synchronized (LOCK) {
+                    if (group != null && group.threads == this) {
+                        loopsStartedWhileRunning++;
+                    }
+                }
+            }
+            return super.newThread(task, name);
         }
     }
 }

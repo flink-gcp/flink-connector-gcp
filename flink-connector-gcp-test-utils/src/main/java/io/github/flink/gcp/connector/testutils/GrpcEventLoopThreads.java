@@ -31,13 +31,15 @@ import java.time.Duration;
  * never ran in order to stop it, so a lease opened and released around a client whose channels ran
  * on gRPC's group still shows threads for a moment, and finding none afterwards does not show the
  * client used the group. An operation that opens and closes its own client is therefore observed
- * through {@link EventLoopObserver}, which counts a thread only while a lease is open. These
- * readings assume that no other lease is open in the JVM, that no pin holds the group (a pinned
- * group keeps its threads with no lease open), and that no earlier group is still shutting down:
- * its release detaches it first, so a group none of whose event loops ever ran has, for a moment,
- * neither a lease nor a thread, and the threads its shutdown then starts would read as the next
- * lease's. Surefire runs one test class at a time in a fork, but it reuses forks, so a class that
- * leaked a lease would leave the group running into the next one: a test checks {@link
+ * through {@link EventLoopObserver}, which reads base's count of the event-loop threads that
+ * started while their own group was running rather than thread names. The readings here assume that
+ * no other lease is open in the JVM, that no pin holds the group (a pinned group keeps its threads
+ * with no lease open), and that no earlier group is still shutting down. A name does not say which
+ * group a thread belongs to: a release detaches its group before shutting it down, the shutdown
+ * starts the event loops that never ran, and a loop busy with a task keeps its thread until the
+ * task ends, so an earlier group's threads can read as those of a group a later lease opened.
+ * Surefire runs one test class at a time in a fork, but it reuses forks, so a class that leaked a
+ * lease would leave the group running into the next one: a test checks {@link
  * EventLoopObserver#awaitNoGroup(java.util.function.BooleanSupplier, Duration)} before it opens a
  * client, so that such a leak fails there rather than at the close it would otherwise be blamed on.
  * {@link #awaitNone()} alone misses a leaked lease whose client never registered a channel, since

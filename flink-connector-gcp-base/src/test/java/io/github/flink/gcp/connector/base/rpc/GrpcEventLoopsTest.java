@@ -37,6 +37,7 @@ import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.netty.shaded.io.netty.util.concurrent.DefaultThreadFactory;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
@@ -49,10 +50,13 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.as;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,6 +75,13 @@ class GrpcEventLoopsTest {
 
     private static final long UNINTERRUPTIBLE_MILLIS =
             TimeUnit.SECONDS.toMillis(GrpcEventLoops.GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS);
+
+    @BeforeEach
+    void noGroupIsRunningBefore() {
+        assertThat(GrpcEventLoops.isRunning())
+                .as("a group was running before the test: an earlier class in this fork left it")
+                .isFalse();
+    }
 
     @AfterEach
     void noLeaseIsLeftOpen() {
@@ -276,6 +287,107 @@ class GrpcEventLoopsTest {
 
         assertThat(GrpcEventLoops.isRunning()).isFalse();
         assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    void eachLoopThatStartsWhileItsGroupRunsIsCounted() throws Exception {
+        long before = GrpcEventLoops.loopsStartedWhileRunning();
+        CountDownLatch ran = new CountDownLatch(2);
+        Set<Thread> threads = ConcurrentHashMap.newKeySet();
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+        try {
+            // The group hands tasks to its loops in turn, so with Netty's default of two or more
+            // loops the two tasks start two of them; each loop that ran a task started one thread.
+            for (int i = 0; i < 2; i++) {
+                GrpcEventLoops.executeOnGroup(
+                        () -> {
+                            threads.add(Thread.currentThread());
+                            ran.countDown();
+                        });
+            }
+            assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(threads).isNotEmpty();
+            assertThat(GrpcEventLoops.loopsStartedWhileRunning() - before)
+                    .as("threads the tasks ran on: %s", threads)
+                    .isEqualTo(threads.size());
+        } finally {
+            lease.close();
+        }
+    }
+
+    @Test
+    void theLoopsTheLastReleaseStartsToStopThemAreNotCounted() throws Exception {
+        long before = GrpcEventLoops.loopsStartedWhileRunning();
+
+        // No task runs under the lease, so every loop the group has first starts in its shutdown.
+        GrpcEventLoops.acquire().close();
+
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+        assertThat(GrpcEventLoops.loopsStartedWhileRunning() - before).isZero();
+    }
+
+    @Test
+    void theLoopsTheReleaseHookStartsToStopThemAreNotCounted() throws Exception {
+        FakeUserCodeClassLoader loader = jobLoader();
+        GrpcEventLoops.pin(loader);
+        long before = GrpcEventLoops.loopsStartedWhileRunning();
+        try {
+            // The pin keeps the group running with none of its loops started.
+            GrpcEventLoops.acquire().close();
+            assertThat(GrpcEventLoops.isRunning()).isTrue();
+        } finally {
+            loader.release();
+        }
+
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+        assertThat(GrpcEventLoops.loopsStartedWhileRunning() - before).isZero();
+    }
+
+    @Test
+    void aLoopAnEarlierGroupStartsWhileALaterOneRunsIsNotCounted() throws Exception {
+        CountDownLatch detached = new CountDownLatch(1);
+        CountDownLatch proceed = new CountDownLatch(1);
+        AtomicReference<Throwable> releaseFailure = new AtomicReference<>();
+        GrpcEventLoops.Lease first = GrpcEventLoops.acquire();
+        Thread releasing =
+                new Thread(
+                        () -> {
+                            try {
+                                first.close();
+                            } catch (Throwable t) {
+                                releaseFailure.set(t);
+                            }
+                        },
+                        "release-first");
+        GrpcEventLoops.beforeShutdown = () -> awaitQuietly(detached, proceed);
+        try {
+            releasing.start();
+            assertThat(detached.await(10, TimeUnit.SECONDS)).isTrue();
+            GrpcEventLoops.beforeShutdown = null;
+
+            // The first group is detached but not yet shut down, and none of its loops has run.
+            // Its shutdown starts them all while the second group runs.
+            GrpcEventLoops.Lease second = GrpcEventLoops.acquire();
+            try {
+                long before = GrpcEventLoops.loopsStartedWhileRunning();
+                proceed.countDown();
+                releasing.join(TimeUnit.SECONDS.toMillis(15));
+                assertThat(releasing.isAlive()).as("the first release is still waiting").isFalse();
+                assertThat(releaseFailure.get()).as("the first release failed").isNull();
+
+                assertThat(GrpcEventLoops.loopsStartedWhileRunning() - before)
+                        .as("loops the first group's shutdown started, counted for the second")
+                        .isZero();
+            } finally {
+                second.close();
+            }
+        } finally {
+            GrpcEventLoops.beforeShutdown = null;
+            proceed.countDown();
+            releasing.join(TimeUnit.SECONDS.toMillis(15));
+        }
     }
 
     @Test
