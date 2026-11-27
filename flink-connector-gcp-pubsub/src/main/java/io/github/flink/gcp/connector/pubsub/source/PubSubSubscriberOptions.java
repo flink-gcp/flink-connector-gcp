@@ -607,10 +607,16 @@ public final class PubSubSubscriberOptions implements Serializable {
          * to observe — only the absence of a confirmation. Choose a value comfortably above a
          * normal acknowledgement round trip.
          *
-         * <p>The wait reads the future the client library returns for each acknowledgement. The
-         * library returns that same future from every settlement of a delivery, including the nack
-         * a stopping subscriber queues for each delivery it still tracks, and the future keeps the
-         * first response that completes it.
+         * <p>The wait covers only the acknowledgements a completed checkpoint sends. A message that
+         * {@link DeserializationFailurePolicy#DROP} discards, and a redelivery that {@link
+         * PubSubSourceBuilder#restoreDeduplication(boolean) restore deduplication} suppresses, are
+         * acknowledged at once instead, outside any checkpoint; no wait reads their futures, so a
+         * request that fails after its acknowledgement call returned does not fail the job.
+         *
+         * <p>The wait reads the future the client library returns for each acknowledgement it
+         * covers. The library returns that same future from every settlement of a delivery,
+         * including the nack a stopping subscriber queues for each delivery it still tracks, and
+         * the future keeps the first response that completes it.
          *
          * <p>The wait happens on the task thread when the checkpoint completes, so it delays
          * processing by up to this long. That is the price of the confirmation.

@@ -87,9 +87,10 @@ public interface AckTracker {
 
     /**
      * Acknowledges a pending message immediately, without waiting for a checkpoint. Used for
-     * messages the deserialization failure policy drops: they produced no records, so no checkpoint
-     * covers them and withholding the acknowledgement would only delay redelivery of a message that
-     * is meant to be gone. Does nothing if the message is not pending.
+     * messages the deserialization failure policy drops, and for redeliveries restore deduplication
+     * suppresses, whose records the restored checkpoint already holds. The acknowledgement is bound
+     * to no checkpoint, so no acknowledgement confirmation wait covers it. Does nothing if the
+     * message is not pending.
      *
      * @param splitId the split the message was received on
      * @param messageId the Pub/Sub message id

@@ -124,8 +124,8 @@ public class PubSubAckTracker implements AckTracker {
             handle = removePendingAck(splitId, messageId);
         }
         if (handle != null) {
-            // The response future is dropped rather than awaited: a dropped message produced no
-            // records, so no checkpoint depends on its acknowledgement landing.
+            // The response future is dropped rather than awaited: this acknowledgement is bound to
+            // no checkpoint, so no confirmation wait reads it.
             handle.ack();
             metrics.messagesAcked(1);
         }
