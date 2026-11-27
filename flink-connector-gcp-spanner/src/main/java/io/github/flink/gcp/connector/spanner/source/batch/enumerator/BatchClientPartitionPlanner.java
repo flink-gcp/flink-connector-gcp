@@ -116,9 +116,10 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      * The call {@link #plan} is making, and the handle it opened for it, or {@code null} between
      * calls.
      *
-     * <p>Guarded by the monitor because {@link #plan} runs on the executor {@code
-     * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} runs on the
-     * scheduler thread and may overtake it.
+     * <p>Guarded by the monitor because, in an enumerator, {@link #plan} runs on the executor
+     * {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} can run on
+     * another thread, normally Flink's closer thread, and overtake it. A full lookup cache load
+     * runs both on its own thread.
      */
     @GuardedBy("this")
     @Nullable

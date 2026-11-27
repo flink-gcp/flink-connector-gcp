@@ -333,9 +333,9 @@ releases the group's last lease shuts it down and waits for its threads.**
   listing, including the reconciliation scan every 10 s.
   The calls go through `ApiFuture`s awaited interruptibly, and `close()` cancels the call in
   flight before closing its client, the session creator's treatment above.
-  Unlike that creator, the runner builds the client outside its monitor, because building a
-  production data client makes calls of its own (each pooled channel's priming and the DirectPath
-  check, each bounded at a minute, and the session configuration, 5 s for each of its attempts),
+  The runner builds the client outside its monitor, because building a production data client
+  makes calls of its own (each pooled channel's priming and the DirectPath check, each bounded at
+  a minute, and the session configuration, 5 s for each of its attempts),
   and the reconciliation
   scan would otherwise hold a teardown up every 10 s; a client that finishes building after
   `close()` is closed by the calling thread unused.
@@ -542,18 +542,21 @@ releases the group's last lease shuts it down and waits for its threads.**
   How that close is ordered against the release of the job's class loader does not depend on the
   wait either, since Flink does not wait for `SourceCoordinator.close()` (the session creator's
   account above).
+  A `HybridSource` that switches past a bounded source closes that source's enumerator earlier, on
+  the coordinator thread, while the worker executor keeps running for the next source; a client
+  still being built then is closed on the worker, which `SourceCoordinator.close()` still waits for
+  at the end.
   A waiting `close()` would lengthen the enumerator's close by the build and the late client's own
   close, the build of a production Bigtable data client making calls bounded at a minute each, and
   would hold back the `shutdownNow()` whose interrupt shortens the build: google-cloud-bigtable
   2.89.0's channel primer abandons an interrupted priming wait, logs it, and goes on building.
   What the wait would buy is narrow.
-  Without it, a build that ends after the runner's `close()` but before that `shutdownNow()` can
-  have its client's close interrupted, and a Bigtable data client's close then stops at its first
-  interrupted wait and skips the rest of its cleanup (`GrpcTransportChannel.close()` throws on an
-  interrupt, gax 2.91.0), as any close of that client an interrupt reaches does (the Bigtable bullet
-  above).
-  That window is only the rest of the enumerator's close and the start of the context's, while the
-  wait's cost would be paid by every close that lands during a build.
+  Without it, a late client whose close is still running when that `shutdownNow()` arrives has the
+  close interrupted, and a Bigtable data client's close then stops at its first interrupted wait
+  and skips the rest of its cleanup (`GrpcTransportChannel.close()` throws on an interrupt, gax
+  2.91.0), as any close of that client an interrupt reaches does (the Bigtable bullet above).
+  That takes a late client's close overlapping the start of the context's close, a narrow window,
+  while the wait's cost would be paid by every close that lands during a build.
   The runner's other owners, a full lookup cache load (BigQuery, Firestore, Datastore) and the
   Bigtable Change Streams reader's restore resolution, close it on the thread that makes its calls,
   so no build is under way when they do.

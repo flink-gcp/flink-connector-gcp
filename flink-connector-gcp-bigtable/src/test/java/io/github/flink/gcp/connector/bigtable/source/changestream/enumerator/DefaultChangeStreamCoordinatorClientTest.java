@@ -63,7 +63,7 @@ class DefaultChangeStreamCoordinatorClientTest {
     /**
      * Pins the one-way closed state: a call that overtakes the teardown is refused rather than
      * opening a client nothing would close. The reconciliation scan runs on the {@code callAsync}
-     * executor and {@code close()} on the coordinator thread, so that ordering is reachable.
+     * executor and {@code close()} on another thread, so that ordering is reachable.
      */
     @Test
     void refusesToBuildAClientAfterItHasBeenClosed() throws Exception {

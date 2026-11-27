@@ -34,11 +34,11 @@ import java.time.Instant;
  * job graph, so the interface is not {@link java.io.Serializable}.
  *
  * <p><b>{@link #close()} can be called while another method is still running.</b> The enumerator
- * closes its admin from the scheduler thread while the check may still be in flight on a worker
- * thread, so an implementation must not tear down state that an in-flight call is using — which is
- * why the default implementation gives each call its own client instead of sharing one. Flink also
- * skips {@code close()} entirely when the coordinator never started, so nothing may depend on it
- * running.
+ * closes its admin from Flink's closer thread, the one it starts to close the source coordinator,
+ * while the check may still be in flight on a worker thread, so an implementation must not tear
+ * down state that an in-flight call is using — which is why the default implementation gives each
+ * call its own client instead of sharing one. Flink also skips {@code close()} entirely when the
+ * coordinator never started, so nothing may depend on it running.
  */
 @Internal
 public interface SubscriptionAdmin extends AutoCloseable {

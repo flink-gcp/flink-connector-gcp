@@ -62,16 +62,16 @@ import java.util.Locale;
  *
  * <p>The calls go through a {@link PerCallClientRunner}, and not for tidiness: {@link
  * #create(CreateReadSessionRequest)} runs on a coordinator worker thread while {@link #close()}
- * runs on the thread Flink closes the coordinator on (a dedicated one in Flink 2.2.1, which a
- * coordinator's final close does not wait for), and the two race whenever a job is cancelled during
- * session creation. Unguarded, {@code close} reads a field the worker has not yet written, closes
- * nothing, and the client — a gRPC channel and its executor — is leaked in the JobManager with
- * nothing left to reach it. Through the runner, {@code close} cancels the call in flight, retries
- * included, rather than waiting for an answer nothing would read, and the waiting {@code create}
- * then fails with an {@link IOException} that says the creator was closed; a client still being
- * built when {@code close} runs is closed unused by the creating thread. If the cancellation lands
- * while gax is starting a retry and misses it, the creating thread's wait still ends when Flink
- * interrupts it.
+ * normally runs on Flink's closer thread, the one it starts to close the source coordinator and
+ * that a coordinator's final close does not wait for (Flink 1.20.5 and 2.2.1), and the two race
+ * whenever a job is cancelled during session creation. Unguarded, {@code close} reads a field the
+ * worker has not yet written, closes nothing, and the client — a gRPC channel and its executor — is
+ * leaked in the JobManager with nothing left to reach it. Through the runner, {@code close} cancels
+ * the call in flight, retries included, rather than waiting for an answer nothing would read, and
+ * the waiting {@code create} then fails with an {@link IOException} that says the creator was
+ * closed; a client still being built when {@code close} runs is closed unused by the creating
+ * thread. If the cancellation lands while gax is starting a retry and misses it, the creating
+ * thread's wait still ends when Flink interrupts it.
  */
 @Internal
 public final class ReadClientSessionCreator implements ReadSessionCreator {

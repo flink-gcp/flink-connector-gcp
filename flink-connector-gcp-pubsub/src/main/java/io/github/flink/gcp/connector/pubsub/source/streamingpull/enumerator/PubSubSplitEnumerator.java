@@ -171,7 +171,7 @@ public class PubSubSplitEnumerator
 
     private boolean startPositionApplied;
 
-    /** Written by {@code close()} on the scheduler thread, read by the completion handler. */
+    /** Written by {@code close()} on Flink's closer thread, read by the completion handler. */
     private volatile boolean closed;
 
     /**
@@ -706,7 +706,7 @@ public class PubSubSplitEnumerator
 
     @Override
     public void close() throws IOException {
-        // Runs on the scheduler thread, possibly while the check is still in flight; the flag is
+        // Runs on Flink's closer thread, possibly while the check is still in flight; the flag is
         // volatile so the completion handler sees it and stays quiet.
         closed = true;
         metrics.close();

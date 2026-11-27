@@ -81,14 +81,17 @@ import java.util.function.Supplier;
  * {@link #close()} does not wait for one: it marks this object closed, and a client that finishes
  * building after that is closed by the calling thread without a call being started on it. An owner
  * that needs that client closed by some point therefore closes this object on the thread that makes
- * its calls, or from where that thread is awaited, as an enumerator's owner is: Flink shuts the
- * source coordinator's executors down after the enumerator closes and waits for them to terminate
- * unless its closing thread is interrupted (ADR-0208, #2347). A call a session starts after {@code
- * close()} is refused. A client published before {@code close()} runs is closed by whichever thread
- * gets to it first, and the other waits for that close. Preparing what the client is built from
- * under the monitor means nothing is prepared after {@link #close()}, so an owner may clear its
- * credentials once this object is closed. The flag {@code close()} sets is one-way: an owner is
- * minted per enumerator, or per full lookup cache load, and ends with it ({@code docs/adr/0128}).
+ * its calls, or relies on something that awaits that thread before that point, as an enumerator's
+ * owner does: Flink awaits the source coordinator's executors when it closes the coordinator, after
+ * the enumerator, or later when a {@code HybridSource} closed it at a switch, unless its closing
+ * thread is interrupted (ADR-0208, #2347). A call a session starts after {@code close()} is
+ * refused. A client published before {@code close()} runs is closed by whichever thread gets to it
+ * first, and the other waits for that close. Preparing what the client is built from under the
+ * monitor means nothing is prepared after {@link #close()}, so an owner may clear its credentials
+ * once this object is closed. The flag {@code close()} sets is one-way: an owner is minted for one
+ * enumerator, one step of a full lookup cache load, or the one call a Bigtable Change Streams
+ * reader makes to resolve its restore position, and is never reopened: a call after it closes is
+ * refused ({@code docs/adr/0128}).
  *
  * <p>A session that succeeds returns its result even if its client then fails to close with an
  * exception; the failure is logged, since it says nothing about the calls, and the lease is
@@ -100,11 +103,11 @@ import java.util.function.Supplier;
  * <p>One runner runs one session at a time, and a session one call at a time: it tracks a single
  * client and a single call in flight, which is what {@link #close()} closes and cancels. Its owners
  * make their calls one after another, from a source coordinator's worker thread, which Flink runs
- * as a single thread by default ({@code SourceOperatorFactory}, Flink 1.20.5 and 2.2.1), or from a
- * full lookup cache load. A session that opens while another is in flight is refused with an {@link
- * IllegalStateException}, and its client closed unused, so that it cannot take the place of the one
- * {@code close()} must close; so is a call a session starts while another of its calls is in
- * flight.
+ * as a single thread by default ({@code SourceOperatorFactory}, Flink 1.20.5 and 2.2.1), from a
+ * full lookup cache load, or from a Bigtable Change Streams reader resolving its restore position.
+ * A session that opens while another is in flight is refused with an {@link IllegalStateException},
+ * and its client closed unused, so that it cannot take the place of the one {@code close()} must
+ * close; so is a call a session starts while another of its calls is in flight.
  */
 @Internal
 public final class PerCallClientRunner {

@@ -54,10 +54,11 @@ import java.util.function.Function;
  *
  * <p>Every call opens its own client and closes it — together with its gRPC channel — when the call
  * returns ({@link PerCallClientRunner}). That is not only about cost: the enumerator's {@code
- * close()} runs on the scheduler thread while a startup check may still be running on a worker
- * thread, and a client owned across calls would be torn out from under it. The check is a handful
- * of calls at job start, so a per-call client is cheap enough to buy that; a creation that finds
- * the subscription already there reads it back on a second client.
+ * close()} runs on Flink's closer thread, the one it starts to close the source coordinator, while
+ * a startup check may still be running on a worker thread, and a client owned across calls would be
+ * torn out from under it. The check is a handful of calls at job start, so a per-call client is
+ * cheap enough to buy that; a creation that finds the subscription already there reads it back on a
+ * second client.
  *
  * <p>The client's channels run on the connector's gRPC event-loop group ({@link GrpcEventLoops},
  * ADR-0208), and closing the client waits for them before it releases its lease. That close has to

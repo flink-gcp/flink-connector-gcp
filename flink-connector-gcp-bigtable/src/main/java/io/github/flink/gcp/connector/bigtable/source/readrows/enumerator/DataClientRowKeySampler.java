@@ -77,7 +77,8 @@ public final class DataClientRowKeySampler implements RowKeySampler {
     /**
      * Runs each sample on a client of its own: {@link #sample(TableDestination)} runs on the
      * executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()}
-     * runs on the coordinator thread.
+     * can run on another thread, normally Flink's closer thread, the one it starts to close the
+     * source coordinator.
      */
     private final PerCallClientRunner runner = new PerCallClientRunner("Bigtable row key sampler");
 
