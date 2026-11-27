@@ -807,8 +807,9 @@ now running, including one that a failover or a restart builds:
 client library threw is not counted, although the library may already have queued it. On an
 ordinary subscription the client library sends them asynchronously, and a request that has
 finally failed completes no future and raises no error the connector can see. No data is lost
-(the lease expires and Pub/Sub redelivers, which is the at-least-once contract), but a *persistent* failure such as a revoked permission
-becomes a silent reprocessing loop that this counter will not show. Two ways to see it: set
+(the lease expires and Pub/Sub redelivers, which is the at-least-once contract), but a
+*persistent* failure such as a revoked permission becomes a silent reprocessing loop that this
+counter will not show. Two ways to see it: set
 `awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the client library to
 report its acknowledgements successful and fail the job on timeout, or watch Cloud Monitoring's
 `subscription/oldest_unacked_message_age`, which grows monotonically when acknowledgements stop
