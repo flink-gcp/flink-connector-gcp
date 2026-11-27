@@ -821,8 +821,14 @@ acknowledgement future completes with `SUCCESSFUL` on success, and the failure o
 acknowledgement request completes nothing, so there is no error to observe, only the absence of a
 confirmation.
 
-**The wait reads the future the client library returns for each acknowledgement.** The library
-returns that same future from every settlement of a delivery, including the nack a stopping
+**The wait covers only the acknowledgements a completed checkpoint sends.** A message that `DROP`
+discards and a redelivery that [restore deduplication](#restore-deduplication) suppresses are
+acknowledged at once instead, outside any checkpoint, and counted in `messagesAcked`; no wait reads
+their futures, so a request that fails after its acknowledgement call returned does not fail the
+job.
+
+**The wait reads the future the client library returns for each acknowledgement it covers.** The
+library returns that same future from every settlement of a delivery, including the nack a stopping
 subscriber queues for each delivery it still tracks, and the future keeps the first response that
 completes it.
 
