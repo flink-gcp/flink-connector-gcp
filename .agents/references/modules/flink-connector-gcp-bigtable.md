@@ -421,6 +421,9 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   SDK client: each call opens one through `PerCallClientRunner`, whose one-way closed flag refuses a
   call that overtakes the teardown (#2264; the lazy accessors that replaced a check-then-create
   race in #990 are gone with it).
+  An initialization failure the enumerator closed before reporting goes through base's
+  `AsyncStartupFailureReporter` (#2369): WARN from `close()` if it was thrown while open, INFO
+  where it is thrown after the close, which may have caused it.
 
 - **One sampler belongs to one enumerator** (`docs/adr/0128`). `BigtableSourceConfig` carries a
   `RowKeySamplerFactory`, not a sampler, and `BigtableScanSource` mints one in both

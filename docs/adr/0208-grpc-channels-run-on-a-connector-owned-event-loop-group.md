@@ -35,6 +35,8 @@ limitations under the License.
   [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329),
   [#2330](https://github.com/flink-gcp/flink-connector-gcp/issues/2330),
   [#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347),
+  [#2358](https://github.com/flink-gcp/flink-connector-gcp/issues/2358),
+  [#2369](https://github.com/flink-gcp/flink-connector-gcp/issues/2369),
   [#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370)
 - Modules: base, bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
@@ -484,8 +486,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   dropped without a trace when the coordinator context closes before Flink's handler of a throwing
   callback checks it (`SourceCoordinatorContext.handleUncaughtExceptionFromAsyncCall` returns once
   the context is closed), which the enumerator cannot observe; reporting it to Flink is tracked by
-  [#2371](https://github.com/flink-gcp/flink-connector-gcp/issues/2371), and the other enumerators
-  that drop such a failure by [#2369](https://github.com/flink-gcp/flink-connector-gcp/issues/2369).
+  [#2371](https://github.com/flink-gcp/flink-connector-gcp/issues/2371).
+  The other split enumerators' start-up failures are covered below (#2369).
   The end of a bounded read is never published while the client is open: initialization closes
   the client before it returns, and if the enumerator's `close()` took the client over first, the
   closed enumerator publishes nothing.
@@ -913,6 +915,36 @@ same way.**
   The planner's own request does not open the `PartitionQuery` tracing span the library opened
   for `getPartitions` when its tracing was enabled and a tracer provider installed; the latency
   it recorded went to a metrics recorder google-cloud-firestore 3.53.0 always disables.
+
+**The other split enumerators keep a trace of a start-up failure that races their close (#2369,
+2026-11-28).**
+The Spanner Change Streams enumerator's refinement above (#2358) left three enumerators whose
+start-up work runs through `callAsync` and whose handler drops a failure once the enumerator has
+closed: base `PullAssignmentSplitEnumerator`'s planning call (the BigQuery, Bigtable scan, Spanner
+batch, Firestore and Datastore batch sources), the Bigtable Change Streams enumerator's
+initialization, and the Pub/Sub enumerator's subscription check.
+
+- **They share base's `AsyncStartupFailureReporter`.**
+  The enumerator wraps its work with `observing`, and its `close()` closes the reporter.
+  A failure the work throws while the reporter is open is recorded.
+  The handler's `claim` clears it and answers the exception the job fails with, built from the
+  message the reporter was given; otherwise the reporter's `close()` logs it at WARN under the
+  enumerator's logger, the line starting with that message.
+  A failure the work throws after the reporter closed is logged at INFO where it is thrown, since
+  the enumerator's close of the planner, client or admin the work calls may have caused it, and
+  the two cannot be told apart; that line says so before the message, so it does not read as a
+  start-up failure of the job.
+- **`close()` closes the reporter before it sets the enumerator's closed flag** and before it
+  closes what the work calls, and the handler claims a failure before it reads that flag.
+  A closed reporter refuses the claim, and the claim and the close take the same monitor, so a
+  handler that claims once `close()` has begun does not fail the job, and a failure that closing
+  what the work calls causes is the one logged at INFO.
+- **The Spanner Change Streams enumerator keeps its own monitor.**
+  Its initialization also releases a client it created, a release `close()` waits for and whose
+  failure joins initialization's, which the reporter does not model.
+- **Flink's residual applies to these handlers too**: a failure a handler throws on an open
+  enumerator is dropped when the coordinator context closes before Flink's handler of a throwing
+  callback checks it (#2371).
 
 ## Evidence
 

@@ -41,6 +41,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -770,6 +771,157 @@ class PubSubSplitEnumeratorTest {
                             context.runAsyncCalls();
                         })
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aCheckFailureWhoseHandlerRunsOnlyAfterTheCloseIsLogged() throws Exception {
+        // Flink runs the handler on the closed enumerator, which stays quiet; the failure, thrown
+        // while it was open, is then logged by the close (#2369).
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        IOException failure = new IOException("no pubsub.subscriptions.get permission");
+        admin.describeFailure = failure;
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, config(OrderingMode.NONE, SUB_A), admin, null);
+        enumerator.start();
+        List<Runnable> handlers = context.runAsyncCallsDeferringHandlers();
+
+        try (LogCapture capture =
+                LogCapture.of(PubSubSplitEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+            handlers.forEach(Runnable::run);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage())
+                                        .isEqualTo(unreportedCheckFailure(SUB_A));
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void aCheckFailureWhoseHandlerNeverRunsIsLoggedByTheClose() throws Exception {
+        // Flink's shutdownNow() of the coordinator executor drops the queued handler.
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        IOException failure = new IOException("no pubsub.subscriptions.get permission");
+        admin.describeFailure = failure;
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, config(OrderingMode.NONE, SUB_A), admin, null);
+        enumerator.start();
+        context.runAsyncCallsDeferringHandlers();
+
+        try (LogCapture capture = LogCapture.of(PubSubSplitEnumerator.class)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getMessage())
+                                        .isEqualTo(unreportedCheckFailure(SUB_A));
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void aCheckFailureTheHandlerReportedIsNotLoggedByTheClose() throws Exception {
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        admin.describeFailure = new IOException("no pubsub.subscriptions.get permission");
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, config(OrderingMode.NONE, SUB_A), admin, null);
+        enumerator.start();
+        assertThatThrownBy(context::runAsyncCalls).isInstanceOf(FlinkRuntimeException.class);
+
+        try (LogCapture capture =
+                LogCapture.of(PubSubSplitEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents()).isEmpty();
+        }
+    }
+
+    @Test
+    void aCheckFailureAfterTheCloseIsLoggedAtInfo() throws Exception {
+        // The close of the admin may have caused it, so it is not reported as the check's own.
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        IOException failure = new IOException("client is shut down");
+        admin.describeFailure = failure;
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, config(OrderingMode.NONE, SUB_A), admin, null);
+        enumerator.start();
+
+        try (LogCapture capture =
+                LogCapture.of(PubSubSplitEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+            context.runAsyncCalls();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("INFO ");
+                                assertThat(event.getMessage())
+                                        .isEqualTo(afterCloseCheckFailure(SUB_A));
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void aCheckFailureTheCloseOfTheAdminCausesIsLoggedAtInfo() throws Exception {
+        // The check is in flight when close() closes the admin, and fails because of it.
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        IOException failure = new IOException("client is shut down");
+        admin.describeFailure = failure;
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        List<Runnable> handlers = new ArrayList<>();
+        admin.closeHook = () -> handlers.addAll(context.runAsyncCallsDeferringHandlers());
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(context, config(OrderingMode.NONE, SUB_A), admin, null);
+        enumerator.start();
+
+        try (LogCapture capture =
+                LogCapture.of(PubSubSplitEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+            handlers.forEach(Runnable::run);
+
+            assertThat(handlers).hasSize(1);
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("INFO ");
+                                assertThat(event.getMessage())
+                                        .isEqualTo(afterCloseCheckFailure(SUB_A));
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    private static String afterCloseCheckFailure(SubscriptionDestination... subscriptions) {
+        return "The enumerator's start-up work failed after the enumerator closed, and that close"
+                + " may have caused the failure, so the job is not failed with it: "
+                + checkFailure(subscriptions);
+    }
+
+    private static String checkFailure(SubscriptionDestination... subscriptions) {
+        return "Failed to verify the Pub/Sub subscriptions "
+                + Arrays.asList(subscriptions)
+                + " for consumption; the source cannot start.";
+    }
+
+    private static String unreportedCheckFailure(SubscriptionDestination... subscriptions) {
+        return checkFailure(subscriptions)
+                + " The enumerator closed before it reported the failure, so this is its only"
+                + " trace.";
     }
 
     // -- Metrics ---------------------------------------------------------------------------

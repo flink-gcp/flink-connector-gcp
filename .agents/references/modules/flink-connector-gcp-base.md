@@ -243,6 +243,15 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **Nothing continuous belongs here.** This class plans once; a change-streams enumerator
   discovering partitions as it goes is a different shape, and widening this one is an argument to
   make on evidence rather than a hook to add.
+- **An enumerator whose start-up work runs through `callAsync` reports a failure through
+  `AsyncStartupFailureReporter`** (#2369, `docs/adr/0208`): wrap the work with `observing`; in the
+  handler, call `claim(error)` before reading the closed flag and throw what it answers, returning
+  on `null`; close the reporter first in `close()`, before the closed flag and before closing what
+  the work calls. Flink runs the handler on a closed enumerator, or never after `shutdownNow()`,
+  so a handler's `if (closed) return` alone drops the failure without a trace.
+  `PullAssignmentSplitEnumerator`, the Bigtable Change Streams and the
+  Pub/Sub enumerators use it; Spanner Change Streams keeps its own monitor (#2358), because its
+  initialization also releases a client whose failure joins initialization's.
 
 ## `base.retry` and `base.rpc` (`docs/adr/0039`)
 
@@ -461,4 +470,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **`Closers`**: every `close()`-shaped call site goes through `closeAll` /
   `closeAllSuppressing`; the contract lives in the class javadoc, the written-out-loop decision
   and its `Error`-type reasoning in `docs/adr/0040`. A new call site owes the `Error` test
-  beside the exception ones, and creation guards catch `Throwable`, not `Exception`.
+  beside the exception ones, and creation guards catch `Throwable`, not `Exception`. Do not wrap
+  a log call on a close path so that the release after it survives an appender that throws
+  (`ignoreExceptions="false"`): Flink's own coordinator close does not survive one that throws
+  on the INFO line it logs before closing the enumerator, and the decision and its limit are in
+  `docs/adr/0040` (#2369).

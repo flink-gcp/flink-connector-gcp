@@ -60,6 +60,14 @@ class PullAssignmentSplitEnumeratorTest {
 
     private static final String PLAN_FAILURE_MESSAGE = "Failed to plan the test source.";
     private static final String CLOSE_FAILURE_MESSAGE = "Failed to close the test planner.";
+    private static final String AFTER_CLOSE_PLAN_FAILURE =
+            "The enumerator's start-up work failed after the enumerator closed, and that close may"
+                    + " have caused the failure, so the job is not failed with it: "
+                    + PLAN_FAILURE_MESSAGE;
+    private static final String UNREPORTED_PLAN_FAILURE =
+            PLAN_FAILURE_MESSAGE
+                    + " The enumerator closed before it reported the failure, so this is its only"
+                    + " trace.";
 
     @Test
     void parksRequestsThatArriveBeforeThePlanAndServesThemInArrivalOrder() throws Exception {
@@ -277,8 +285,123 @@ class PullAssignmentSplitEnumeratorTest {
         enumerator.start();
         enumerator.close();
         context.runAsyncCalls();
+    }
 
+    @Test
+    void logsAPlanningFailureWhoseHandlerRunsOnlyAfterTheClose() throws Exception {
+        // Flink runs the handler on the closed enumerator, which must not fail the job over its
+        // own teardown; the failure, thrown while it was open, is then logged by the close.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        IllegalStateException failure = new IllegalStateException("permission denied");
+        TestEnumerator enumerator = enumerator(context, ScriptedPlanner.failingWith(failure));
+        enumerator.start();
+        List<Runnable> handlers = context.runAsyncCallsDeferringHandlers();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+            handlers.forEach(Runnable::run);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage()).isEqualTo(UNREPORTED_PLAN_FAILURE);
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
         assertThat(context.events()).isEmpty();
+    }
+
+    @Test
+    void logsAPlanningFailureWhoseHandlerNeverRuns() throws Exception {
+        // Flink's shutdownNow() of the coordinator executor drops the queued handler.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        IllegalStateException failure = new IllegalStateException("permission denied");
+        TestEnumerator enumerator = enumerator(context, ScriptedPlanner.failingWith(failure));
+        enumerator.start();
+        context.runAsyncCallsDeferringHandlers();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getMessage()).isEqualTo(UNREPORTED_PLAN_FAILURE);
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void doesNotLogAPlanningFailureItReported() throws Exception {
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        TestEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedPlanner.failingWith(
+                                new IllegalStateException("permission denied")));
+        enumerator.start();
+        assertThatThrownBy(context::runAsyncCalls).isInstanceOf(FlinkRuntimeException.class);
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents()).isEmpty();
+        }
+    }
+
+    @Test
+    void logsAPlanningFailureAfterTheCloseAtInfo() throws Exception {
+        // The close of the planner may have caused it, so it is not reported as the plan's own.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        IllegalStateException failure = new IllegalStateException("channel closed");
+        TestEnumerator enumerator = enumerator(context, ScriptedPlanner.failingWith(failure));
+        enumerator.start();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+            context.runAsyncCalls();
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("INFO ");
+                                assertThat(event.getMessage()).isEqualTo(AFTER_CLOSE_PLAN_FAILURE);
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void logsAPlanningFailureTheCloseOfThePlannerCausesAtInfo() throws Exception {
+        // Planning is in flight when close() closes the planner, and fails because of it: the
+        // reporter closed first, so the failure is not reported as the plan's own.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        IllegalStateException failure = new IllegalStateException("planner closed");
+        ScriptedPlanner planner = ScriptedPlanner.failingWith(failure);
+        List<Runnable> handlers = new ArrayList<>();
+        planner.onClose(() -> handlers.addAll(context.runAsyncCallsDeferringHandlers()));
+        TestEnumerator enumerator = enumerator(context, planner);
+        enumerator.start();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class, LogCapture.Level.INFO)) {
+            enumerator.close();
+            handlers.forEach(Runnable::run);
+
+            assertThat(handlers).hasSize(1);
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("INFO ");
+                                assertThat(event.getMessage()).isEqualTo(AFTER_CLOSE_PLAN_FAILURE);
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
     }
 
     @Test
@@ -570,6 +693,7 @@ class PullAssignmentSplitEnumeratorTest {
         private final int splitCount;
         @Nullable private final Exception failure;
         @Nullable private Throwable closeFailure;
+        @Nullable private Runnable closeHook;
 
         private int planCalls;
         private int closeCalls;
@@ -585,6 +709,10 @@ class PullAssignmentSplitEnumeratorTest {
 
         static ScriptedPlanner failingWith(Exception failure) {
             return new ScriptedPlanner(0, failure);
+        }
+
+        void onClose(Runnable hook) {
+            this.closeHook = hook;
         }
 
         void failOnClose(RuntimeException failure) {
@@ -610,6 +738,9 @@ class PullAssignmentSplitEnumeratorTest {
         @Override
         public void close() {
             closeCalls++;
+            if (closeHook != null) {
+                closeHook.run();
+            }
             if (closeFailure instanceof Error) {
                 throw (Error) closeFailure;
             }

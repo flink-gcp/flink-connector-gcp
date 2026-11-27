@@ -63,9 +63,11 @@ limitations under the License.
   warnings ([#265]/[#312], and the failure a shutdown reports after `close()` has already given
   up, added by [#726], where nothing else survives to name the failure at all), the Pub/Sub sink's
   stalled-wait warning ([#333], ADR-0052 — a publish that never answers is never counted as a
-  failure, so no counter names the state), and the split enumerators' close-failure warnings
-  ([#2370]): Flink's source coordinator drops what an enumerator's `close()` throws at job
-  shutdown, so the log is the only report. The list is not an inventory. The bar exists because the
+  failure, so no counter names the state), the split enumerators' lines for a start-up failure
+  that an enumerator closed too early to report ([#2358], [#2369], ADR-0208: at WARN, or at INFO
+  when the enumerator's close may have caused it), and the split enumerators' close-failure
+  warnings ([#2370]): Flink's source coordinator drops what an enumerator's `close()` throws at
+  job shutdown, so the log is the only report. The list is not an inventory. The bar exists because the
   cost is real: an assertion couples a test to the *wording* of a message. Measured 2026-08-06
   over the 24 sites that existed then: 13 were already driven by an existing test, and for 9 of those the same
   test already asserts a counter, a returned value or an absorbed exception — asserting the log
@@ -99,4 +101,6 @@ limitations under the License.
 [#336]: https://github.com/flink-gcp/flink-connector-gcp/issues/336
 [#337]: https://github.com/flink-gcp/flink-connector-gcp/issues/337
 [#726]: https://github.com/flink-gcp/flink-connector-gcp/issues/726
+[#2358]: https://github.com/flink-gcp/flink-connector-gcp/issues/2358
+[#2369]: https://github.com/flink-gcp/flink-connector-gcp/issues/2369
 [#2370]: https://github.com/flink-gcp/flink-connector-gcp/issues/2370

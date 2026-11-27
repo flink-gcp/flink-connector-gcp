@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 /** In-memory {@link SplitEnumeratorContext} recording assignments, for enumerator tests. */
 final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<SubscriptionSplit> {
@@ -45,7 +46,7 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
     private final Map<Integer, ReaderInfo> registeredReaders = new HashMap<>();
     private final Map<Integer, List<SubscriptionSplit>> assignments = new HashMap<>();
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
-    private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
+    private final Deque<Supplier<Runnable>> asyncCalls = new ArrayDeque<>();
     private final List<Runnable> periodicCalls = new ArrayList<>();
 
     /** What each subtask was sent, events and assignments alike, in sending order. */
@@ -175,15 +176,31 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
                     } catch (Throwable t) {
                         error = t;
                     }
-                    handler.accept(result, error);
+                    T outcome = result;
+                    Throwable failure = error;
+                    return () -> handler.accept(outcome, failure);
                 });
     }
 
     /** Runs every async call recorded so far, including any a handler enqueues. */
     void runAsyncCalls() {
         while (!asyncCalls.isEmpty()) {
-            asyncCalls.poll().run();
+            asyncCalls.poll().get().run();
         }
+    }
+
+    /**
+     * Runs the callable of every async call recorded so far without running its handler, and
+     * returns the handler calls in order. A test runs them later, after closing the enumerator for
+     * instance, or never, as Flink never runs a handler still queued when it shuts the
+     * coordinator's executor down.
+     */
+    List<Runnable> runAsyncCallsDeferringHandlers() {
+        List<Runnable> handlerCalls = new ArrayList<>();
+        while (!asyncCalls.isEmpty()) {
+            handlerCalls.add(asyncCalls.poll().get());
+        }
+        return handlerCalls;
     }
 
     /** Returns how many async calls are recorded but not yet run. */

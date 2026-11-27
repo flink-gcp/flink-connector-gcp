@@ -166,6 +166,9 @@ closing thread is interrupted; against an emulator, the build includes the clien
 that the emulator is listening, which gives up after 10 seconds, and a build that fails that way
 leaves the service stubs the client library had built before the check unclosed
 ([#2306](https://github.com/flink-gcp/flink-connector-gcp/issues/2306)).
+A start-up failure that an enumerator closed too early to report, such as a planning call or a
+subscription check that failed while the job was being cancelled, is logged under the
+enumerator's class: at WARN, or at INFO when the enumerator's own close may have caused it.
 A catalog keeps its client until it is closed.
 The SQL Gateway and the SQL Client close a session's catalogs before its class loader, so a
 catalog's hold on the group is released before that loader closes.
