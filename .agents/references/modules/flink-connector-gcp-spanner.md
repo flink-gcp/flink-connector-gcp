@@ -215,8 +215,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   release, so a further `close()` waits for it. A client close that `initialize()` runs and that
   fails after the enumerator closed is logged at WARN, an `Error` included, since
   `onInitialized` drops it; so is the planner's close of a client built after its
-  `close()`. Do not cancel a creation: a failed or
-  cancelled emulator check leaves the library's stubs open (#2306). The planner therefore builds
+  `close()`. The enumerator does not drop an initialization failure (#2358): Flink runs
+  `onInitialized` on a closed enumerator or, after `shutdownNow()`, never, so one observed while
+  open is recorded under the monitor and logged by `close()`, after it waits for the release, if
+  `onInitialized` has not reported it, and one observed after the close is logged where it is
+  observed; only the closed enumerator's refusal is not logged, and a failed call of a client
+  `close()` took over is logged at INFO, since that close may have caused it. Flink itself drops
+  a failure `onInitialized` throws if its coordinator context closes before Flink's handler sees
+  it (#2371). `close()` logs a failure to close the client it took over before throwing it, since
+  Flink closes the enumerator through `IOUtils.closeQuietly`. Do not cancel a creation: a failed or
+  cancelled emulator check leaves the
+  library's stubs open (#2306). The planner therefore builds
   its client in `Context.ROOT`, outside the call's cancellable context, and its `close()` waits
   for the build.
 - **`SpannerClients.open` also lets the client library's two static executors drop their idle
@@ -342,7 +351,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   with the ledger: the initial entry carries it and every child inherits it. A restore whose
   configured bound differs from the checkpointed one fails; do not re-bound a restored ledger,
   because finished partitions are no longer in it (ADR-0099). A start or fallback resolving after
-  the bound fails initialization.
+  the bound fails initialization, and such a failure is logged if the enumerator closes before it
+  reports it (#2358; see the client bullet above).
 - Missing explicit retention metadata uses the configured fallback, whose connector default is
   seven days.
 - Initialize the dialect, stream scope, watched tables and their all-columns mode, retention,

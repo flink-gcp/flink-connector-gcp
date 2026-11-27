@@ -458,6 +458,32 @@ releases the group's last lease shuts it down and waits for its threads.**
   its `close()` no longer cancels the emulator check, which would leave the stubs open; it waits
   for the build, as it already waited for the call, and the client built then is closed before
   that `close()` returns unless the closing thread is interrupted.
+  A later refinement (2026-11-26, #2358) stopped the Change Streams enumerator from dropping an
+  initialization failure that raced its `close()`.
+  Flink 1.20.5 and 2.2.1 close the enumerator on a closer thread and then shut the coordinator's
+  executor down with `shutdownNow()`, so the handler either finds the enumerator closed or never
+  runs, and such a failure left no trace before.
+  A failure observed while the enumerator is open, such a close failure included, is recorded under
+  the monitor, and a `close()` that lands before `onInitialized` reports it logs it at WARN; one
+  observed once the enumerator closed, such as a creation `close()` waited for, is logged where it
+  is observed.
+  A release that fails after initialization failed adds its failure to initialization's before
+  `close()` stops waiting for the release, so the logged failure is complete; a JVM-fatal one takes
+  its place, as `Closers.closeAllSuppressing` has it do, and the record's too while the enumerator
+  is open, while once it has closed the fatal failure is logged on its own, carrying the first.
+  Only the enumerator's own refusal to start once closed is not logged.
+  A `close()` that fails to close a client it took over logs the failure at WARN before it throws,
+  since Flink closes the enumerator through `IOUtils.closeQuietly`, which drops what `close()`
+  throws; the other enumerators' `close()` still relies on the throw alone
+  ([#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370)).
+  A failed call of an installed client that `close()` took over is logged at INFO, since that close
+  may have caused it, or overtaken a failure of the call's own.
+  One loss remains, and it is Flink's: a failure `onInitialized` throws on an open enumerator is
+  dropped without a trace when the coordinator context closes before Flink's handler of a throwing
+  callback checks it (`SourceCoordinatorContext.handleUncaughtExceptionFromAsyncCall` returns once
+  the context is closed), which the enumerator cannot observe; reporting it to Flink is tracked by
+  [#2371](https://github.com/flink-gcp/flink-connector-gcp/issues/2371), and the other enumerators
+  that drop such a failure by [#2369](https://github.com/flink-gcp/flink-connector-gcp/issues/2369).
   The end of a bounded read is never published while the client is open: initialization closes
   the client before it returns, and if the enumerator's `close()` took the client over first, the
   closed enumerator publishes nothing.

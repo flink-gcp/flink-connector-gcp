@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 /**
  * In-memory {@link SplitEnumeratorContext} for the tests of a <b>pull-assignment</b> enumerator —
@@ -69,8 +70,8 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
     private final List<String> events = new ArrayList<>();
     private final Map<Integer, List<SourceEvent>> sourceEvents = new HashMap<>();
-    private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
-    private final List<Runnable> periodicAsyncCalls = new ArrayList<>();
+    private final Deque<Supplier<Runnable>> asyncCalls = new ArrayDeque<>();
+    private final List<Supplier<Runnable>> periodicAsyncCalls = new ArrayList<>();
 
     private final MetricListener metricListener = new MetricListener();
 
@@ -188,24 +189,28 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
      */
     @Override
     public <T> void callAsync(Callable<T> callable, BiConsumer<T, Throwable> handler) {
-        asyncCalls.add(
-                () -> {
-                    T result = null;
-                    Throwable error = null;
-                    try {
-                        result = callable.call();
-                    } catch (Throwable t) {
-                        error = t;
-                    }
-                    handler.accept(result, error);
-                });
+        asyncCalls.add(asyncCall(callable, handler));
     }
 
     /** Runs every async call recorded so far, including any a handler enqueues. */
     public void runAsyncCalls() {
         while (!asyncCalls.isEmpty()) {
-            asyncCalls.poll().run();
+            asyncCalls.poll().get().run();
         }
+    }
+
+    /**
+     * Runs the callable of every async call recorded so far, including any a callable enqueues,
+     * without running its handler, and returns the handler calls in order. A test runs them later,
+     * after closing the enumerator for instance, or never, as Flink never runs a handler still
+     * queued when it shuts the coordinator's executor down.
+     */
+    public List<Runnable> runAsyncCallsDeferringHandlers() {
+        List<Runnable> handlerCalls = new ArrayList<>();
+        while (!asyncCalls.isEmpty()) {
+            handlerCalls.add(asyncCalls.poll().get());
+        }
+        return handlerCalls;
     }
 
     @Override
@@ -219,12 +224,17 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
 
     /** Runs each registered periodic async callback once, without waiting for wall-clock time. */
     public void runPeriodicAsyncCalls() {
-        for (Runnable call : new ArrayList<>(periodicAsyncCalls)) {
-            call.run();
+        for (Supplier<Runnable> call : new ArrayList<>(periodicAsyncCalls)) {
+            call.get().run();
         }
     }
 
-    private static <T> Runnable asyncCall(Callable<T> callable, BiConsumer<T, Throwable> handler) {
+    /**
+     * Returns a call that runs the callable, as Flink's worker does, and returns the handler call
+     * with exactly one of (result, error) set, which Flink then runs on the coordinator thread.
+     */
+    private static <T> Supplier<Runnable> asyncCall(
+            Callable<T> callable, BiConsumer<T, Throwable> handler) {
         return () -> {
             T result = null;
             Throwable error = null;
@@ -233,7 +243,9 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
             } catch (Throwable t) {
                 error = t;
             }
-            handler.accept(result, error);
+            T outcome = result;
+            Throwable failure = error;
+            return () -> handler.accept(outcome, failure);
         };
     }
 
