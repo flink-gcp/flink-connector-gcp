@@ -25,6 +25,7 @@ import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
@@ -167,7 +168,12 @@ import java.util.function.LongSupplier;
  * events that arrive in that window have no ledger to apply to yet, so they are parked in {@code
  * deferredActions} and replayed in order once initialization completes; {@link #snapshotState}
  * refuses to run before that point rather than checkpointing a ledger those events have not reached
- * yet.
+ * yet. A closed enumerator drops initialization's outcome, and Flink may not deliver it at all once
+ * the coordinator closes, so an initialization failure the enumerator did not report while open is
+ * logged instead: by {@link #close()} if the enumerator observed it while open, otherwise where it
+ * is observed. Only the enumerator's refusal to start once closed is not logged, and a failed call
+ * of a client {@link #close()} took over and closed is logged at INFO, since that close may have
+ * caused it.
  *
  * <p>On restore the checkpointed ledger wins and never seeds a second null-token query. If an
  * unfinished position has fallen outside retention the default is to fail, because the alternative
@@ -267,6 +273,16 @@ public final class SpannerChangeStreamSplitEnumerator
      * returns, unless the closing thread is interrupted.
      */
     @Nullable private CountDownLatch clientReleased;
+
+    /**
+     * The failure {@link #initialize()} observed while the enumerator was open, until {@link
+     * #onInitialized(Initialization, Throwable)} reports it or {@link #close()} logs it; guarded by
+     * the monitor. Initialization records at most one: a release that fails after another failure
+     * is added to it instead, or replaces it if JVM-fatal. Flink delivers initialization's outcome
+     * to a closed enumerator, which drops it, or, once its coordinator executor is shut down, not
+     * at all, so whichever of the two comes first takes the failure over.
+     */
+    @Nullable private Throwable unreportedInitializationFailure;
 
     private boolean initialized;
     private boolean discardRestoredReaderSplits;
@@ -388,11 +404,20 @@ public final class SpannerChangeStreamSplitEnumerator
         // On the JobManager a client closes when the call it was opened for returns, not when the
         // enumerator closes: Flink closes the enumerator without waiting and in practice after it
         // releases the job's class loader (docs/adr/0208).
+        Duration retention;
+        try {
+            retention = created.initialize();
+        } catch (Throwable e) {
+            reportClientCallFailure(e, created);
+            releaseClient(created, e);
+            throw e;
+        }
         Initialization initialization;
         try {
-            initialization = initializationFrom(created.initialize());
+            initialization = initializationFrom(retention);
         } catch (Throwable e) {
-            Closers.closeAllSuppressing(e, () -> releaseClient(created));
+            reportInitializationFailure(e);
+            releaseClient(created, e);
             throw e;
         }
         // Closed after the start position is resolved, so that a "latest" start does not wait for
@@ -401,7 +426,7 @@ public final class SpannerChangeStreamSplitEnumerator
         // close's duration, normally milliseconds, then comes out of an "earliest" start's
         // one-minute retention margin like the readers' own start-up, and lengthens the window in
         // which a checkpoint finds the enumerator not yet initialized.
-        releaseClient(created);
+        releaseClient(created, null);
         return initialization;
     }
 
@@ -533,7 +558,13 @@ public final class SpannerChangeStreamSplitEnumerator
             clientReleased = creating;
         }
         try {
-            SpannerChangeStreamCoordinatorClient created = clientFactory.create(clientMetrics);
+            SpannerChangeStreamCoordinatorClient created;
+            try {
+                created = clientFactory.create(clientMetrics);
+            } catch (Throwable e) {
+                reportInitializationFailure(e);
+                throw e;
+            }
             synchronized (this) {
                 if (!closed) {
                     client = created;
@@ -561,12 +592,23 @@ public final class SpannerChangeStreamSplitEnumerator
 
     /**
      * Closes the client {@link #initialize()} installed, unless {@link #close()} already took it
-     * over and closes it itself; a {@link #close()} that lands meanwhile waits for this one. A
-     * close failure is logged if the enumerator has closed by the time it fails, since {@link
+     * over and closes it itself; a {@link #close()} that lands meanwhile waits for this one.
+     *
+     * <p>A close failure is logged if the enumerator has closed by the time it fails, since {@link
      * #onInitialized(Initialization, Throwable)} reports nothing for a closed enumerator, and is
-     * otherwise thrown as an initialization failure.
+     * otherwise an initialization failure: recorded and thrown if initialization succeeded, and
+     * otherwise added to {@code failure}, initialization's own, as {@link
+     * Closers#closeAllSuppressing(Throwable, AutoCloseable, AutoCloseable...)} adds it, a JVM-fatal
+     * one taking {@code failure}'s place, record included under the monitor. Either is done before
+     * this release is published as ended, so a {@link #close()} that waits for it to the end logs
+     * the failure complete.
+     *
+     * @param failure the failure initialization is about to rethrow, or {@code null} after it
+     *     succeeded
      */
-    private void releaseClient(SpannerChangeStreamCoordinatorClient created) throws Exception {
+    private void releaseClient(
+            SpannerChangeStreamCoordinatorClient created, @Nullable Throwable failure)
+            throws Exception {
         CountDownLatch released = new CountDownLatch(1);
         synchronized (this) {
             if (client != created) {
@@ -578,14 +620,37 @@ public final class SpannerChangeStreamSplitEnumerator
         try {
             created.close();
         } catch (Throwable e) {
+            boolean fatal = ExceptionUtils.isJvmFatalOrOutOfMemoryError(e);
+            // A client may throw one instance from both, which cannot be suppressed onto itself.
+            if (failure != null && failure != e) {
+                if (fatal) {
+                    e.addSuppressed(failure);
+                } else {
+                    failure.addSuppressed(e);
+                }
+            }
             synchronized (this) {
                 if (!closed) {
-                    throw e;
+                    if (failure == null) {
+                        reportInitializationFailure(e);
+                        throw e;
+                    }
+                    if (fatal) {
+                        if (unreportedInitializationFailure == failure) {
+                            unreportedInitializationFailure = e;
+                        }
+                        throw e;
+                    }
+                    return;
                 }
             }
             logCloseFailureAfterTheEnumeratorClosed(e);
-            if (e instanceof Error) {
+            if (failure == null && e instanceof Error) {
                 throw (Error) e;
+            }
+            if (fatal) {
+                // As Closers.closeAllSuppressing does: not a cast, should Flink widen the set.
+                ExceptionUtils.rethrow(e);
             }
         } finally {
             released.countDown();
@@ -596,12 +661,59 @@ public final class SpannerChangeStreamSplitEnumerator
      * Logs a client close failure the closed enumerator cannot report otherwise, since {@link
      * #onInitialized(Initialization, Throwable)} drops initialization's outcome once it is closed;
      * an {@link Error}, such as a {@link NoClassDefFoundError} from a job class loader Flink has
-     * already released, is logged too, and its caller rethrows it.
+     * already released, is logged too, and its caller rethrows it unless it adds it to an earlier
+     * initialization failure, as {@link Closers#closeAllSuppressing(Throwable, AutoCloseable,
+     * AutoCloseable...)} does a non-fatal one.
      */
     private static void logCloseFailureAfterTheEnumeratorClosed(Throwable failure) {
         LOG.warn(
                 "Failed to close the Spanner Change Streams coordinator client after the enumerator"
                         + " closed.",
+                failure);
+    }
+
+    /**
+     * Reports a failed call of the client {@link #initialize()} installed. Unless {@link #close()}
+     * took the client over, the enumerator is still open, and the failure is recorded as any other.
+     * A client {@link #close()} took over may have failed because that close closed it, or for a
+     * reason of its own that the close overtook; the two cannot be told apart, so the failure is
+     * logged at INFO rather than as an initialization failure.
+     */
+    private void reportClientCallFailure(
+            Throwable failure, SpannerChangeStreamCoordinatorClient created) {
+        synchronized (this) {
+            if (client == created) {
+                reportInitializationFailure(failure);
+                return;
+            }
+        }
+        LOG.info(
+                "The Spanner Change Streams coordinator client failed after the enumerator's close"
+                        + " took it over to close it, which may have caused the failure.",
+                failure);
+    }
+
+    /**
+     * Makes sure an initialization failure is reported. While the enumerator is open the failure is
+     * recorded, and {@link #onInitialized(Initialization, Throwable)} reports it or {@link
+     * #close()} logs it, whichever comes first; once the enumerator has closed it is logged here,
+     * since neither will.
+     */
+    private void reportInitializationFailure(Throwable failure) {
+        synchronized (this) {
+            if (!closed) {
+                unreportedInitializationFailure = failure;
+                return;
+            }
+        }
+        logUnreportedInitializationFailure(failure);
+    }
+
+    private static void logUnreportedInitializationFailure(Throwable failure) {
+        LOG.warn(
+                "Spanner Change Streams enumerator initialization failed, and the enumerator closed"
+                        + " before it reported the failure; Flink drops a closed enumerator's"
+                        + " initialization outcome.",
                 failure);
     }
 
@@ -620,6 +732,18 @@ public final class SpannerChangeStreamSplitEnumerator
             return;
         }
         if (error != null) {
+            synchronized (this) {
+                if (closed) {
+                    // close() logged the failure it took over.
+                    return;
+                }
+                unreportedInitializationFailure = null;
+            }
+            // Flink logs it and fails the job with it, a request a coordinator being reset ignores,
+            // unless its coordinator context closes before Flink's handler of a throwing callback
+            // checks it: that handler then returns without a trace
+            // (SourceCoordinatorContext.handleUncaughtExceptionFromAsyncCall, Flink 1.20.5 and
+            // 2.2.1), and nothing here can observe it.
             throw new FlinkRuntimeException(
                     "Failed to initialize Spanner Change Streams partition state.", error);
         }
@@ -1518,8 +1642,11 @@ public final class SpannerChangeStreamSplitEnumerator
         SpannerChangeStreamCoordinatorClient closing;
         CountDownLatch pending;
         CountDownLatch takenOver = null;
+        Throwable unreported;
         synchronized (this) {
             closed = true;
+            unreported = unreportedInitializationFailure;
+            unreportedInitializationFailure = null;
             closing = client;
             client = null;
             pending = clientReleased;
@@ -1540,12 +1667,29 @@ public final class SpannerChangeStreamSplitEnumerator
                     Thread.currentThread().interrupt();
                 }
             }
+            // After the wait, so that a release that failed has added its failure to this one.
+            if (unreported != null) {
+                logUnreportedInitializationFailure(unreported);
+            }
             // After the flag: a start() still registering sees it and lets go of what it bound.
             metrics.close();
-            try {
-                Closers.closeAll(closing);
-            } catch (Exception e) {
-                throw new IOException("Failed to close the Spanner Change Streams coordinator.", e);
+            if (closing != null) {
+                try {
+                    Closers.closeAll(closing);
+                } catch (Throwable e) {
+                    // Flink closes an enumerator through IOUtils.closeQuietly, which drops
+                    // whatever close() throws (Flink 1.20.5 and 2.2.1), so this is the failure's
+                    // only trace.
+                    LOG.warn(
+                            "Failed to close the Spanner Change Streams coordinator client the"
+                                    + " enumerator's close took over.",
+                            e);
+                    if (e instanceof Error) {
+                        throw (Error) e;
+                    }
+                    throw new IOException(
+                            "Failed to close the Spanner Change Streams coordinator.", e);
+                }
             }
         } finally {
             if (takenOver != null) {

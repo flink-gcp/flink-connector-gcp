@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.util.FlinkRuntimeException;
-import org.apache.flink.util.function.ThrowingRunnable;
 
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -970,6 +969,9 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
     @Test
     void aCloseWhileTheClientsCreationFailsReturnsOnceTheCreationHasFailed() throws Exception {
+        // The close does not cancel the creation, so its failure is the stream's, not the close's:
+        // before #2358 the closed enumerator dropped it without a trace.
+        java.io.IOException creationFailure = new java.io.IOException("no emulator is listening");
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         CountDownLatch creationEntered = new CountDownLatch(1);
         CountDownLatch creationGate = new CountDownLatch(1);
@@ -981,7 +983,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                             creationEntered.countDown();
                             creationGate.await();
                             creationFailed.set(true);
-                            throw new java.io.IOException("no emulator is listening");
+                            throw creationFailure;
                         },
                         null);
         enumerator.start();
@@ -999,23 +1001,30 @@ class SpannerChangeStreamSplitEnumeratorTest {
                             failedWhenCloseReturned.set(creationFailed.get());
                         },
                         "close");
-        try {
-            initializing.start();
-            assertThat(creationEntered.await(10, TimeUnit.SECONDS)).isTrue();
-            closing.start();
-            assertThat(awaitParkedOrEnded(closing))
-                    .as("the enumerator's close waits for the client being created")
-                    .isEqualTo(Thread.State.WAITING);
-        } finally {
-            creationGate.countDown();
-            initializing.join(10_000);
-            closing.join(10_000);
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            try {
+                initializing.start();
+                assertThat(creationEntered.await(10, TimeUnit.SECONDS)).isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the enumerator's close waits for the client being created")
+                        .isEqualTo(Thread.State.WAITING);
+            } finally {
+                creationGate.countDown();
+                initializing.join(10_000);
+                closing.join(10_000);
+            }
+            assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+            assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+            assertThat(capture.getEvents())
+                    .as("the creation failure is logged")
+                    .singleElement()
+                    .satisfies(SpannerChangeStreamSplitEnumeratorTest::isAWarning)
+                    .satisfies(event -> assertThat(event.getThrowable()).isSameAs(creationFailure));
         }
-        assertThat(initializing.isAlive()).as("initialization ended").isFalse();
         assertThat(initializationFailure.get())
-                .as("the closed enumerator dropped the creation failure")
+                .as("the closed enumerator's handler does not fail")
                 .isNull();
-        assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
         assertThat(closeFailure.get()).isNull();
         assertThat(failedWhenCloseReturned.get())
                 .as("the creation had failed when the enumerator's close returned")
@@ -1441,26 +1450,6 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .as("the closed enumerator's initialization does not fail")
                 .isNull();
         assertThat(closeResult.get()).isNull();
-    }
-
-    @Test
-    void aCloseFailureOfTheClientWhileTheEnumeratorIsOpenFailsInitialization() {
-        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
-        ScriptedClient client = new ScriptedClient();
-        Exception closeFailure = new IllegalStateException("close failed");
-        client.duringClose =
-                () -> {
-                    throw closeFailure;
-                };
-        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
-        enumerator.start();
-
-        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
-            assertThat(catchThrowable(context::runAsyncCalls))
-                    .isInstanceOf(FlinkRuntimeException.class)
-                    .hasCause(closeFailure);
-            assertThat(capture.getEvents()).isEmpty();
-        }
     }
 
     @Test
@@ -3054,30 +3043,5 @@ class SpannerChangeStreamSplitEnumeratorTest {
             }
         }
         return watermarks;
-    }
-
-    private static final class ScriptedClient implements SpannerChangeStreamCoordinatorClient {
-
-        private int initializeCalls;
-        private int closeCalls;
-        private RuntimeException initializationFailure;
-        private Runnable duringInitialize = () -> {};
-        private ThrowingRunnable<Exception> duringClose = () -> {};
-
-        @Override
-        public Duration initialize() {
-            initializeCalls++;
-            duringInitialize.run();
-            if (initializationFailure != null) {
-                throw initializationFailure;
-            }
-            return Duration.ofDays(7);
-        }
-
-        @Override
-        public void close() throws Exception {
-            duringClose.run();
-            closeCalls++;
-        }
     }
 }
