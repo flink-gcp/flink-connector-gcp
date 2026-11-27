@@ -68,15 +68,16 @@ import java.util.concurrent.Callable;
  * metrics exported to Flink are unaffected.
  *
  * <p><b>Threads.</b> The enumerator's calls run on the executor {@code
- * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} runs on the
- * coordinator thread — and {@code SourceCoordinator.close()} closes the enumerator before it shuts
- * that executor down. {@link PerCallClientRunner} prepares each call's settings and starts the call
- * under its monitor, builds the client outside it, and makes its closed state one-way: a call that
- * overtakes the teardown is refused, a client that finishes building after it is closed unused, and
- * a call the teardown overtakes is cancelled. The teardown therefore never waits for a client being
- * built, which for a data client includes channel priming. The credentials are cleared once the
- * runner is closed, so no settings are built from them after it and nothing reaches Bigtable as the
- * process's application default credentials.
+ * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} can run on another
+ * thread, normally Flink's closer thread, the one it starts to close the source coordinator; there,
+ * {@code SourceCoordinator.close()} closes the enumerator before it shuts that executor down.
+ * {@link PerCallClientRunner} prepares each call's settings and starts the call under its monitor,
+ * builds the client outside it, and makes its closed state one-way: a call that overtakes the
+ * teardown is refused, a client that finishes building after it is closed unused, and a call the
+ * teardown overtakes is cancelled. The teardown therefore never waits for a client being built,
+ * which for a data client includes channel priming. The credentials are cleared once the runner is
+ * closed, so no settings are built from them after it and nothing reaches Bigtable as the process's
+ * application default credentials.
  */
 @Internal
 public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamCoordinatorClient {

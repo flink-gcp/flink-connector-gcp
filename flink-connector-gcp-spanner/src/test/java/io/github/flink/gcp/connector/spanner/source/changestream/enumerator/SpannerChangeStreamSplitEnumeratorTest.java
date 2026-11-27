@@ -1132,8 +1132,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
     @Test
     void theEnumeratorsCloseWaitsForTheClientInitializationIsClosing() throws Exception {
-        // The client's close releases its gRPC lease; the enumerator's close must not return
-        // before it, or Flink can release the job's class loader under it.
+        // The enumerator's close waits for the client's close, which releases its gRPC lease
+        // (ADR-0208, #2305).
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         ScriptedClient client = new ScriptedClient();
         CountDownLatch closeEntered = new CountDownLatch(1);

@@ -80,7 +80,10 @@ import java.util.Set;
  *
  * <p>Every method runs on the coordinator thread — including {@link #onPlanned(Object)}, which the
  * completion handler calls — so nothing here synchronizes. The two exceptions are named where they
- * are: {@link #plan()} runs off it, and {@link #close()} runs on the scheduler thread.
+ * are: {@link #plan()} runs off it, and so, as a rule, does {@link #close()}, which runs on Flink's
+ * closer thread, the one {@code ComponentClosingUtils.closeAsyncWithTimeout} starts to close the
+ * source coordinator (Flink 1.20.5 and 2.2.1), or on the coordinator thread when a {@code
+ * HybridSource} switches past the source.
  *
  * <p>Logging goes to a logger named after the concrete subclass, so a log configuration scoped to
  * one connector keeps matching every line this protocol emits.
@@ -111,12 +114,17 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
 
     private boolean planned;
 
-    /** Written by {@link #close()} on the scheduler thread, read by the completion handler. */
+    /**
+     * Written by {@link #close()}, usually on Flink's closer thread, read by the completion
+     * handler.
+     */
     private volatile boolean closed;
 
     private EnumeratorCounters counters = EnumeratorCounters.unregistered();
 
-    /** Replaced at {@link #start()}; volatile because {@link #close()} runs on another thread. */
+    /**
+     * Replaced at {@link #start()}; volatile because {@link #close()} can run on another thread.
+     */
     private volatile EnumeratorMetrics metrics = EnumeratorMetrics.unregistered();
 
     /**
@@ -352,8 +360,8 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
 
     @Override
     public final void close() throws IOException {
-        // Runs on the scheduler thread, possibly while the planning call is still in flight; the
-        // flag is volatile so the completion handler sees it and stays quiet.
+        // Usually runs on Flink's closer thread, possibly while the planning call is still in
+        // flight; the flag is volatile so the completion handler sees it and stays quiet.
         closed = true;
         metrics.close();
         try {
