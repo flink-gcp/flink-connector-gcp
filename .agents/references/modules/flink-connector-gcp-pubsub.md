@@ -130,6 +130,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   path (`call(...)`), not on the client's synchronous method. A client that fails to close with an
   exception after a successful call is logged, not reported as the call's failure (a seek wrongly
   reported failed is re-run on restart and discards more messages).
+- `PubSubSplitEnumerator.close()` logs a failure to close the subscription admin at WARN, an
+  `Error` included, before it throws it: `SourceCoordinator.close()` closes an enumerator through
+  `IOUtils.closeQuietly`, which drops what `close()` throws (`docs/adr/0208`, #2370). The admin
+  logs an ordinary close failure itself, so the enumerator's line matters for an `Error`; keep it.
 
 ## Metrics (`docs/adr/0010`; conventions in the base module's detailed guidance)
 

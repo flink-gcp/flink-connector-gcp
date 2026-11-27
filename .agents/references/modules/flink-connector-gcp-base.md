@@ -202,6 +202,12 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (`docs/adr/0128`; the adaptive scheduler deserializes a new one per restart). Do not add a
   `protected` accessor for it here: a subclass that also plans through the seam keeps its own typed
   field, which is what all three subclasses do.
+- `close()` logs a failure to close that seam at WARN, an `Error` included, before it throws it:
+  `SourceCoordinator.close()` closes an enumerator through `IOUtils.closeQuietly`, which drops what
+  `close()` throws, so at job shutdown the log is the failure's only trace (`docs/adr/0208`,
+  #2370). The Bigtable Change Streams, Spanner Change Streams (#2358) and Pub/Sub enumerators do
+  the same; keep it in any enumerator `close()` that can fail. Release the metrics after that
+  seam, in a `finally`: an `Error` from a gauge's last read must not leave it open.
 - `SynchronousDeserializationCollector.deserialize` is the one direct adapter for all collector-
   shaped source deserializers. It creates one collector per input, forwards each record immediately,
   returns the successful count, and clears its downstream function in `finally`. Do not add a record

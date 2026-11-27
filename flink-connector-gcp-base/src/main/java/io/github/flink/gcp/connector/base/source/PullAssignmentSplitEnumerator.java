@@ -136,9 +136,11 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
      *     split"), used in the assignment log lines
      * @param planFailureMessage what the job fails with when the planning call fails; the source
      *     cannot start
-     * @param closeFailureMessage what the {@link java.io.IOException} says when the seam refuses to
-     *     close. Both messages are whole sentences rather than nouns this class writes around, so a
-     *     call site that swapped them would say so
+     * @param closeFailureMessage what the WARN log line and the {@link java.io.IOException} say
+     *     when the seam refuses to close; at job shutdown the log line is the one an operator sees,
+     *     since Flink's source coordinator drops what {@link #close()} throws. Both messages are
+     *     whole sentences rather than nouns this class writes around, so a call site that swapped
+     *     them would say so
      */
     protected PullAssignmentSplitEnumerator(
             SplitEnumeratorContext<SplitT> context,
@@ -298,8 +300,7 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
         metrics.unassignedSplitsGauge(() -> (long) pending.size());
         if (closed) {
             // close() ran first, on Flink's closer thread, and closed the view this replaced: let
-            // go
-            // of what was just bound rather than leave it reading a closed enumerator.
+            // go of what was just bound rather than leave it reading a closed enumerator.
             metrics.close();
         }
     }
@@ -363,11 +364,20 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
         // Usually runs on Flink's closer thread, possibly while the planning call is still in
         // flight; the flag is volatile so the completion handler sees it and stays quiet.
         closed = true;
-        metrics.close();
         try {
             Closers.closeAll(planner);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // SourceCoordinator.close() closes an enumerator through IOUtils.closeQuietly, which
+            // drops whatever close() throws (Flink 1.20.5 and 2.2.1), so at job shutdown this is
+            // the failure's only trace.
+            log.warn(closeFailureMessage, e);
+            if (e instanceof Error) {
+                throw (Error) e;
+            }
             throw new IOException(closeFailureMessage, e);
+        } finally {
+            // After the planner, so that an Error from a gauge's last read cannot leave it open.
+            metrics.close();
         }
     }
 }

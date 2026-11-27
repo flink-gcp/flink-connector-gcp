@@ -21,10 +21,12 @@ import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
+import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
@@ -326,6 +328,97 @@ class PullAssignmentSplitEnumeratorTest {
     }
 
     @Test
+    void logsAPlannerThatRefusesToCloseBeforeThrowing() throws Exception {
+        // Flink's source coordinator closes an enumerator through IOUtils.closeQuietly, which drops
+        // what close() throws, so at job shutdown the log line is the failure's only trace.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        ScriptedPlanner planner = ScriptedPlanner.planning(1);
+        IllegalStateException failure = new IllegalStateException("still in use");
+        planner.failOnClose(failure);
+        TestEnumerator enumerator = enumerator(context, planner);
+        enumerator.start();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class)) {
+            assertThatThrownBy(enumerator::close).isInstanceOf(IOException.class);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage()).isEqualTo(CLOSE_FAILURE_MESSAGE);
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void logsAnErrorFromThePlannersCloseAndThrowsItAsItself() throws Exception {
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        ScriptedPlanner planner = ScriptedPlanner.planning(1);
+        NoClassDefFoundError failure = new NoClassDefFoundError("released class loader");
+        planner.failOnClose(failure);
+        TestEnumerator enumerator = enumerator(context, planner);
+        enumerator.start();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class)) {
+            assertThatThrownBy(enumerator::close).isSameAs(failure);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void closesThePlannerWhenAGaugeThrowsAnErrorOnItsLastRead() throws Exception {
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        ScriptedPlanner planner = ScriptedPlanner.planning(1);
+        TestEnumerator enumerator = enumerator(context, planner);
+        enumerator.start();
+        StackOverflowError failure = new StackOverflowError("gauge");
+        enumerator.gaugeFailure = failure;
+
+        assertThatThrownBy(enumerator::close).isSameAs(failure);
+
+        assertThat(planner.closeCalls).isEqualTo(1);
+    }
+
+    @Test
+    void aGaugeStopsReadingAnEnumeratorWhosePlannerRefusesToClose() throws Exception {
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        context.registerReader(0);
+        ScriptedPlanner planner = ScriptedPlanner.planning(2);
+        planner.failOnClose(new IllegalStateException("still in use"));
+        TestEnumerator enumerator = enumerator(context, planner);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+
+        assertThatThrownBy(enumerator::close).isInstanceOf(IOException.class);
+        enumerator.addSplitsBack(context.assignedSplits(0), 0);
+
+        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(1L);
+    }
+
+    @Test
+    void logsNothingWhenThePlannerCloses() throws Exception {
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        TestEnumerator enumerator = enumerator(context, ScriptedPlanner.planning(1));
+        enumerator.start();
+
+        try (LogCapture capture = LogCapture.of(TestEnumerator.class)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents()).isEmpty();
+        }
+    }
+
+    @Test
     void reportsWhatItAssignedReturnedAndPlanned() throws Exception {
         FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
         try (TestEnumerator enumerator = started(context, 2)) {
@@ -476,7 +569,7 @@ class PullAssignmentSplitEnumeratorTest {
 
         private final int splitCount;
         @Nullable private final Exception failure;
-        @Nullable private RuntimeException closeFailure;
+        @Nullable private Throwable closeFailure;
 
         private int planCalls;
         private int closeCalls;
@@ -498,6 +591,10 @@ class PullAssignmentSplitEnumeratorTest {
             this.closeFailure = failure;
         }
 
+        void failOnClose(Error failure) {
+            this.closeFailure = failure;
+        }
+
         List<TestSplit> plan() throws Exception {
             planCalls++;
             if (failure != null) {
@@ -513,8 +610,11 @@ class PullAssignmentSplitEnumeratorTest {
         @Override
         public void close() {
             closeCalls++;
+            if (closeFailure instanceof Error) {
+                throw (Error) closeFailure;
+            }
             if (closeFailure != null) {
-                throw closeFailure;
+                throw (RuntimeException) closeFailure;
             }
         }
     }
@@ -527,6 +627,9 @@ class PullAssignmentSplitEnumeratorTest {
         @Nullable private final TestState restoredState;
 
         private int planningStartedCalls;
+
+        /** What the probe gauge throws when read, once a test sets it. */
+        @Nullable private volatile Error gaugeFailure;
 
         private TestEnumerator(
                 SplitEnumeratorContext<TestSplit> context,
@@ -563,6 +666,16 @@ class PullAssignmentSplitEnumeratorTest {
 
         @Override
         protected EnumeratorCounters registerCounters(EnumeratorMetrics metrics) {
+            metrics.gauge(
+                    "probe",
+                    (Gauge<Integer>)
+                            () -> {
+                                Error failure = gaugeFailure;
+                                if (failure != null) {
+                                    throw failure;
+                                }
+                                return 0;
+                            });
             return new EnumeratorCounters(
                     metrics.counter(SPLITS_ASSIGNED),
                     metrics.counter(SPLITS_RETURNED),

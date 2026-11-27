@@ -41,6 +41,9 @@ import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import javax.annotation.Nullable;
+
+import java.io.IOException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -879,6 +882,138 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.close();
 
         assertThat(client.closeCalls()).isEqualTo(1);
+    }
+
+    @Test
+    void logsACoordinatorClientThatRefusesToCloseBeforeThrowing() {
+        // Flink's source coordinator closes an enumerator through IOUtils.closeQuietly, which drops
+        // what close() throws, so at job shutdown the log line is the failure's only trace.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedChangeStreamCoordinatorClient client =
+                ScriptedChangeStreamCoordinatorClient.with(WHOLE);
+        IllegalStateException failure = new IllegalStateException("channel still in use");
+        client.failOnClose(failure);
+        BigtableChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+
+        try (LogCapture capture = LogCapture.of(BigtableChangeStreamSplitEnumerator.class)) {
+            assertThatThrownBy(enumerator::close).isInstanceOf(IOException.class).hasCause(failure);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage())
+                                        .contains("Change Streams coordinator");
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void logsNothingWhenTheCoordinatorClientCloses() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+
+        try (LogCapture capture = LogCapture.of(BigtableChangeStreamSplitEnumerator.class)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents()).isEmpty();
+        }
+    }
+
+    @Test
+    void logsAnErrorFromTheCoordinatorClientsCloseAndThrowsItAsItself() {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedChangeStreamCoordinatorClient client =
+                ScriptedChangeStreamCoordinatorClient.with(WHOLE);
+        NoClassDefFoundError failure = new NoClassDefFoundError("released class loader");
+        client.failOnClose(failure);
+        BigtableChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+
+        try (LogCapture capture = LogCapture.of(BigtableChangeStreamSplitEnumerator.class)) {
+            assertThatThrownBy(enumerator::close).isSameAs(failure);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage())
+                                        .contains("Change Streams coordinator");
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void closesTheCoordinatorClientWhenAGaugeThrowsAnErrorOnItsLastRead() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedChangeStreamCoordinatorClient client =
+                ScriptedChangeStreamCoordinatorClient.with(WHOLE);
+        Instant lowWatermark = Instant.now().minus(Duration.ofMinutes(1));
+        AdvanceableClock clock = new AdvanceableClock(lowWatermark.plusSeconds(5));
+        BigtableChangeStreamSplitEnumerator enumerator =
+                withAnUnassignedPartition(context, client, lowWatermark, clock);
+        StackOverflowError failure = new StackOverflowError("gauge");
+        clock.failWith(failure);
+
+        assertThatThrownBy(enumerator::close).isSameAs(failure);
+
+        assertThat(client.closeCalls()).isEqualTo(1);
+    }
+
+    @Test
+    void aGaugeStopsReadingAnEnumeratorWhoseCoordinatorClientRefusesToClose() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedChangeStreamCoordinatorClient client =
+                ScriptedChangeStreamCoordinatorClient.with(WHOLE);
+        client.failOnClose(new IllegalStateException("channel still in use"));
+        Instant lowWatermark = Instant.now().minus(Duration.ofMinutes(1));
+        AdvanceableClock clock = new AdvanceableClock(lowWatermark.plusSeconds(5));
+        BigtableChangeStreamSplitEnumerator enumerator =
+                withAnUnassignedPartition(context, client, lowWatermark, clock);
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis"))
+                .isEqualTo(5_000L);
+
+        assertThatThrownBy(enumerator::close).isInstanceOf(IOException.class);
+        clock.advance(Duration.ofSeconds(1));
+
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis"))
+                .isEqualTo(5_000L);
+    }
+
+    /** A started enumerator holding one unassigned partition, so its lag gauge reads the clock. */
+    private static BigtableChangeStreamSplitEnumerator withAnUnassignedPartition(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            ScriptedChangeStreamCoordinatorClient client,
+            Instant lowWatermark,
+            Clock clock) {
+        BigtableChangeStreamEnumeratorState restored =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        lowWatermark,
+                        9,
+                        Collections.singletonList(
+                                restoredSplit("change-stream-7", WHOLE, lowWatermark)),
+                        Collections.emptyList(),
+                        Collections.emptyList());
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        client,
+                        StartPosition.latest(),
+                        null,
+                        restored,
+                        false,
+                        false,
+                        clock,
+                        Duration.ZERO,
+                        true);
+        enumerator.start();
+        context.runAsyncCalls();
+        return enumerator;
     }
 
     @Test
@@ -2043,12 +2178,19 @@ class BigtableChangeStreamSplitEnumeratorTest {
 
         private Instant instant;
 
+        /** What reading the clock throws, once a test sets it. */
+        @Nullable private Error failure;
+
         private AdvanceableClock(Instant instant) {
             this.instant = instant;
         }
 
         private void advance(Duration amount) {
             instant = instant.plus(amount);
+        }
+
+        private void failWith(Error failure) {
+            this.failure = failure;
         }
 
         @Override
@@ -2063,6 +2205,9 @@ class BigtableChangeStreamSplitEnumeratorTest {
 
         @Override
         public Instant instant() {
+            if (failure != null) {
+                throw failure;
+            }
             return instant;
         }
     }

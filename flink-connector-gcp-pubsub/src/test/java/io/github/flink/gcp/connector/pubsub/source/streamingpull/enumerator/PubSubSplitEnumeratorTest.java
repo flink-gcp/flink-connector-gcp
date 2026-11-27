@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreaming
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionInfo;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
@@ -669,6 +670,87 @@ class PubSubSplitEnumeratorTest {
         assertThat(context.assignedSplits(0)).isEmpty();
         // close() does not abort a check already running, so the seek it was issuing still lands.
         assertThat(admin.seekedSubscriptions).containsExactly(SUB_A);
+    }
+
+    @Test
+    void logsAnAdminThatRefusesToCloseBeforeThrowing() {
+        // Flink's source coordinator closes an enumerator through IOUtils.closeQuietly, which drops
+        // what close() throws, so at job shutdown the log line is the failure's only trace.
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        IOException failure = new IOException("channel still in use");
+        admin.closeFailure = failure;
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(
+                        new FakeSplitEnumeratorContext(1), earliestRetained(SUB_A), admin, null);
+
+        try (LogCapture capture = LogCapture.of(PubSubSplitEnumerator.class)) {
+            assertThatThrownBy(enumerator::close).isInstanceOf(IOException.class).hasCause(failure);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage()).contains("subscription admin");
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
+    }
+
+    @Test
+    void aGaugeStopsReadingAnEnumeratorWhoseAdminRefusesToClose() {
+        // Nothing a test reaches makes a gauge's last read throw here; the other enumerators'
+        // tests hold that half of the order.
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        admin.closeFailure = new IOException("channel still in use");
+        PubSubSplitEnumerator enumerator =
+                start(context, config(OrderingMode.NONE, SUB_A), admin, null);
+
+        assertThatThrownBy(enumerator::close).isInstanceOf(IOException.class);
+        context.registerReader(0);
+        enumerator.addReader(0);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isZero();
+    }
+
+    @Test
+    void logsNothingWhenTheAdminCloses() throws Exception {
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(
+                        new FakeSplitEnumeratorContext(1),
+                        earliestRetained(SUB_A),
+                        admin(SUB_A),
+                        null);
+
+        try (LogCapture capture = LogCapture.of(PubSubSplitEnumerator.class)) {
+            enumerator.close();
+
+            assertThat(capture.getEvents()).isEmpty();
+        }
+    }
+
+    @Test
+    void logsAnErrorFromTheAdminsCloseAndThrowsItAsItself() {
+        FakeSubscriptionAdmin admin = admin(SUB_A);
+        NoClassDefFoundError failure = new NoClassDefFoundError("released class loader");
+        admin.closeFailure = failure;
+        PubSubSplitEnumerator enumerator =
+                new PubSubSplitEnumerator(
+                        new FakeSplitEnumeratorContext(1), earliestRetained(SUB_A), admin, null);
+
+        try (LogCapture capture = LogCapture.of(PubSubSplitEnumerator.class)) {
+            assertThatThrownBy(enumerator::close).isSameAs(failure);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("WARN ");
+                                assertThat(event.getMessage()).contains("subscription admin");
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        }
     }
 
     @Test

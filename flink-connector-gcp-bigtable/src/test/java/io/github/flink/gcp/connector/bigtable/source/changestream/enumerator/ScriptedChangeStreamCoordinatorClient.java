@@ -34,6 +34,7 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     private int retentionCalls;
     private int closeCalls;
     private RuntimeException failNextGeneration;
+    private Throwable closeFailure;
 
     static ScriptedChangeStreamCoordinatorClient with(ByteStringRange... partitions) {
         return new ScriptedChangeStreamCoordinatorClient(
@@ -70,6 +71,12 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     @Override
     public void close() {
         closeCalls++;
+        if (closeFailure instanceof Error) {
+            throw (Error) closeFailure;
+        }
+        if (closeFailure != null) {
+            throw (RuntimeException) closeFailure;
+        }
     }
 
     /** Answers later scans with these partitions, as a table whose tablets moved does. */
@@ -81,6 +88,16 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     /** Fails the next partition generation, as a scan against a live table can. */
     void failNextGenerationWith(RuntimeException failure) {
         failNextGeneration = failure;
+    }
+
+    /** Fails every close with the given failure, as a client that cannot shut down does. */
+    void failOnClose(RuntimeException failure) {
+        closeFailure = failure;
+    }
+
+    /** Fails every close with the given error, as one released class loader can. */
+    void failOnClose(Error failure) {
+        closeFailure = failure;
     }
 
     int validationCalls() {

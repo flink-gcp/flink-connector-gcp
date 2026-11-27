@@ -209,15 +209,30 @@ public final class EnumeratorMetrics implements AutoCloseable {
      * Freezes every gauge this enumerator still feeds at its current value.
      *
      * <p>A gauge that throws as it is read for the last time is frozen at {@code null} instead, so
-     * closing never fails over a metric and never leaves a gauge holding the closed enumerator.
+     * closing never leaves a gauge holding the closed enumerator. A {@link RuntimeException} from
+     * that read is dropped. The first {@link Error} is thrown, as itself, once every gauge is
+     * released; a later one is added to it as suppressed where that error allows suppression.
      */
     @Override
     public void close() {
+        Error failure = null;
         synchronized (releases) {
             for (Runnable release : releases) {
-                release.run();
+                try {
+                    release.run();
+                } catch (Error e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else if (e != failure) {
+                        // Self-suppression would throw here, and stop the release of the rest.
+                        failure.addSuppressed(e);
+                    }
+                }
             }
             releases.clear();
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
@@ -286,6 +301,10 @@ public final class EnumeratorMetrics implements AutoCloseable {
             } catch (RuntimeException e) {
                 // The enumerator's state can be mid-change on the coordinator thread as it closes.
                 last = null;
+            } catch (Error e) {
+                // Let go of the enumerator all the same; close() throws the error.
+                target = () -> null;
+                throw e;
             }
             T frozen = last;
             target = () -> frozen;

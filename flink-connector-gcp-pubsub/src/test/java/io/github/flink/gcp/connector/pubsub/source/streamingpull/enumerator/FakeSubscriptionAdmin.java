@@ -59,6 +59,12 @@ final class FakeSubscriptionAdmin implements SubscriptionAdmin {
     IOException describeFailure;
     IOException createFailure;
     IOException seekFailure;
+
+    /**
+     * What {@code close} throws, an {@link Exception} or an {@link Error}; {@code null} for none.
+     */
+    @Nullable Throwable closeFailure;
+
     int closeCalls;
 
     /** Declares a subscription to exist with default settings. */
@@ -113,7 +119,13 @@ final class FakeSubscriptionAdmin implements SubscriptionAdmin {
     }
 
     @Override
-    public void close() {
+    public void close() throws Exception {
         closeCalls++;
+        if (closeFailure instanceof Error) {
+            throw (Error) closeFailure;
+        }
+        if (closeFailure != null) {
+            throw (Exception) closeFailure;
+        }
     }
 }

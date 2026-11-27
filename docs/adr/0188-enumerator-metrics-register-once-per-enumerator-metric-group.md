@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-10-28
-- Issues: [#1908], [#1914]
+- Issues: [#1908], [#1914], [#2370]
 - Modules: base, bigquery, bigtable, firestore, pubsub, spanner
 - Current behavior: an enumerator rebuilt by a failover or a restart keeps reporting through the
   series the first enumerator registered
@@ -81,9 +81,11 @@ and closed with the enumerator.
   it still feeds at their last value, so the registration holds no closed enumerator; a gauge a
   later enumerator has bound already is left alone, since the old enumerator may close after the new
   one starts. A gauge that throws on that last read, as one iterating coordinator state mid-change
-  can, freezes at `null`, so closing never fails over a metric. An enumerator closed before its
-  queued `start()` ran (Flink starts it on the coordinator thread and closes it on another) releases
-  what `start()` then binds, because `close()` sets the enumerator's closed flag first.
+  can, freezes at `null`, so closing never fails over a `RuntimeException`. An `Error` from that
+  read freezes the gauge at `null` too, and is thrown once every other gauge is released (refined
+  2026-11-28, [#2370]). An enumerator closed before its queued `start()` ran (Flink starts it on
+  the coordinator thread and closes it on another) releases what `start()` then binds, because
+  `close()` sets the enumerator's closed flag first.
 - **A shared value is registered once.** `EnumeratorMetrics.shared(group, key, registration)` runs
   the registration the first time and answers its result after that. The Bigtable and Spanner
   sources take their enumerators' client metrics this way, through their adapters'
@@ -166,4 +168,5 @@ no gauges and no shared values, as the enumerators' own null checks did before.
 
 [#1908]: https://github.com/flink-gcp/flink-connector-gcp/issues/1908
 [#1914]: https://github.com/flink-gcp/flink-connector-gcp/issues/1914
+[#2370]: https://github.com/flink-gcp/flink-connector-gcp/issues/2370
 [ADR-0186]: 0186-client-library-metrics-reach-flink-reporters-through-a-narrow-opentelemetry-api.md
