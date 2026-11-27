@@ -75,6 +75,75 @@ class EmulatorEndpointTest {
                 .hasMessage("emulatorEndpoint must be host:port, was '" + endpoint + "'");
     }
 
+    /** An HTTP scheme must be followed by a host, or removing it would leave no host:port. */
+    @ParameterizedTest
+    @ValueSource(strings = {"http://:8086", "HTTPS://:8086", "https://:8086"})
+    void rejectsAnHttpSchemeWithNoHostAfterIt(String endpoint) {
+        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint, "emulator-endpoint"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulator-endpoint must be host:port, was '" + endpoint + "'");
+    }
+
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource({
+        "http://localhost:8086, localhost:8086",
+        "HTTPS://localhost:8086, localhost:8086",
+        "https://[::1]:8086, [::1]:8086",
+        "dns:///localhost:8086, dns:///localhost:8086",
+        "http://dns:///localhost:8086, dns:///localhost:8086",
+        // Matched in ASCII letter case only: a long s (U+017F) is not an s.
+        "http\u017f://localhost:8086, http\u017f://localhost:8086"
+    })
+    void anHttpSchemeIsRemovedAndAResolverSchemeKept(String endpoint, String target) {
+        assertThat(EmulatorEndpoint.parse(endpoint, "e").withoutHttpScheme().getTarget())
+                .isEqualTo(target);
+    }
+
+    /** What a client taking an HTTP authority, not a gRPC target, is given (#2338, #2343). */
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource({
+        "localhost:8081, localhost:8081",
+        "127.0.0.1:8081, 127.0.0.1:8081",
+        "dns:///localhost:8081, localhost:8081",
+        "dns:/localhost:8081, localhost:8081",
+        "dns:localhost:8081, localhost:8081",
+        // gRPC dials localhost:8081 for these, leaving the query out.
+        "dns:localhost:8081?zone=west%20region:1, localhost:8081",
+        "dns:///localhost:8081?zone=west%20region:1, localhost:8081",
+        // An encoded ? or / ends the authority gRPC dials, as it ends this one.
+        "dns:localhost:8081%3Ftag=one?zone=west:1, localhost:8081",
+        "dns:///localhost:8081%3Ftag=one:1, localhost:8081",
+        "dns:///localhost:8081%2Fextra:1, localhost:8081",
+        // gRPC dials localhost:8081 for these; the user information is not part of what it dials.
+        "dns:///a%2520b@localhost:8081, localhost:8081",
+        "dns:///a%252Fb@localhost:8081, localhost:8081",
+        // More than one path segment: gRPC dials the first where it accepts such a target, which
+        // grpc-grpclb's dns provider refuses by default.
+        "dns:///localhost:8081/extra:1, localhost:8081",
+        "dns:///localhost:8081/zone%20a:1, localhost:8081",
+        // No port in the name: gRPC's plaintext transport and HTTP both dial port 80.
+        "dns:///localhost%2Fextra:1, localhost",
+        "dns://8.8.8.8/localhost:8081, localhost:8081",
+        "dns://[::1]/localhost:8081, localhost:8081",
+        "http://localhost:8081, localhost:8081",
+        "HTTPS://localhost:8081, localhost:8081",
+        "http://dns:///localhost:8081, localhost:8081",
+        "[::1]:8081, [::1]:8081",
+        "dns:///%5B::1%5D:8081, [::1]:8081",
+        // Not a URI, and gRPC refuses it too: left as it is.
+        "dns:///[::1]:8081, dns:///[::1]:8081"
+    })
+    void theHttpAuthorityIsTheHostAndPortTheEndpointDials(String configured, String authority) {
+        assertThat(EmulatorEndpoint.parse(configured, "e").httpAuthority()).isEqualTo(authority);
+    }
+
+    @Test
+    void anEndpointWithoutAnHttpSchemeIsReturnedAsItIs() {
+        EmulatorEndpoint endpoint = EmulatorEndpoint.parse("localhost:8086", "e");
+
+        assertThat(endpoint.withoutHttpScheme()).isSameAs(endpoint);
+    }
+
     @ParameterizedTest
     @ValueSource(
             strings = {" localhost:8086", "localhost:8086 ", "localhost: 8086", "local host:8086"})

@@ -190,25 +190,6 @@ class DatastoreClientsTest {
     }
 
     @Test
-    void anEmulatorTargetLosesAnHttpSchemeAndKeepsAResolverScheme() {
-        assertThat(
-                        DatastoreClients.withoutHttpScheme(
-                                        EmulatorEndpoint.parse("http://localhost:8081", "e"))
-                                .getTarget())
-                .isEqualTo("localhost:8081");
-        assertThat(
-                        DatastoreClients.withoutHttpScheme(
-                                        EmulatorEndpoint.parse("HTTPS://localhost:8081", "e"))
-                                .getTarget())
-                .isEqualTo("localhost:8081");
-        assertThat(
-                        DatastoreClients.withoutHttpScheme(
-                                        EmulatorEndpoint.parse("dns:///localhost:8081", "e"))
-                                .getTarget())
-                .isEqualTo("dns:///localhost:8081");
-    }
-
-    @Test
     void credentialsCannotBeCombinedWithAnEmulator() {
         assertThatThrownBy(
                         () ->

@@ -259,6 +259,22 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (#895): both messages name what the caller was given — the setter for a builder, the option key
   for a table factory — and a defaulted name is exactly how BigQuery's two `emulatorRestEndpoint`
   setters spent their life naming a setter the user may not have called.
+- **An HTTP scheme on an endpoint is removed by `EmulatorEndpoint.withoutHttpScheme()`**, the one
+  copy both Firestore modes call before they build a gRPC channel (#2343); a `dns:` resolver
+  scheme is kept, and the scheme is matched in ASCII letter case only. A client that takes an
+  HTTP authority rather than a gRPC target — the Datastore splitter's proto client, and Native
+  mode's emulator host, which the library checks as an `http://` URL — takes
+  `EmulatorEndpoint.httpAuthority()`, the `host:port` a `dns` target dials. `parse` refuses an
+  `http://` or `https://` with no host after it, so the removal always leaves a host, and the
+  refusal names the setting or option key at planning. Such an endpoint never reached the address
+  it names before: the Datastore clients' own removal re-parsed `:port` and refused it under
+  `emulatorEndpoint`; gRPC refuses it with `Invalid DNS name` once the scheme is removed, or finds
+  no name resolver for `http` where it is not (measured 2026-11-28); and BigQuery's REST client,
+  which prefixes its own `http://`, made `http://http://:port` or `http://https://:port` of it, a
+  request to a host named `http` or `https` on port 80, not to the endpoint as written
+  (measured 2026-11-28 with google-http-client 2.2.0's `GenericUrl`). A value that is parsed and
+  never dialled was accepted before: BigQuery's `emulator-rest-endpoint` on a direct-table scan,
+  which opens no REST client, now fails planning when written `http://:port`.
 - **The check runs where the value is configured**, which for SQL is the factory — not the runtime,
   and not a builder setter (#1009, #1013, #1019, `docs/adr/0127`). **All five table factories parse**,
   through a private `validateEmulatorEndpoint(ReadableConfig)` passing `EMULATOR_ENDPOINT.key()` —
@@ -378,8 +394,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   it before the release, and logs an exception from the close after a successful call. A client whose
   synchronous calls
   expose no `ApiFuture` (Spanner's) cancels through the gRPC `Context` the call runs in. Every
-  connector is migrated (Firestore's Native mode in #2330, with `FIRESTORE_EMULATOR_HOST` still
-  taking a client off the group, #2343).
+  connector is migrated (Firestore's Native mode in #2330, its emulator clients in #2343).
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

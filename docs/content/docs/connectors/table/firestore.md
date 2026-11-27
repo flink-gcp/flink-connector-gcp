@@ -52,7 +52,7 @@ See [Lineage]({{< relref "docs/connectors/lineage" >}}) for the class loader con
 When it and `emulator-endpoint` are absent, all three use Application Default Credentials.
 The option stores only the path in the job graph: a scan reads the file on the JobManager, where it plans the read, and on each TaskManager that reads a split, while each lookup and sink subtask reads it on its TaskManager, so mount the same path in every container.
 The option is mutually exclusive with `emulator-endpoint`, because the emulator channel carries no credentials.
-See the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) for the `FIRESTORE_EMULATOR_HOST` variable, which the client library reads on its own.
+See the [DataStream credentials]({{< relref "docs/connectors/datastream/firestore" >}}#credentials) for the `FIRESTORE_EMULATOR_HOST` variable, which a table without `emulator-endpoint` follows as the client library would.
 
 ## Schema and type mapping
 
@@ -345,7 +345,7 @@ No table write carries a precondition.
 | `project` | **required** | The Google Cloud project containing the database |
 | `database` | *unset ⇒ `(default)`* | The id of the Firestore database in Native mode |
 | `collection` | **required** | The collection path the table's documents are in, relative to the database; an odd number of `/`-separated segments, each without leading or trailing whitespace |
-| `emulator-endpoint` | *unset ⇒ the real service, unless `FIRESTORE_EMULATOR_HOST` names a host* | `host:port` of a Firestore emulator; setting it also stops credential discovery. Parsed when a statement over the table is planned, not at `CREATE TABLE` |
+| `emulator-endpoint` | *unset ⇒ the real service, unless `FIRESTORE_EMULATOR_HOST` names a host* | `host:port` of a Firestore emulator (also as `dns:///host:port` or another gRPC `dns` target, or with an `http://` or `https://` scheme, which is removed); setting it also stops credential discovery. Parsed when a statement over the table is planned, not at `CREATE TABLE` |
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each lookup and sink subtask; rejected with `emulator-endpoint` |
 | `geo-point-field-paths` | empty | Semicolon-separated field paths of `ROW<latitude DOUBLE, longitude DOUBLE>` values written as geographical points |
 | `reference-field-paths` | empty | Semicolon-separated field paths of `STRING` values written as references to documents |

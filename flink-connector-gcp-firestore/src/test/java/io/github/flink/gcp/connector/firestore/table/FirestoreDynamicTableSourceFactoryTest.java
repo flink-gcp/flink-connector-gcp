@@ -449,6 +449,13 @@ class FirestoreDynamicTableSourceFactoryTest {
                                 FactoryMocks.createTableSource(
                                         KEYED, options("emulator-endpoint", "no-port")))
                 .hasStackTraceContaining("emulator-endpoint must be host:port");
+        // An HTTP scheme with no host after it, which a client would otherwise meet only at run
+        // time, when it removes the scheme: the enumerator's on the JobManager, or a reader's.
+        assertThatThrownBy(
+                        () ->
+                                FactoryMocks.createTableSource(
+                                        KEYED, options("emulator-endpoint", "http://:8085")))
+                .hasStackTraceContaining("emulator-endpoint must be host:port, was 'http://:8085'");
     }
 
     @Test

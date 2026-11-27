@@ -37,12 +37,8 @@ public final class NoCredentialsOptionsProbe {
         DatabaseDestination database = DatabaseDestination.of("p", "orders");
         GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try {
-            FirestoreClients.options(
-                    database,
-                    null,
-                    FirestoreClients.settings(database, null, null, null, variable -> null),
-                    lease,
-                    variable -> null);
+            FirestoreClients.serviceOptions(
+                    FirestoreClients.settings(database, null, null, null), lease);
         } catch (RuntimeException e) {
             e.printStackTrace(System.out);
             System.exit(1);

@@ -21,51 +21,55 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.Credentials;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.v1.FirestoreSettings;
+import com.google.cloud.grpc.GrpcTransportOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
-import io.grpc.ManagedChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.UnaryOperator;
 
 /**
  * Builds the Firestore client every direction of this connector opens, on the connector's gRPC
  * event-loop group (ADR-0208).
  *
- * <p>{@code FirestoreOptions} takes only an instantiating gRPC provider and is {@code final}, so a
- * caller-owned channel could reach the client only through a hand-written {@code FirestoreRpc}, and
- * the client builds its channels from the provider it is given. {@link #open(DatabaseDestination,
- * EmulatorEndpoint, FirestoreOptions.Builder)} therefore builds the options once, takes the
- * provider they carry, which for the service carries the library's tracing configurator only when a
- * tracer provider is installed, puts it on the group and builds them again. For an emulator, {@link
- * #settings(DatabaseDestination, EmulatorEndpoint, Credentials, RetrySettings)} sets a plaintext
- * provider built from the API's own defaults, with the emulator's fixed token, in place of {@code
- * setEmulatorHost}, whose provider the library builds itself, at gRPC's 4 MiB inbound limit and off
- * the group. Two failures of such a provider remain for an emulator: gax parses its target as
- * {@code host:port}, so a {@code dns:///} target fails, and it builds TLS credentials when {@code
- * GOOGLE_API_USE_CLIENT_CERTIFICATE} asks for a client certificate and one is available (ADR-0208).
+ * <p><b>For the service</b>, {@code FirestoreOptions} takes only an instantiating gRPC provider and
+ * is {@code final}, and the client builds its channels from the provider it is given. {@link
+ * #open(DatabaseDestination, EmulatorEndpoint, FirestoreOptions.Builder)} therefore builds the
+ * options once, takes the provider they carry, which carries the library's tracing configurator
+ * only when a tracer provider is installed, puts it on the group and builds them again. The
+ * transport's executor factory is wrapped, so that a client whose creation fails gives back the
+ * executor the library's {@code GrpcFirestoreRpc} took before it failed, which that constructor
+ * keeps (google-cloud-firestore 3.53.0, #2343).
  *
- * <p><b>The client library also reads {@value #EMULATOR_HOST_VARIABLE} on its own</b>, whenever no
- * emulator host was set explicitly, and then replaces both the channel provider and any configured
- * credentials with the emulator's. This connector configures an emulator only through its own
- * endpoint setting, the builders' {@code emulatorEndpoint(...)} and the Table API's {@code
- * emulator-endpoint} (ADR-0064), and cannot switch the library's lookup off. Without an endpoint, a
- * job started in an environment that carries the variable would write to whatever it names, which
- * {@link #settings(DatabaseDestination, EmulatorEndpoint, Credentials, RetrySettings)} warns about
- * rather than letting it pass silently. With an endpoint, the variable is looked up first and the
- * client is built on the endpoint through {@code setEmulatorHost}, so the configured endpoint still
- * wins and the library never parses the variable's value. Either way the client then runs on the
- * provider the library built, on gRPC's shared event-loop group, and the warning says so.
+ * <p><b>For an emulator</b>, the client sends every call through {@link FirestoreEmulatorRpc}, set
+ * through {@code setServiceRpcFactory}, on a plaintext channel the connector opens on the group
+ * with the API's channel defaults and cuts after the client closes; {@link FirestoreEmulatorRpc}
+ * says why an instantiating provider cannot carry it (#2343, ADR-0208). The endpoint's {@code
+ * http://} or {@code https://} scheme is removed; a resolver scheme such as {@code dns:///} is kept
+ * for gRPC.
+ *
+ * <p><b>The client library also reads {@value #EMULATOR_HOST_VARIABLE} on its own</b> whenever no
+ * emulator host was set, so an emulator client always sets one and the library never reads the
+ * variable. {@code emulator(...)} decides instead: beside a configured endpoint ({@code
+ * emulatorEndpoint(...)}, or the Table API's {@code emulator-endpoint}, ADR-0064) the variable is
+ * ignored; without one, the client dials the emulator it names, as the library would have; either
+ * way with a warning. Failing the job on the variable stays declined (ADR-0171).
  */
 @Internal
 public final class FirestoreClients {
@@ -94,17 +98,6 @@ public final class FirestoreClients {
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride,
             @Nullable RetrySettings retrySettings) {
-        return settings(
-                database, emulatorEndpoint, credentialsOverride, retrySettings, System::getenv);
-    }
-
-    @VisibleForTesting
-    static FirestoreOptions.Builder settings(
-            DatabaseDestination database,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable Credentials credentialsOverride,
-            @Nullable RetrySettings retrySettings,
-            UnaryOperator<String> environment) {
         Preconditions.checkArgument(
                 emulatorEndpoint == null || credentialsOverride == null,
                 "credentialsOverride cannot be combined with an emulator endpoint");
@@ -112,34 +105,8 @@ public final class FirestoreClients {
                 FirestoreOptions.newBuilder()
                         .setProjectId(database.getProject())
                         .setDatabaseId(database.getDatabaseId());
-        if (emulatorEndpoint != null) {
-            settings.setChannelProvider(
-                            FirestoreSettings.defaultGrpcTransportProviderBuilder()
-                                    .setEndpoint(emulatorEndpoint.getTarget())
-                                    .setChannelConfigurator(ManagedChannelBuilder::usePlaintext)
-                                    .build())
-                    .setCredentialsProvider(
-                            FixedCredentialsProvider.create(
-                                    new FirestoreOptions.EmulatorCredentials()));
-        } else {
-            String inherited = environment.apply(EMULATOR_HOST_VARIABLE);
-            if (inherited != null) {
-                LOG.warn(
-                        "{} is set to '{}' in this process's environment and no emulatorEndpoint"
-                                + " is configured. The Firestore client library reads that"
-                                + " variable itself and will send every request for {} to it,"
-                                + " over plaintext with a placeholder token instead of the job's"
-                                + " credentials, rather than to the Firestore service, and the"
-                                + " client runs on gRPC's shared event-loop group rather than the"
-                                + " connector's. Unset the variable, or configure"
-                                + " emulatorEndpoint(...) if the emulator is intended.",
-                        EMULATOR_HOST_VARIABLE,
-                        inherited,
-                        database);
-            }
-            if (credentialsOverride != null) {
-                settings.setCredentials(credentialsOverride);
-            }
+        if (credentialsOverride != null) {
+            settings.setCredentials(credentialsOverride);
         }
         if (retrySettings != null) {
             settings.setRetrySettings(retrySettings);
@@ -156,7 +123,8 @@ public final class FirestoreClients {
      * @param emulatorEndpoint the emulator the settings were assembled for, or {@code null}
      * @param settings the settings to open the client from; building them changes the builder
      * @return the client paired with its lease; close the holder, which closes the client as {@link
-     *     #close(Firestore)} does and then releases the lease
+     *     #close(Firestore)} does, then shuts an emulator's channel down without waiting for its
+     *     calls and closes it, and then releases the lease
      * @throws IOException if the client cannot be created
      */
     public static GrpcEventLoops.LeasedClient<Firestore> open(
@@ -164,24 +132,84 @@ public final class FirestoreClients {
             @Nullable EmulatorEndpoint emulatorEndpoint,
             FirestoreOptions.Builder settings)
             throws IOException {
+        return open(database, emulatorEndpoint, settings, System::getenv);
+    }
+
+    @VisibleForTesting
+    static GrpcEventLoops.LeasedClient<Firestore> open(
+            DatabaseDestination database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            FirestoreOptions.Builder settings,
+            UnaryOperator<String> environment)
+            throws IOException {
         Preconditions.checkNotNull(settings, "settings must not be null");
-        return GrpcEventLoops.openAutoCloseable(
-                lease -> {
-                    try {
-                        return options(database, emulatorEndpoint, settings, lease, System::getenv)
-                                .getService();
-                    } catch (RuntimeException e) {
-                        throw new IOException(
-                                "Failed to create the Firestore client for " + database + ".", e);
-                    }
-                },
-                FirestoreClients::close);
+        @Nullable EmulatorEndpoint emulator = emulator(database, emulatorEndpoint, environment);
+        if (emulator == null) {
+            String failure = "Failed to create the Firestore client for " + database + ".";
+            return GrpcEventLoops.openAutoCloseable(
+                    lease -> {
+                        FirestoreOptions options;
+                        try {
+                            options = serviceOptions(settings, lease);
+                        } catch (RuntimeException e) {
+                            throw new IOException(failure, e);
+                        }
+                        try {
+                            return options.getService();
+                        } catch (RuntimeException | Error e) {
+                            Closers.closeAllSuppressing(
+                                    e,
+                                    ((ReleasingExecutorFactory)
+                                                    ((GrpcTransportOptions)
+                                                                    options.getTransportOptions())
+                                                            .getExecutorFactory())
+                                            ::releaseHeld);
+                            if (e instanceof Error) {
+                                throw (Error) e;
+                            }
+                            throw new IOException(failure, e);
+                        }
+                    },
+                    FirestoreClients::close);
+        }
+        EmulatorEndpoint target = emulator.withoutHttpScheme();
+        GrpcEventLoops.LeasedClient<GrpcTransportChannel> channel =
+                EmulatorChannels.openLeasedPlaintextChannel(
+                        FirestoreSettings.defaultGrpcTransportProviderBuilder(), target);
+        try {
+            return GrpcEventLoops.openAutoCloseable(
+                    lease -> {
+                        try {
+                            return emulatorOptions(settings, target, channel.client()).getService();
+                        } catch (RuntimeException e) {
+                            throw new IOException(
+                                    "Failed to create the Firestore client for "
+                                            + database
+                                            + " on the emulator at "
+                                            + emulator
+                                            + ".",
+                                    e);
+                        }
+                    },
+                    // The channel is cut before its bounded close, which would otherwise wait five
+                    // seconds for a stream still open; the client's own shutdown leaves the
+                    // caller's channel alone.
+                    client ->
+                            Closers.closeAll(
+                                    () -> close(client), channel.client()::shutdownNow, channel));
+        } catch (IOException | RuntimeException | Error e) {
+            Closers.closeAllSuppressing(e, channel);
+            throw e;
+        }
     }
 
     /**
-     * Closes a client without waiting for its calls: {@code shutdownNow()} cancels them, then
-     * {@code close()} waits up to a second each for its channel pool, its executor and its stream
-     * watchdog to terminate.
+     * Closes a client without waiting for its calls: for a service client, {@code shutdownNow()}
+     * cancels them, then {@code close()} waits up to a second each for its channel pool, its
+     * executor and its stream watchdog to terminate. An emulator client's channel is the caller's,
+     * which {@link #open(DatabaseDestination, EmulatorEndpoint, FirestoreOptions.Builder)} cuts
+     * after this returns; here its client stops its own retry executor and gives the shared one
+     * back.
      *
      * <p>{@code close()} alone waits for a query stream still open until the stream's deadline,
      * five minutes by default (measured 2026-11-25 against a server that never answered, with
@@ -200,47 +228,148 @@ public final class FirestoreClients {
     }
 
     /**
-     * Builds the settings with their channel provider on the group, or without it where the library
-     * takes an emulator host from {@value #EMULATOR_HOST_VARIABLE}.
-     *
-     * <p>With an endpoint configured, the variable is looked up here, before the library would: a
-     * value the library cannot parse, an empty one included, would otherwise fail the build, which
-     * the configured endpoint did not before the client ran on the group.
+     * Returns the emulator a client dials: the configured endpoint, or else the one {@value
+     * #EMULATOR_HOST_VARIABLE} names, which the library would have dialled; {@code null} for the
+     * service. Either use of the variable is warned about: ignored beside a configured endpoint,
+     * followed without one.
      */
     @VisibleForTesting
-    static FirestoreOptions options(
+    @Nullable
+    static EmulatorEndpoint emulator(
             DatabaseDestination database,
             @Nullable EmulatorEndpoint emulatorEndpoint,
-            FirestoreOptions.Builder settings,
-            GrpcEventLoops.Lease lease,
             UnaryOperator<String> environment) {
+        String inherited = environment.apply(EMULATOR_HOST_VARIABLE);
         if (emulatorEndpoint != null) {
-            String inherited = environment.apply(EMULATOR_HOST_VARIABLE);
             if (inherited != null) {
                 LOG.warn(
-                        "{} is set to '{}' in this process's environment, and the Firestore client"
-                                + " library reads it in place of the configured emulatorEndpoint"
-                                + " '{}'. The client for {} is built on the configured endpoint"
-                                + " through the library's own emulator setting instead, so it runs"
-                                + " on gRPC's shared event-loop group rather than the connector's,"
-                                + " with gRPC's 4 MiB inbound message limit. Unset the variable to"
-                                + " keep the client on the connector's group.",
+                        "{} is set to '{}' in this process's environment, and is ignored: the"
+                                + " client for {} dials the configured emulatorEndpoint '{}'.",
                         EMULATOR_HOST_VARIABLE,
                         inherited,
-                        emulatorEndpoint.getTarget(),
-                        database);
-                return settings.setEmulatorHost(emulatorEndpoint.getTarget()).build();
+                        database,
+                        emulatorEndpoint.getTarget());
+            }
+            return emulatorEndpoint;
+        }
+        if (inherited == null) {
+            return null;
+        }
+        LOG.warn(
+                "{} is set to '{}' in this process's environment and no emulatorEndpoint is"
+                        + " configured. As the Firestore client library would, the client sends"
+                        + " every request for {} to it, over plaintext with a placeholder token"
+                        + " instead of the job's credentials, rather than to the Firestore service."
+                        + " Unset the variable, or configure emulatorEndpoint(...) if the emulator"
+                        + " is intended.",
+                EMULATOR_HOST_VARIABLE,
+                inherited,
+                database);
+        return EmulatorEndpoint.parse(inherited, EMULATOR_HOST_VARIABLE);
+    }
+
+    /**
+     * Builds the settings for the service with their channel provider on the group and the executor
+     * factory they carry, the library's default unless a caller set one, wrapped in a {@link
+     * ReleasingExecutorFactory}.
+     *
+     * <p>Built again from the same settings rather than from the first build's {@code toBuilder()},
+     * which would carry the credentials provider the first build derived: without credentials
+     * found, that is a {@code NoCredentialsProvider} whose {@code null} credentials fail the second
+     * build.
+     */
+    @VisibleForTesting
+    static FirestoreOptions serviceOptions(
+            FirestoreOptions.Builder settings, GrpcEventLoops.Lease lease) {
+        FirestoreOptions built = settings.build();
+        ReleasingExecutorFactory executors =
+                new ReleasingExecutorFactory(
+                        ((GrpcTransportOptions) built.getTransportOptions()).getExecutorFactory());
+        return settings.setTransportOptions(
+                        GrpcTransportOptions.newBuilder().setExecutorFactory(executors).build())
+                .setChannelProvider(lease.applyTo(built.getTransportChannelProvider()))
+                .build();
+    }
+
+    /**
+     * Builds the settings for an emulator: every call goes through an {@link FirestoreEmulatorRpc}
+     * on the given channel, with the emulator's fixed token. The emulator host is set, to the
+     * {@code host:port} the channel dials ({@link EmulatorEndpoint#httpAuthority()}), so that the
+     * library does not read {@value #EMULATOR_HOST_VARIABLE}; the provider it builds from it is
+     * never used, but the library checks the host as part of an {@code http://} URL, which an
+     * {@code http://} scheme left on the endpoint would fail for an IPv6 literal, and a gRPC target
+     * naming its DNS server by an IPv6 literal, such as {@code dns://[::1]/host:port}, would fail
+     * for any host.
+     */
+    @VisibleForTesting
+    static FirestoreOptions emulatorOptions(
+            FirestoreOptions.Builder settings,
+            EmulatorEndpoint emulator,
+            GrpcTransportChannel channel) {
+        return settings.setEmulatorHost(emulator.httpAuthority())
+                .setCredentialsProvider(
+                        FixedCredentialsProvider.create(new FirestoreOptions.EmulatorCredentials()))
+                .setServiceRpcFactory(
+                        options -> {
+                            try {
+                                return FirestoreEmulatorRpc.create(options, channel);
+                            } catch (IOException e) {
+                                throw new UncheckedIOException(e);
+                            }
+                        })
+                .build();
+    }
+
+    /**
+     * The transport's executor factory, remembering what it has handed out and not yet been given
+     * back, so that a client whose creation failed after taking an executor gives it back.
+     */
+    @VisibleForTesting
+    static final class ReleasingExecutorFactory
+            implements GrpcTransportOptions.ExecutorFactory<ScheduledExecutorService> {
+
+        private final GrpcTransportOptions.ExecutorFactory<ScheduledExecutorService> delegate;
+        private final List<ScheduledExecutorService> held = new ArrayList<>();
+
+        ReleasingExecutorFactory(
+                GrpcTransportOptions.ExecutorFactory<ScheduledExecutorService> delegate) {
+            this.delegate = Preconditions.checkNotNull(delegate, "delegate must not be null");
+        }
+
+        @Override
+        public ScheduledExecutorService get() {
+            ScheduledExecutorService executor = delegate.get();
+            synchronized (held) {
+                held.add(executor);
+            }
+            return executor;
+        }
+
+        /**
+         * Gives an executor back, unless {@link #releaseHeld()} already has: a failed creation's
+         * cleanup may race a late release from the library's own shutdown.
+         */
+        @Override
+        public void release(ScheduledExecutorService executor) {
+            boolean stillHeld;
+            synchronized (held) {
+                stillHeld = held.remove(executor);
+            }
+            if (stillHeld) {
+                delegate.release(executor);
             }
         }
-        FirestoreOptions built = settings.build();
-        if (built.getEmulatorHost() != null) {
-            // Taken from the variable without an endpoint; settings(...) warned about it already.
-            return built;
+
+        /** Gives back every executor handed out and not given back yet. */
+        void releaseHeld() {
+            List<ScheduledExecutorService> toRelease;
+            synchronized (held) {
+                toRelease = new ArrayList<>(held);
+                held.clear();
+            }
+            for (ScheduledExecutorService executor : toRelease) {
+                delegate.release(executor);
+            }
         }
-        // Built again from the same settings rather than from built.toBuilder(), which would carry
-        // the credentials provider the first build derived: without credentials found, that is a
-        // NoCredentialsProvider whose null credentials fail the second build.
-        return settings.setChannelProvider(lease.applyTo(built.getTransportChannelProvider()))
-                .build();
     }
 }

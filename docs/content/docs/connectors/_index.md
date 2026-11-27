@@ -246,12 +246,8 @@ each time under a new client id.
 Under DirectPath on Google Cloud, gRPC's own xDS and ALTS control channels are another such
 channel, also unmeasured.
 
-A Firestore Native-mode client built while the process carries the `FIRESTORE_EMULATOR_HOST`
-environment variable also uses gRPC's group, because the client library then builds its channel
-itself ([#2343]({{< param BookRepo >}}/issues/2343)); the connector logs a warning when that
-happens.
-Under `FAIL`, placing the connector in Flink's `lib/` avoids the exit, because the parent class
-loader never closes; the same holds for the Bigtable and Spanner channels above.
+Under `FAIL`, placing the connector in Flink's `lib/` avoids the exit for the Spanner and
+Bigtable channels above, because the parent class loader never closes.
 
 ## Memory a finished job leaves on a session cluster
 
