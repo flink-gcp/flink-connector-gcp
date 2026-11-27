@@ -110,9 +110,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   client.
 - **One snapshot per job.** The planner takes the read time from a one-document probe's response,
   never from the process clock (the service refuses a future read time); a restore from a
-  checkpoint that recorded the plan never plans again. The library's `getPartitions` sets no read
-  time (the RPC accepts one), which is harmless because its partitions tile the document-name
-  space.
+  checkpoint that recorded the plan never plans again. The partition request sets no read time,
+  as the library's `getPartitions` set none (the RPC accepts one), which is harmless because its
+  partitions tile the document-name space.
 - **Both builders' `readTime` truncate to the microsecond** (#1689, owner's choice over refusing):
   the service accepts only a microsecond-precision read time, so the instant given could never be
   read, and flooring picks the latest microsecond at or before it. That it sees the same writes
@@ -140,7 +140,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   in `LazyFirestoreClient` (one-way close), and its `close()` cancels every page in flight through a
   derived future first (`shutdownNow()` drops a scheduled gax retry, so the read's own future may
   never complete); the planner opens one per `plan` through `PerCallClientRunner.session`, its own
-  RPCs through `ClientSession.call` (the `partitions` seam returns the call's `ApiFuture`).
+  RPCs through `ClientSession.call`. **The planner pages `PartitionQuery` itself** (#2346): each
+  page is a session call on the client's own RPC (`getOptions().getRpc()`), so a close cancels
+  it, and `QueryPartitions` turns the cursors into partitions as `getPartitions` did (one
+  partition without a call, at most `n - 1` cursors, document-name order with numeric ids first and UTF-8
+  strings). Do not go back to `getPartitions`: it fetches a later page inside the first page's
+  callback, where a close cannot reach it. The `partitions` seam takes the session.
 - The emulator answers `PartitionQuery` with `UNIMPLEMENTED`; emulator tests cut partitions through
   `FixedPartitionsPlannerFactory` (an override of `ClientQueryPlanner.partitions`). Real partition
   counts are `FirestoreSourceRealGcpITCase`'s. A database younger than an hour refuses an older
@@ -205,7 +210,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **A collection-group table declares no PRIMARY KEY** (ids repeat across the group, and the planner
   trusts a key to be unique); `document-path` identifies a document there.
 - **The emulator can run a collection-group scan only with `scan.partition.max-partitions = 1`**:
-  the library answers `getPartitions(1)` without the RPC the emulator lacks.
+  one partition is answered without the RPC the emulator lacks.
 - `type-mismatch-policy` and the markers carry no `scan.` prefix because the lookup reads
   through the same converter (`FirestoreToRowDataConverter`).
 

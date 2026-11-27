@@ -29,8 +29,12 @@ import com.google.cloud.firestore.QueryPartition;
 import com.google.cloud.firestore.TransactionOptions;
 import com.google.cloud.firestore.WriteResult;
 import com.google.firestore.admin.v1.Database;
+import com.google.firestore.v1.RunQueryRequest;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreRealGcpITCase;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
+import io.github.flink.gcp.connector.firestore.source.batch.FirestoreBatchSource;
+import io.github.flink.gcp.connector.firestore.source.batch.enumerator.ClientQueryPlanner;
+import io.github.flink.gcp.connector.firestore.source.batch.enumerator.QueryPlan;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -93,6 +97,53 @@ class FirestoreSourceRealGcpITCase extends AbstractFirestoreRealGcpITCase {
                                                 .pageSize(500),
                                 3))
                 .containsExactlyInAnyOrderElementsOf(paths);
+    }
+
+    /**
+     * The planner pages {@code PartitionQuery} itself (#2346). A group this size comes back in one
+     * page unless a smaller one is asked for (measured 2026-11-26: 3,000 documents came back in at
+     * most 17 cursors, in one page, at every count from 64 to 32,768), so the planner here asks for
+     * pages of two cursors, and the partitions it assembles across the pages must hold every
+     * document once. The partitions are checked by what they read rather than against the library's
+     * own call, whose cut points a second call need not repeat.
+     */
+    @Test
+    void partitionsPagedTwoCursorsAtATimeHoldEveryDocumentOnce() throws Exception {
+        String group = uniqueCollection();
+        List<String> paths = seed(group, LARGE_GROUP);
+        FirestoreSourceConfig<String> config =
+                ((FirestoreBatchSource<String>)
+                                FirestoreSource.<String>builder()
+                                        .database(database())
+                                        .deserializer(new TestSources.DocumentPathDeserializer())
+                                        .collectionGroup(group)
+                                        .partitionCount(8)
+                                        .build())
+                        .getConfig();
+
+        QueryPlan plan;
+        try (ClientQueryPlanner planner =
+                new ClientQueryPlanner(null) {
+                    @Override
+                    protected int partitionPageSize() {
+                        return 2;
+                    }
+                }) {
+            plan = planner.plan(config, 1);
+        }
+        LOG.info("{} documents answered {} of 8 partitions", LARGE_GROUP, plan.getQueries().size());
+
+        // More than two cursors, which pages of two cannot hold in one; that the page size reaches
+        // the request is ClientQueryPlannerPartitionPagesITCase's.
+        assertThat(plan.getQueries()).hasSizeBetween(4, 8);
+        List<String> read = new ArrayList<>();
+        for (RunQueryRequest request : plan.getQueries()) {
+            for (DocumentSnapshot document :
+                    Query.fromProto(client(), request).get().get(60, TimeUnit.SECONDS)) {
+                read.add(document.getReference().getPath());
+            }
+        }
+        assertThat(read).containsExactlyInAnyOrderElementsOf(paths);
     }
 
     /**

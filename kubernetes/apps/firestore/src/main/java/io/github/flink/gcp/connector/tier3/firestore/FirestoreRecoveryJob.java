@@ -98,7 +98,7 @@ public final class FirestoreRecoveryJob {
                             .database(options.nativeDestination())
                             .collectionGroup(RecoveryOptions.SEED)
                             // The emulator does not implement PartitionQuery; a count of one is
-                            // the client library's single partition without a call.
+                            // the planner's single partition without a call.
                             .partitionCount(nativeEmulator == null ? SPLITS : 1)
                             .deserializer(new SeedCopy.NativeDeserializer());
             DatastoreSourceBuilder<Tuple2<String, Long>> datastoreSeed =

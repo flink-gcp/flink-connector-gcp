@@ -22,6 +22,11 @@ This product includes software developed by third parties:
   (https://github.com/GoogleCloudPlatform/pubsub), Copyright 2023 Google LLC,
   licensed under the Apache License, Version 2.0.
 
+- The flink-connector-gcp-firestore module contains code adapted from the Java
+  client library for Cloud Firestore (https://github.com/googleapis/java-firestore),
+  Copyright 2017 Google LLC, licensed under the Apache License, Version 2.0:
+  the document-name order in QueryPartitions.
+
 This product redistributes third-party binaries:
 
 - The flink-sql-connector-gcp-bigquery module builds an uber-jar bundling the

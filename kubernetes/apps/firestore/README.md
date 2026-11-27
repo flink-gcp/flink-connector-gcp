@@ -23,7 +23,7 @@ It requires every input record in both databases and every seed record copied af
 The same test class pins the graph's operator UIDs, vertex names, parallelisms and max parallelism.
 
 The emulator is not evidence about the service.
-It implements neither `PartitionQuery` nor `__scatter__` sampling, so each read there is one split: the Native-mode source asks for one partition when it is pointed at the emulator, which the client library answers without a call, and the Datastore-mode splitter samples no keys and falls back to one split.
+It implements neither `PartitionQuery` nor `__scatter__` sampling, so each read there is one split: the Native-mode source asks for one partition when it is pointed at the emulator, which it answers without a call, and the Datastore-mode splitter samples no keys and falls back to one split.
 It also says nothing about workload identity, how the service plans a read's splits, or the service's read-time window; the deployed trials measure those.
 
 ## Database layout

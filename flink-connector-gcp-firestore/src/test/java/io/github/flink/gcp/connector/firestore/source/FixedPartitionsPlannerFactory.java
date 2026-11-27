@@ -16,14 +16,14 @@
 
 package io.github.flink.gcp.connector.firestore.source;
 
-import com.google.api.core.ApiFuture;
-import com.google.api.core.ApiFutures;
 import com.google.cloud.firestore.CollectionGroup;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.FieldPath;
+import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryPartition;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
 import io.github.flink.gcp.connector.firestore.source.batch.enumerator.ClientQueryPlanner;
 import io.github.flink.gcp.connector.firestore.source.batch.enumerator.QueryPlanner;
 import io.github.flink.gcp.connector.firestore.source.batch.enumerator.QueryPlannerFactory;
@@ -61,8 +61,10 @@ public final class FixedPartitionsPlannerFactory implements QueryPlannerFactory 
         return new ClientQueryPlanner(
                 EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint")) {
             @Override
-            protected ApiFuture<List<QueryPartition>> partitions(
-                    CollectionGroup group, int partitionCount) {
+            protected List<QueryPartition> partitions(
+                    PerCallClientRunner.ClientSession<Firestore> session,
+                    CollectionGroup group,
+                    int partitionCount) {
                 Query ordered = group.orderBy(FieldPath.documentId());
                 List<QueryPartition> partitions = new ArrayList<>();
                 Object[] start = null;
@@ -73,7 +75,7 @@ public final class FixedPartitionsPlannerFactory implements QueryPlannerFactory 
                     start = end;
                 }
                 partitions.add(new QueryPartition(ordered, start, null));
-                return ApiFutures.immediateFuture(partitions);
+                return partitions;
             }
         };
     }
