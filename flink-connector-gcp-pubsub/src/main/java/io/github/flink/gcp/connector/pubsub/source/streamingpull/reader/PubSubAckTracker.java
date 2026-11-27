@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
 import com.google.cloud.pubsub.v1.AckResponse;
@@ -194,21 +193,52 @@ public class PubSubAckTracker implements AckTracker {
                 toAck.addAll(checkpoints.remove(checkpoints.firstKey()));
             }
         }
+        // Every handle is acknowledged before anything is thrown, for the reason nackSplit gives
+        // (#2337).
         List<ApiFuture<AckResponse>> confirmations =
                 confirmationWait != null ? new ArrayList<>(toAck.size()) : null;
+        Throwable failure = null;
+        int acked = 0;
         for (TrackedAck ack : toAck) {
-            ApiFuture<AckResponse> confirmation = ack.handle.ack();
-            if (confirmations != null) {
-                // Skipping the promised wait because a handle reports nothing would be exactly the
-                // silent failure this option exists to remove, so make the broken wiring loud.
-                Preconditions.checkState(
-                        confirmation != null,
-                        "awaitAckConfirmation is set but the subscriber was built without"
-                                + " acknowledgement responses.");
+            ApiFuture<AckResponse> confirmation;
+            try {
+                confirmation = ack.handle.ack();
+            } catch (Throwable e) {
+                failure = ExceptionUtils.firstOrSuppressed(e, failure);
+                continue;
+            }
+            acked++;
+            if (confirmations != null && confirmation != null) {
                 confirmations.add(confirmation);
             }
         }
-        metrics.messagesAcked(toAck.size());
+        metrics.messagesAcked(acked);
+        int missingConfirmations = confirmations != null ? acked - confirmations.size() : 0;
+        if (missingConfirmations > 0) {
+            // Skipping the promised wait because a handle reports nothing would be exactly the
+            // silent failure this option exists to remove, so make the broken wiring loud. It is
+            // built after the loop so that it never takes the top slot from a failure an ack threw:
+            // Flink's fatal-error check in Task.preProcessException does not look at suppressed
+            // exceptions.
+            failure =
+                    ExceptionUtils.firstOrSuppressed(
+                            new IllegalStateException(
+                                    "awaitAckConfirmation is set but "
+                                            + missingConfirmations
+                                            + " of the "
+                                            + acked
+                                            + " acknowledgements of checkpoint "
+                                            + checkpointId
+                                            + " that returned gave no confirmation future: the"
+                                            + " subscriber was built without acknowledgement"
+                                            + " responses."),
+                            failure);
+        }
+        if (failure != null) {
+            // A throwing ack already fails the task, so the bounded wait below could only delay
+            // that by up to its timeout. It runs only when every ack returned its future.
+            ExceptionUtils.rethrow(failure);
+        }
         if (confirmations != null && !confirmations.isEmpty()) {
             confirmationWait.await(confirmations, checkpointId);
         }

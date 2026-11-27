@@ -128,8 +128,16 @@ public interface AckTracker {
      * swept rather than matched exactly, so a checkpoint that is aborted or whose completion
      * notification is lost is acknowledged by the next successful one.
      *
+     * <p>An acknowledgement that throws does not stop the rest: every message's acknowledgement is
+     * attempted first, and then the first failure is thrown, with any later one suppressed onto it.
+     * When acknowledgement confirmation was requested, the wait for it runs only if every
+     * acknowledgement returned normally with its confirmation future.
+     *
      * @param checkpointId the completed checkpoint
-     * @throws Exception if acknowledgement confirmation was requested and did not arrive in time
+     * @throws Exception the first failure an acknowledgement threw; an {@link
+     *     IllegalStateException} if confirmation was requested and an acknowledgement returned no
+     *     future; or, when every acknowledgement returned its future, a confirmation that was
+     *     rejected, failed, did not arrive in time, or was interrupted
      */
     void notifyCheckpointComplete(long checkpointId) throws Exception;
 

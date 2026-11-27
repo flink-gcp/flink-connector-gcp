@@ -803,20 +803,27 @@ now running, including one that a failover or a restart builds:
 | `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
 | `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
 
-**`messagesAcked` counts acknowledgements requested, not confirmed.** On an ordinary subscription
-the client library sends them asynchronously and does not retry a failure — it logs a warning and
-stops. No data is lost (the lease expires and Pub/Sub redelivers, which is the at-least-once
-contract), but a *persistent* failure such as a revoked permission becomes a silent reprocessing
-loop that this counter will not show. Two ways to see it: set
-`awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the server's
-confirmation and fail the job on timeout, or watch Cloud Monitoring's
+**`messagesAcked` counts acknowledgements requested, not confirmed.** A request whose call into the
+client library threw is not counted, although the library may already have queued it. On an
+ordinary subscription the client library sends them asynchronously, and a request that has
+finally failed completes no future and raises no error the connector can see. No data is lost
+(the lease expires and Pub/Sub redelivers, which is the at-least-once contract), but a *persistent* failure such as a revoked permission
+becomes a silent reprocessing loop that this counter will not show. Two ways to see it: set
+`awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the client library to
+report its acknowledgements successful and fail the job on timeout, or watch Cloud Monitoring's
 `subscription/oldest_unacked_message_age`, which grows monotonically when acknowledgements stop
 landing.
 
 `awaitAckConfirmation` costs latency — the wait happens on the task thread at checkpoint completion
 — and **the timeout is the only detector**: on a subscription without exactly-once delivery the
-acknowledgement future completes with `SUCCESSFUL` on success and never completes at all on
-failure, so there is no error to observe, only the absence of a confirmation.
+acknowledgement future completes with `SUCCESSFUL` on success, and the failure of the
+acknowledgement request completes nothing, so there is no error to observe, only the absence of a
+confirmation.
+
+**The wait reads the future the client library returns for each acknowledgement.** The library
+returns that same future from every settlement of a delivery, including the nack a stopping
+subscriber queues for each delivery it still tracks, and the future keeps the first response that
+completes it.
 
 **`bufferedMessages` and `bufferedBytes` are the messages still in subscriber deques**, summed over
 the subtask's splits.

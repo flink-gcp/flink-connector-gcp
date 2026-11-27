@@ -79,7 +79,7 @@ class AckConfirmationWaitTest {
 
     @Test
     void anUnconfirmedAcknowledgementIsReportedAsAnAmbiguityRatherThanAnError() {
-        // A failed acknowledgement never completes its future on a subscription without
+        // The failure of an acknowledgement request completes nothing on a subscription without
         // exactly-once delivery, so the timeout must not claim the acknowledgements failed.
         AckConfirmationWait prompt = new AckConfirmationWait(Duration.ofMillis(50));
 
@@ -97,7 +97,7 @@ class AckConfirmationWaitTest {
                 // intervenes, so it counts the checkpoint's acknowledgements rather than the
                 // unconfirmed ones.
                 .hasMessageContaining("(3 messages)")
-                .hasMessageContaining("never completes its future")
+                .hasMessageContaining("failure of an acknowledgement request completes nothing")
                 .hasMessageContaining("may have failed, or merely be slow")
                 .hasCauseInstanceOf(TimeoutException.class);
     }

@@ -175,7 +175,7 @@ specific to this source, that acknowledgement waits for a checkpoint.
 | `maxAckExtensionPeriod` | *unset ⇒ SDK default (1 h)* | How long the client library keeps extending a message's deadline. Must exceed the checkpoint interval comfortably; `0` is the client library's own value for "disable auto deadline extension" |
 | `minDurationPerAckExtension` | *unset ⇒ SDK default (adaptive)* | Smallest extension requested at a time |
 | `maxDurationPerAckExtension` | *unset ⇒ SDK default (adaptive)* | Largest extension requested at a time |
-| `awaitAckConfirmation` | *unset ⇒ acknowledgement is fire-and-forget* | Makes each completed checkpoint wait for the server's confirmation, failing the job on timeout |
+| `awaitAckConfirmation` | *unset ⇒ acknowledgement is fire-and-forget* | Makes each completed checkpoint wait for the client library to report its acknowledgements successful, failing the job on timeout |
 | `shutdownTimeout` | 5 s | How long a reader's close waits for its subscribers. Letting go of the connector's gRPC event-loop group afterwards adds to it: up to 10 s per subscriber against an emulator, for its channel, and up to 11 s more when the release leaves the group with no client. Keep the sum under `source.reader.close.timeout` |
 | `maxRecordsPerFetch` | 1000 | How much one fetch drains from one split. Not a memory bound |
 | `firstCheckpointTimeout` | 10 min | How long a reader holding unacknowledged messages waits for its first checkpoint before failing the job. `Duration.ZERO` disables the detector |

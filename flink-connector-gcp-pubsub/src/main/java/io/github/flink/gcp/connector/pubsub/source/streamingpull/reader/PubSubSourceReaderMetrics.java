@@ -40,11 +40,12 @@ import java.util.function.ToLongFunction;
  * the task thread.
  *
  * <p><b>{@code messagesAcked} counts acknowledgements <em>requested</em>, not confirmed.</b> On an
- * ordinary subscription the client library sends the acknowledgement asynchronously and does not
- * retry a failure — it logs a warning and stops — so a message can be counted here and still be
- * redelivered. Opt into {@code PubSubSubscriberOptions.awaitAckConfirmation(...)} to make the job
- * fail instead, and watch Cloud Monitoring's {@code subscription/oldest_unacked_message_age} to
- * detect a persistent acknowledgement failure from outside the job.
+ * ordinary subscription the client library sends the acknowledgement asynchronously, and a request
+ * that has finally failed raises no error the connector can see, so a message can be counted here
+ * and still be redelivered. Opt into {@code PubSubSubscriberOptions.awaitAckConfirmation(...)} to
+ * make the job fail instead, and watch Cloud Monitoring's {@code
+ * subscription/oldest_unacked_message_age} to detect a persistent acknowledgement failure from
+ * outside the job.
  *
  * <p><b>The two subscriber-teardown counters are the exception to all of that</b> (#358): their
  * values are process-wide rather than this reader's, and they are registered here without being
