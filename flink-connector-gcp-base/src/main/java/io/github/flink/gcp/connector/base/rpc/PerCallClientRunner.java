@@ -79,13 +79,16 @@ import java.util.function.Supplier;
  * itself blocks, as a client library that runs its own callbacks on the starting thread can: a
  * {@code close()} meanwhile waits for that start. Building a client can make calls of its own, so
  * {@link #close()} does not wait for one: it marks this object closed, and a client that finishes
- * building after that is closed by the calling thread without a call being started on it. A call a
- * session starts after {@code close()} is refused. A client published before {@code close()} runs
- * is closed by whichever thread gets to it first, and the other waits for that close. Preparing
- * what the client is built from under the monitor means nothing is prepared after {@link #close()},
- * so an owner may clear its credentials once this object is closed. The flag {@code close()} sets
- * is one-way: an owner is minted per enumerator, or per full lookup cache load, and ends with it
- * ({@code docs/adr/0128}).
+ * building after that is closed by the calling thread without a call being started on it. An owner
+ * that needs that client closed by some point therefore closes this object on the thread that makes
+ * its calls, or from where that thread is awaited, as an enumerator's owner is: Flink shuts the
+ * source coordinator's executors down after the enumerator closes and waits for them to terminate
+ * unless its closing thread is interrupted (ADR-0208, #2347). A call a session starts after {@code
+ * close()} is refused. A client published before {@code close()} runs is closed by whichever thread
+ * gets to it first, and the other waits for that close. Preparing what the client is built from
+ * under the monitor means nothing is prepared after {@link #close()}, so an owner may clear its
+ * credentials once this object is closed. The flag {@code close()} sets is one-way: an owner is
+ * minted per enumerator, or per full lookup cache load, and ends with it ({@code docs/adr/0128}).
  *
  * <p>A session that succeeds returns its result even if its client then fails to close with an
  * exception; the failure is logged, since it says nothing about the calls, and the lease is

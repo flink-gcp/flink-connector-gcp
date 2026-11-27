@@ -33,7 +33,8 @@ limitations under the License.
   [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312),
   [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322),
   [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329),
-  [#2330](https://github.com/flink-gcp/flink-connector-gcp/issues/2330)
+  [#2330](https://github.com/flink-gcp/flink-connector-gcp/issues/2330),
+  [#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347)
 - Modules: base, bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -338,6 +339,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   and the reconciliation
   scan would otherwise hold a teardown up every 10 s; a client that finishes building after
   `close()` is closed by the calling thread unused.
+  Waiting for that build was considered and declined ([#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347), in the
+  `PerCallClientRunner` bullets below).
   Every client it closes, from `call()` or `close()`, a late-built one included, is closed with
   the thread's interrupt held
   back and restored afterwards, because the data client's close gives up its wait at once on an
@@ -436,8 +439,12 @@ releases the group's last lease shuts it down and waits for its threads.**
   timeout of its own, while a check that fails, as a cancelled one would, leaves the stubs the
   library built before it open (#2306).
   That cheap creation is why the coordinator and the planner wait where `PerCallClientRunner`,
-  above, does not: building a Bigtable data client waits for calls bounded at a minute each
-  ([#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347) revisits that choice).
+  above, does not: building a Bigtable data client waits for calls bounded at a minute each.
+  Without these waits, Flink's shutdown of the source coordinator's executors would still close a
+  late client before `SourceCoordinator.close()` returns, unless Flink's 60 s close timeout
+  interrupts the closing thread first ([#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347), in the
+  `PerCallClientRunner` bullets below); with them it is closed before the enumerator's own `close()`
+  returns unless the closing thread is interrupted, at the cost of a creation that is cheap.
   A second refinement the same day (#2305) covered three more paths.
   A `close()` that takes the installed client over records its own close of it, so a further
   `close()` waits for that close, interruptibly, rather than returning while it runs.
@@ -517,6 +524,39 @@ releases the group's last lease shuts it down and waits for its threads.**
   the future's raw `CancellationException`, which its method does not declare (#2282).
   A client is published to the runner before its call starts, so an owner close that arrives while
   the calling thread closes a client whose call could not start waits for that close.
+- **The runner's `close()` does not wait for a client still being built** (refined 2026-11-26,
+  [#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347)), because the wait would not close that client any sooner for any owner
+  the runner has.
+  Every JobManager-side owner (Bigtable's sampler and coordinator, BigQuery's session creator,
+  Pub/Sub's subscription admin, and the Firestore and Datastore planners) makes its calls through
+  `SplitEnumeratorContext.callAsync`, on the source coordinator context's worker executor, and is
+  closed, if its enumerator was started, from the enumerator's `close()`.
+  `SourceCoordinator.close()` closes the enumerator and then the context, whose `close()` calls
+  `shutdownNow()` on its executors and waits for them to terminate with no deadline
+  (`ComponentClosingUtils.shutdownExecutorForcefully` with `Duration.ofNanos(Long.MAX_VALUE)`,
+  Flink 1.20.5 and 2.2.1).
+  So a client still being built when the owner closes is closed before `SourceCoordinator.close()`
+  returns, whichever thread closes it, unless `closeAsyncWithTimeout` aborts the closing thread at
+  its 60 s timeout; an interrupt ends that wait, and it would end a wait in the runner's `close()`
+  the same way.
+  How that close is ordered against the release of the job's class loader does not depend on the
+  wait either, since Flink does not wait for `SourceCoordinator.close()` (the session creator's
+  account above).
+  A waiting `close()` would lengthen the enumerator's close by the build and the late client's own
+  close, the build of a production Bigtable data client making calls bounded at a minute each, and
+  would hold back the `shutdownNow()` whose interrupt shortens the build: google-cloud-bigtable
+  2.89.0's channel primer abandons an interrupted priming wait, logs it, and goes on building.
+  What the wait would buy is narrow.
+  Without it, a build that ends after the runner's `close()` but before that `shutdownNow()` can
+  have its client's close interrupted, and a Bigtable data client's close then stops at its first
+  interrupted wait and skips the rest of its cleanup (`GrpcTransportChannel.close()` throws on an
+  interrupt, gax 2.91.0), as any close of that client an interrupt reaches does (the Bigtable bullet
+  above).
+  That window is only the rest of the enumerator's close and the start of the context's, while the
+  wait's cost would be paid by every close that lands during a build.
+  The runner's other owners, a full lookup cache load (BigQuery, Firestore, Datastore) and the
+  Bigtable Change Streams reader's restore resolution, close it on the thread that makes its calls,
+  so no build is under way when they do.
 - **The runner holds a thread's interrupt back only while a client opened with
   `openAutoCloseable` closes**, and restores it before the lease is released: such a client's own
   `close()` can stop at its first interrupted wait and skip the rest of its cleanup, as a Bigtable
