@@ -20,7 +20,8 @@ limitations under the License.
 - Date: 2026-11-23; revised by [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296)
   (2026-11-23)
 - Issues: [#2244](https://github.com/flink-gcp/flink-connector-gcp/issues/2244),
-  [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296)
+  [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296),
+  [#2317](https://github.com/flink-gcp/flink-connector-gcp/issues/2317)
 - Modules: bigquery, pubsub, bigtable, spanner, firestore, cloudtasks
 - Current behavior: `docs/content/docs/connectors/_index.md` § Memory a finished job leaves on a
   session cluster
@@ -240,7 +241,51 @@ only a JRE.
   Those `Finalizer`s' `discovered` fields were null, and the `Finalizer` thread was idle with an
   empty queue, so the collector most likely treated the allocators as reachable through a root
   the dump does not record.
-  That retention is [#2317](https://github.com/flink-gcp/flink-connector-gcp/issues/2317).
+  That root is Flink's, as the next paragraph shows
+  ([#2317](https://github.com/flink-gcp/flink-connector-gcp/issues/2317)).
+
+The #2317 measurements (2026-11-25) used the same cluster and jar, built from `main` at
+`bd4e3241`, which includes the revision above, with change-stream jobs started about 35 seconds
+apart.
+The tools were JVMTI agents loaded with `jcmd JVMTI.agent_load`, and HotSpot's
+`-Xlog:class+loader+data=trace`.
+
+- **What holds the loader**: flink-table-runtime's `CompileUtils.COMPILED_CLASS_CACHE`, a static
+  Guava cache with soft values and a five-minute `expireAfterAccess`, holds the class generated
+  for the job's `ChangelogNormalize` (`DeduplicateRowEqualiser$0`).
+  flink-table-runtime 1.20.5, 2.3.0 and a 2.5 snapshot build the same cache (read in their
+  bytecode, not run).
+  Its Janino class loader has the job's `SafetyNetWrapperClassLoader` as its parent.
+  When a task resolves a job-jar class through that wrapper, HotSpot records a dependency from
+  the wrapper's class-loader data to the `ChildFirstClassLoader`; the log shows it once per job as
+  "adding dependency from loader data ... `SafetyNetWrapperClassLoader` ... to loader data ...
+  `ChildFirstClassLoader`".
+  The wrapper's `close()` clears its own field but not that dependency, which is a handle outside
+  the heap, so neither the HPROF dump, walked with soft references followed, nor JVMTI's
+  reference walk reports the edge.
+- **Clearing the soft references**: an agent that cleared only the cache's two
+  `LocalCache$SoftValueReference`s let both job loaders go; an earlier run that first cleared about
+  1,900 others (the JDK's reflection-data and serialization caches) had not.
+  With `-XX:SoftRefLRUPolicyMSPerMB=0` the loaders went at the third full collection, and with
+  the default policy they stayed through four.
+- **When it happens**: in `upsert` mode, whose plan here had a `ChangelogNormalize`, and in `full`
+  mode followed by `GROUP BY`; not in `full` mode writing straight to the sink, chained or not, nor
+  for `datagen` + `GROUP BY` or a `filesystem` Debezium source + `ChangelogNormalize`, whose classes
+  come from Flink's `lib/`.
+- **Consecutive jobs**, ten of them: tasks failed with `OutOfMemoryError: Direct buffer memory`
+  from the sixth job on, at about 20 MB of direct memory and 25 MB of metaspace per job; the
+  collection `Bits.reserveMemory` requests applies the soft-reference policy.
+  The sixth job's tasks restarted for about four minutes before it was cancelled; the others
+  started 35 to 45 seconds apart.
+  Metaspace levelled off near 200 MB of its 256 MB as older loaders began to unload from the
+  seventh job, about seven minutes after the first, when the first jobs' entries were past the
+  cache's five-minute expiry and near the soft-reference age, so which released them was not
+  determined; HotSpot's last collection before a metaspace `OutOfMemoryError`, which clears
+  every soft reference to a softly reachable object, was not observed separately.
+- **What the settings changed**, in runs too short to reach the failure: with the connector in
+  `lib/`, three jobs left no loader at the first full collection and metaspace and direct memory
+  stayed flat; with the unpooled property, direct memory stayed flat over two jobs and metaspace
+  still grew by about 25 MB a job.
 
 ## Alternatives declined
 
@@ -278,19 +323,25 @@ only a JRE.
 ## Consequences
 
 - With the default allocator, a finished job's class loader, its metaspace and its pooled direct
-  memory stayed for up to three full collections in the measured jobs, which on an idle
+  memory stayed for up to three full collections in the measured BigQuery jobs, which on an idle
   TaskManager can be minutes or longer.
 - A session cluster that needs the memory back sooner chooses between the unpooled property and a
   `lib/` deployment; the documentation states what each costs.
-- Only BigQuery jobs were measured, but the allocator belongs to the transport, so the same chain
-  forms for every connector that ships grpc-netty-shaded in the job's class loader and opens a gRPC
-  channel.
+- Only BigQuery jobs were measured for this chain, but the allocator belongs to the transport, so
+  the same chain forms for every connector that ships grpc-netty-shaded in the job's class loader
+  and opens a gRPC channel.
 - A finished Spanner job's class loader is no longer held by the client library's executors once
   their threads have been idle for a minute.
   In the measurement it then went at the second full collection on the JobManager, and on the
-  TaskManager after bounded scans; on the TaskManager after change-stream jobs it stayed, through a
-  root not yet identified ([#2317](https://github.com/flink-gcp/flink-connector-gcp/issues/2317)),
-  so consecutive change-stream jobs there may still run out of direct memory.
+  TaskManager after bounded scans; on the TaskManager after change-stream jobs it stayed, held by
+  Flink's cache of generated classes until the last of the job's entries is dropped by the cache
+  or cleared by a collection, which an ordinary HotSpot collection may do once it has gone unread
+  for about eight minutes on the measured TaskManager, by a clock that moves only at collections
+  ([#2317](https://github.com/flink-gcp/flink-connector-gcp/issues/2317)).
+  Consecutive jobs within that time can still run out of direct memory there; the documentation
+  states what `lib/`, the unpooled property and a lower `SoftRefLRUPolicyMSPerMB` changed in runs
+  too short to reach the failure, and reporting the cache to Flink is tracked by
+  [#2355](https://github.com/flink-gcp/flink-connector-gcp/issues/2355).
   These measurements ran against the emulator, where the client starts no Cloud Monitoring
   exporter; against the service with the built-in export on, the default, the exporter's JVM
   shutdown hook keeps the class loader of the client library that started it whatever this

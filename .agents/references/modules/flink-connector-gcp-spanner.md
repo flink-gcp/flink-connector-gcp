@@ -223,9 +223,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   threads** (`SpannerStaticExecutors`, `docs/adr/0210`, #2296): grpc-gcp's
   `SHARED_BACKGROUND_SERVICE` and the client's `MultiplexedSessionDatabaseClient.MAINTAINER_SERVICE`
   would otherwise hold every finished job's class loader (a separate TaskManager-side retention
-  after change-stream jobs is #2317). Never shut them down: the fields are final, and a client
-  opened later in the same class loader schedules on them. A field the
-  reflection cannot read only logs; `SpannerStaticExecutorsTest` is the tripwire on a
+  after change-stream jobs is Flink's compiled-class cache, #2317; the Flink report is tracked by
+  #2355). Never shut them down: the fields are final, and a client opened later in the same class
+  loader schedules on them. A field the reflection cannot read only logs;
+  `SpannerStaticExecutorsTest` is the tripwire on a
   `libraries-bom` bump, and `SpannerStaticExecutorsITCase` keeps the harness's client closed
   because an open client rightly keeps one thread of each. Remove the adjustment when #2314 and
   #2315 resolve upstream.
