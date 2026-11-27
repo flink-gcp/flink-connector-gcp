@@ -73,7 +73,12 @@ library's own `BulkWriter` instead of a hand-rolled batcher, and the comparison 
 [ADR-0171](../docs/adr/0171-the-firestore-sink-writes-through-bulkwriter-and-confirms-invalid-writes-alone.md).
 The source's read design is recorded in
 [ADR-0173](../docs/adr/0173-the-firestore-source-reads-partition-cursor-ranges-at-one-read-time.md).
-The client library's `BulkWriter`, partitioning and queries are called, not copied. Apache Beam's
+The client library's `BulkWriter` and queries are called, not copied. Its partitioning call is
+replaced by the source's own paging of `PartitionQuery`
+([#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346)), whose document-name order
+(`QueryPartitions`) is adapted from the library's `BasePath.compareTo` and
+`Order.compareUtf8Strings` ([googleapis/java-firestore](https://github.com/googleapis/java-firestore),
+Apache-2.0, Copyright 2017 Google LLC). Apache Beam's
 `DatastoreIO` (`DatastoreV1` and its `RampupThrottlingFn`, Apache-2.0) was likewise read as a
 design reference only, for the Datastore-mode sink's batch limits, its flush before a repeated key
 and its ramp-up throttle, and for the source's statistics-based split count, its GQL parse and
@@ -83,4 +88,4 @@ and the source's in
 [ADR-0177](../docs/adr/0177-the-datastore-source-reads-key-ranges-the-client-librarys-splitter-cuts.md).
 The `datastore-v1-proto-client` library's `QuerySplitter` is called, not copied.
 
-No source code has been copied into this module.
+Apart from that order, no source code has been copied into this module.

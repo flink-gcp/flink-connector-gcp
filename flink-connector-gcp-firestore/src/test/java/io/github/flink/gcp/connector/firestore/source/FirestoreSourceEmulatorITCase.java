@@ -54,9 +54,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p><b>What this suite cannot prove.</b> The emulator answers {@code PartitionQuery} with {@code
  * UNIMPLEMENTED}, so the service's partitioning is never exercised here: a scan either asks for one
- * partition, which the client library answers without a call, or has its boundaries chosen by the
- * test through {@link FixedPartitionsPlannerFactory}. Real partition counts are the gated
- * real-service suite's (#1546).
+ * partition, which the planner answers without a call, or has its boundaries chosen by the test
+ * through {@link FixedPartitionsPlannerFactory}. Real partition counts are the gated real-service
+ * suite's (#1546).
  */
 class FirestoreSourceEmulatorITCase extends AbstractFirestoreEmulatorITCase {
 

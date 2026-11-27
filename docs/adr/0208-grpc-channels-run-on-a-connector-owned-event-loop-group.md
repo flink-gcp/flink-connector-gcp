@@ -799,8 +799,8 @@ same way.**
   future completes rather than waiting for good.
 - **The planner, on the JobManager, opens a client for each plan and closes it before the plan
   returns**, through `PerCallClientRunner`'s session form: the snapshot-time probe, the probe at
-  the read time, the offset resolution and `PartitionQuery` are the session's calls, and the
-  user's query factory and the collection group are built from `ClientSession.client()`.
+  the read time, the offset resolution and each `PartitionQuery` page are the session's calls, and
+  the user's query factory and the collection group are built from `ClientSession.client()`.
   It held its client from its first plan until the enumerator closed it.
 - The sink's database access, the page reader and the table lookup hold their clients until they
   close, as before; a full lookup cache load plans, opens, fetches and closes inside
@@ -829,25 +829,41 @@ same way.**
     has twelve RPC callables besides its executor and shutdown methods, and its implementation,
     `GrpcFirestoreRpc`, wires a `ClientContext` and per-method retry settings the connector would
     have to copy; #2343 weighs that route.
-- **A later `PartitionQuery` page can stay blocked**
+- **The planner pages `PartitionQuery` itself**
   ([#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346)).
-  A `PartitionQuery` answered over several pages fetches the later pages inside the library's
+  The client library's `CollectionGroup.getPartitions(long)` fetched a later page inside its
   transform of the first, synchronously and without heeding an interrupt (`getUnchecked`), on the
-  thread that completed the first page's call.
-  If the planner closes while a later page is in flight, waiting on a retry gax has scheduled or
-  on a call `shutdownNow()` fails with `UNAVAILABLE`, which `PartitionQuery` retries, and that
-  retry is scheduled before the executor stops, the plan ends, since its future is cancelled, but
-  `shutdownNow()` drops the retry, and that thread stays blocked for good, keeping the job's class
-  loader reachable; it runs no further code, so it cannot fail after the loader closes (read from
-  google-cloud-firestore 3.53.0 and gax 2.91.0, not measured).
-  The library's graceful close had let the retry run and fail; the connector has no handle on the
-  library's page fetch to cancel it, and
-  [#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346) weighs paging the call in
-  the planner.
-  If the first page answers before the library registers its transform, the plan's own thread
-  runs the transform while it starts the call, under `PerCallClientRunner`'s monitor, so a close
-  meanwhile waits for the later pages, up to their calls' deadlines, as the library's own close
-  waited for a call in flight before this change (read, not measured).
+  thread that completed the first page's call, or on the plan's own thread, under
+  `PerCallClientRunner`'s monitor, when the first page had answered before the transform was
+  registered; either way the planner's close could not cancel it.
+  Measured 2026-11-26 against a server that answered the first page with a page token and held the
+  second: the second page waited on a `grpc-default-executor` thread inside `CollectionGroup`.
+  A close during that wait still ended the plan, and the thread was released once the client
+  shut down, in 10 of 10 trials; it would stay blocked, keeping the job's class loader reachable,
+  only if gax had scheduled a retry of that page when `shutdownNow()` stopped the client's
+  executor, which these trials did not produce (read from gax 2.91.0).
+  Each page is now a call of the plan's session, sent through the RPC the client itself sends
+  every call through (`ServiceOptions.getRpc()`, which caches it, and which `FirestoreImpl` takes
+  its RPC from), so a close cancels the page in flight as it cancels any other call of the plan.
+  The planner and `QueryPartitions` build the partitions as `getPartitions` did: one partition
+  takes no call, the request asks for one cursor fewer than the partitions over the group ordered
+  by document name, and the cursors, which the service does not order across pages, are sorted by document
+  name, a numeric id (`__id<n>__`) before a string and strings in UTF-8 byte order, as the
+  library's `BasePath.compareTo` orders the paths it builds through its package-private
+  `ResourcePath` (google-cloud-firestore 3.53.0).
+  `ClientQueryPlannerPartitionPagesITCase` holds the assembly and the close against a scripted
+  server; with the library's call restored, its close test finds the library's thread inside
+  `CollectionGroup`.
+  In the measured group the service answered in one page unless asked for a smaller one
+  (2026-11-26: 3,000 documents gave at most 17 cursors, in one page, at every count from 64 to
+  32,768, and four pages of 2, 2, 2 and 1 cursors when asked for pages of two); the API allows
+  more than one page at its default page size, which a larger group may reach, so
+  `FirestoreSourceRealGcpITCase` plans with pages of two cursors and reads every document once
+  through the partitions (measured 2026-11-26: 3,000 documents, all eight partitions asked for,
+  in two runs).
+  The planner's own request does not open the `PartitionQuery` tracing span the library opened
+  for `getPartitions` when its tracing was enabled and a tracer provider installed; the latency
+  it recorded went to a metrics recorder google-cloud-firestore 3.53.0 always disables.
 
 ## Evidence
 

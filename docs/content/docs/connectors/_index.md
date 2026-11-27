@@ -155,9 +155,7 @@ closed: the job ends in any way, a stop with a savepoint included, or the JobMan
 when a BigQuery table read starts, when a BigQuery query read's query has finished, while a
 Pub/Sub, Spanner or Firestore source starts, or while a Bigtable enumerator is
 waiting for one of the calls above.
-Closing the enumerator then asks for the call to be cancelled rather than waiting for its answer,
-except while the Firestore client library fetches the later pages of a partition request inside
-the call's start, which the close waits for ([#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346)).
+Closing the enumerator then asks for the call to be cancelled rather than waiting for its answer.
 A Spanner Change Streams enumerator, or the enumerator of a Spanner Table API scan that reads
 through `scan.index` or whose primary-key filter depends on the key's sort order, closed before
 its client has created its first session waits for the client's own shutdown instead, which took

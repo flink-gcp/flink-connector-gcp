@@ -18,14 +18,22 @@ package io.github.flink.gcp.connector.firestore.source.batch.enumerator;
 
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
+import com.google.firestore.v1.Cursor;
+import com.google.firestore.v1.PartitionQueryRequest;
+import com.google.firestore.v1.PartitionQueryResponse;
+import com.google.firestore.v1.Value;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** What the planner adds to a partitioning failure; the planning itself is the emulator ITs'. */
 class ClientQueryPlannerTest {
@@ -73,5 +81,71 @@ class ClientQueryPlannerTest {
 
         // Not through settings(...).build(), which would look for Application Default Credentials.
         assertThat(planner.credentials()).isNull();
+    }
+
+    /** Tests of the planner's own paging of {@code PartitionQuery} (#2346). */
+    private static final String ROOT = "projects/p/databases/(default)/documents";
+
+    @Test
+    void followsThePageTokenToTheLastPage() throws IOException {
+        PartitionQueryRequest first =
+                PartitionQueryRequest.newBuilder().setParent(ROOT).setPartitionCount(9).build();
+        Iterator<PartitionQueryResponse> answers =
+                List.of(page("t1", "c/b"), page("t2"), page("", "c/a", "c/c")).iterator();
+        List<PartitionQueryRequest> sent = new ArrayList<>();
+
+        List<Cursor> cursors =
+                ClientQueryPlanner.cursors(
+                        first,
+                        request -> {
+                            sent.add(request);
+                            return answers.next();
+                        });
+
+        assertThat(sent)
+                .extracting(PartitionQueryRequest::getPageToken)
+                .containsExactly("", "t1", "t2");
+        assertThat(sent)
+                .allSatisfy(
+                        request ->
+                                assertThat(request.toBuilder().clearPageToken().build())
+                                        .isEqualTo(first));
+        assertThat(cursors)
+                .extracting(ClientQueryPlannerTest::path)
+                .containsExactly("c/b", "c/a", "c/c");
+    }
+
+    @Test
+    void aFailedPageFailsThePaging() {
+        IOException failure = new IOException("page failed");
+        Iterator<PartitionQueryResponse> answers = List.of(page("t1", "c/a")).iterator();
+
+        assertThatThrownBy(
+                        () ->
+                                ClientQueryPlanner.cursors(
+                                        PartitionQueryRequest.getDefaultInstance(),
+                                        request -> {
+                                            if (!answers.hasNext()) {
+                                                throw failure;
+                                            }
+                                            return answers.next();
+                                        }))
+                .isSameAs(failure);
+    }
+
+    private static PartitionQueryResponse page(String nextPageToken, String... documents) {
+        PartitionQueryResponse.Builder page =
+                PartitionQueryResponse.newBuilder().setNextPageToken(nextPageToken);
+        for (String document : documents) {
+            page.addPartitions(
+                    Cursor.newBuilder()
+                            .addValues(
+                                    Value.newBuilder().setReferenceValue(ROOT + "/" + document)));
+        }
+        return page.build();
+    }
+
+    private static String path(Cursor cursor) {
+        return cursor.getValues(0).getReferenceValue().substring(ROOT.length() + 1);
     }
 }

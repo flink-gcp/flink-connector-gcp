@@ -19,8 +19,10 @@ package io.github.flink.gcp.connector.firestore.source.batch.enumerator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.function.FunctionWithException;
 
 import com.google.api.core.ApiFuture;
+import com.google.api.core.ApiFutures;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.auth.Credentials;
 import com.google.cloud.Timestamp;
@@ -32,6 +34,10 @@ import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryPartition;
 import com.google.cloud.firestore.QuerySnapshot;
+import com.google.cloud.firestore.spi.v1.FirestoreRpc;
+import com.google.firestore.v1.Cursor;
+import com.google.firestore.v1.PartitionQueryRequest;
+import com.google.firestore.v1.PartitionQueryResponse;
 import com.google.firestore.v1.RunQueryRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
@@ -72,14 +78,17 @@ import java.util.function.Supplier;
  *       no split carries one: the client library retries a broken page from its last document and
  *       would apply the offset a second time. A scan asks {@code PartitionQuery} for the configured
  *       number of partitions; its cursors tile the document-name space, start inclusive and end
- *       exclusive, so the partitions together hold every document once. The call cannot take a read
- *       time through the client library, although the RPC accepts one, so its boundaries describe
- *       the collection group as it stands now — which moves nothing: a document of the snapshot
- *       still falls in exactly one partition ({@code docs/adr/0173}).
+ *       exclusive, so the partitions together hold every document once. The call carries no read
+ *       time, as the client library's never did, although the RPC accepts one, so its boundaries
+ *       describe the collection group as it stands now — which moves nothing: a document of the
+ *       snapshot still falls in exactly one partition ({@code docs/adr/0173}).
  * </ol>
  */
 @Internal
 public class ClientQueryPlanner implements QueryPlanner {
+
+    private static final String PARTITION_FAILURE =
+            "Failed to partition the Firestore collection group scan.";
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final PerCallClientRunner runner = new PerCallClientRunner("Firestore query planner");
@@ -101,8 +110,7 @@ public class ClientQueryPlanner implements QueryPlanner {
 
     /**
      * Plans the read on a client opened for this call and closed when it returns (ADR-0208); {@link
-     * #close()} cancels the step in flight, except while the client library fetches a {@code
-     * PartitionQuery}'s later pages inside the step's start, which it waits for (ADR-0208).
+     * #close()} cancels the step in flight, a {@code PartitionQuery} page included.
      */
     @Override
     public QueryPlan plan(FirestoreSourceConfig<?> config, int defaultPartitionCount)
@@ -152,13 +160,11 @@ public class ClientQueryPlanner implements QueryPlanner {
             CollectionGroup group = firestore.collectionGroup(collectionGroup);
             List<QueryPartition> partitions;
             try {
-                partitions =
-                        call(
-                                session,
-                                () -> partitions(group, partitionCount),
-                                "Failed to partition the Firestore collection group scan.");
+                partitions = partitions(session, group, partitionCount);
             } catch (IOException e) {
                 throw partitionFailure(e, config.getDatabase(), partitionCount);
+            } catch (RuntimeException e) {
+                throw new IOException(PARTITION_FAILURE, e);
             }
             for (QueryPartition partition : partitions) {
                 queries.add(project(partition.createQuery(), config).toProto());
@@ -168,26 +174,112 @@ public class ClientQueryPlanner implements QueryPlanner {
     }
 
     /**
-     * Asks the service for a collection group's partitions.
+     * Asks the service for a collection group's partitions, as the client library's {@code
+     * CollectionGroup.getPartitions(long)} asks for them, but one page at a time.
+     *
+     * <p>The library fetched a later page inside the first page's callback, where {@link #close()}
+     * could not cancel it (#2346); each page here is a call of the plan's session, and the cursors
+     * become partitions as the library would make them ({@link QueryPartitions}). One partition
+     * takes no call, as in the library.
      *
      * <p>A seam of its own because the emulator does not implement {@code PartitionQuery}: the
-     * emulator tests replace this one call with partitions they choose, and read them for real.
+     * emulator tests replace this one step with partitions they choose, and read them for real.
      *
+     * @param session the plan's session, through which each page's call starts
      * @param group the collection group
      * @param partitionCount the desired number of partitions, an upper bound the service may answer
      *     below
-     * @return the call's result: the partitions, in document-name order, together covering the
-     *     whole group
+     * @return the partitions, in document-name order, together covering the whole group
+     * @throws IOException if a page's call failed, or the planner closed meanwhile
      */
     @VisibleForTesting
-    protected ApiFuture<List<QueryPartition>> partitions(
-            CollectionGroup group, int partitionCount) {
-        return group.getPartitions(partitionCount);
+    protected List<QueryPartition> partitions(
+            PerCallClientRunner.ClientSession<Firestore> session,
+            CollectionGroup group,
+            int partitionCount)
+            throws IOException {
+        Query ordered = group.orderBy(FieldPath.documentId());
+        if (partitionCount == 1) {
+            // Still a call of the session, which a planner already closed refuses.
+            return call(
+                    session,
+                    () ->
+                            ApiFutures.immediateFuture(
+                                    List.of(new QueryPartition(ordered, null, null))),
+                    PARTITION_FAILURE);
+        }
+        RunQueryRequest query = ordered.toProto();
+        PartitionQueryRequest.Builder request =
+                PartitionQueryRequest.newBuilder()
+                        .setParent(query.getParent())
+                        .setStructuredQuery(query.getStructuredQuery())
+                        // The library asks for one cursor fewer than the partitions, since the last
+                        // partition has no end.
+                        .setPartitionCount(partitionCount - 1L);
+        int pageSize = partitionPageSize();
+        if (pageSize > 0) {
+            request.setPageSize(pageSize);
+        }
+        FirestoreRpc rpc = (FirestoreRpc) session.client().getOptions().getRpc();
+        List<Cursor> cursors =
+                cursors(
+                        request.build(),
+                        page -> call(session, () -> page(rpc, page), PARTITION_FAILURE));
+        return QueryPartitions.partitions(session.client(), ordered, query.getParent(), cursors);
     }
 
     /**
-     * Makes one of a plan's calls through its session, so that {@link #close()} cancels it (save
-     * the {@code PartitionQuery} pages {@link #plan(FirestoreSourceConfig, int)} describes), with a
+     * Returns every cursor of a {@code PartitionQuery} call, following the page token from the
+     * first page to the last.
+     *
+     * @param first the request for the first page
+     * @param pages starts each page's call and waits for it; it throws if the call failed, or was
+     *     cancelled or refused by a close
+     * @return the cursors, in the order the pages answered them
+     * @throws IOException if a page's call failed
+     */
+    @VisibleForTesting
+    static List<Cursor> cursors(
+            PartitionQueryRequest first,
+            FunctionWithException<PartitionQueryRequest, PartitionQueryResponse, IOException> pages)
+            throws IOException {
+        List<Cursor> cursors = new ArrayList<>();
+        PartitionQueryRequest request = first;
+        while (true) {
+            PartitionQueryResponse page = pages.apply(request);
+            cursors.addAll(page.getPartitionsList());
+            if (page.getNextPageToken().isEmpty()) {
+                return cursors;
+            }
+            request = request.toBuilder().setPageToken(page.getNextPageToken()).build();
+        }
+    }
+
+    /**
+     * Returns the page size a {@code PartitionQuery} call asks for; {@code 0}, the default, leaves
+     * it to the service, as the client library does.
+     */
+    @VisibleForTesting
+    protected int partitionPageSize() {
+        return 0;
+    }
+
+    /**
+     * Starts one {@code PartitionQuery} page's call on the RPC the plan's client sends every call
+     * through ({@code ServiceOptions.getRpc()}, which caches it). The future returned is derived
+     * from the call's, so that cancelling it completes it at once whatever gax does with an attempt
+     * in flight, and passes the cancellation on to the call (ADR-0208).
+     */
+    private static ApiFuture<PartitionQueryResponse> page(
+            FirestoreRpc rpc, PartitionQueryRequest request) {
+        return ApiFutures.transform(
+                rpc.partitionQueryPagedCallable().futureCall(request),
+                response -> response.getPage().getResponse(),
+                Runnable::run);
+    }
+
+    /**
+     * Makes one of a plan's calls through its session, so that {@link #close()} cancels it, with a
      * failure of the call carried by an {@link IOException} that names the step.
      */
     private static <R> R call(
@@ -209,7 +301,8 @@ public class ClientQueryPlanner implements QueryPlanner {
      * failure unchanged otherwise. One partition takes no call, so such a scan still reads, in one
      * subtask.
      *
-     * @param failure the failure of {@link #partitions(CollectionGroup, int)}
+     * @param failure the failure of {@link #partitions(PerCallClientRunner.ClientSession,
+     *     CollectionGroup, int)}
      * @param database the database the scan reads
      * @param partitionCount the number of partitions asked for
      * @return the failure to throw
@@ -351,9 +444,7 @@ public class ClientQueryPlanner implements QueryPlanner {
 
     /**
      * Cancels the step of a plan in flight, closes its client, and refuses later plans; the
-     * credentials are dropped once nothing can build a client from them. While the client library
-     * fetches a {@code PartitionQuery}'s later pages inside the step's start, this waits for them
-     * (ADR-0208).
+     * credentials are dropped once nothing can build a client from them.
      */
     @Override
     public void close() throws IOException {
