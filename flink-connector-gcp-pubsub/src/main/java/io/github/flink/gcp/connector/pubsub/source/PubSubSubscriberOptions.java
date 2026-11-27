@@ -590,21 +590,27 @@ public final class PubSubSubscriberOptions implements Serializable {
         }
 
         /**
-         * Makes each completed checkpoint wait for its acknowledgements to be confirmed by the
-         * server, failing the job if they are not confirmed within the given time. Optional;
-         * defaults to fire-and-forget acknowledgement, which adds no latency.
+         * Makes each completed checkpoint wait for the client library to report its
+         * acknowledgements successful, failing the job if it does not within the given time.
+         * Optional; defaults to fire-and-forget acknowledgement, which adds no latency.
          *
          * <p>This exists because a failed acknowledgement is otherwise invisible. On an ordinary
-         * subscription the client library does not retry one — it logs a warning and stops. No data
-         * is lost, since an unacknowledged message has its lease expire and is redelivered, which
-         * is the at-least-once contract; but a <em>persistent</em> failure such as a revoked
-         * permission becomes a silent reprocessing loop.
+         * subscription a request the client library has finally failed to send completes no future
+         * and raises no error the connector can see. No data is lost, since an unacknowledged
+         * message has its lease expire and is redelivered, which is the at-least-once contract; but
+         * a <em>persistent</em> failure such as a revoked permission becomes a silent reprocessing
+         * loop.
          *
          * <p><b>The timeout is the only detector.</b> On a subscription without exactly-once
-         * delivery the acknowledgement future completes with {@code SUCCESSFUL} on success and
-         * <em>never completes at all</em> on failure, so there is no error to observe — only the
-         * absence of a confirmation. Choose a value comfortably above a normal acknowledgement
-         * round trip.
+         * delivery the acknowledgement future completes with {@code SUCCESSFUL} on success, and the
+         * failure of the acknowledgement request <em>completes nothing</em>, so there is no error
+         * to observe — only the absence of a confirmation. Choose a value comfortably above a
+         * normal acknowledgement round trip.
+         *
+         * <p>The wait reads the future the client library returns for each acknowledgement. The
+         * library returns that same future from every settlement of a delivery, including the nack
+         * a stopping subscriber queues for each delivery it still tracks, and the future keeps the
+         * first response that completes it.
          *
          * <p>The wait happens on the task thread when the checkpoint completes, so it delays
          * processing by up to this long. That is the price of the confirmation.

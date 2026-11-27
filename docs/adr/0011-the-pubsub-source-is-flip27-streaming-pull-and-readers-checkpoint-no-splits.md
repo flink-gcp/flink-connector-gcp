@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0011: The Pub/Sub source is FLIP-27 streaming pull, and readers checkpoint no splits
 
 - Status: Accepted
-- Date: 2026-07-25 ([#79], [#80], [#81], [#101]); gated-suite scope 2026-08-01 ([#82])
-- Issues: [#79], [#80], [#81], [#101], [#118], [#82]
+- Date: 2026-07-25 ([#79], [#80], [#81], [#101]); gated-suite scope 2026-08-01 ([#82]);
+  acknowledgement confirmation recorded by [#2337] (2026-11-26)
+- Issues: [#79], [#80], [#81], [#101], [#118], [#82], [#2337]
 - Modules: pubsub
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source half, including
   § Why streaming pull rather than synchronous pull)
@@ -87,6 +88,28 @@ restore-deduplication ledger chunks, a split kind that consumes nothing and that
 forwards to the enumerator on restore. No consuming split is ever checkpointed, so the rule above
 and its reason are unchanged.
 
+Acknowledgement confirmation ([#80]; recorded here by [#2337], 2026-11-26): `awaitAckConfirmation`
+makes a completed checkpoint wait, bounded, for the futures its acknowledgements return to complete
+with `SUCCESSFUL`, and fails the job when one completes with another response or fails, or when
+they do not complete in time. On a subscription without exactly-once delivery the client library's
+failure path for an acknowledgement completes no future (read in google-cloud-pubsub 1.161.0), so
+the timeout is the only detector. The library returns the same response future from every
+settlement of a delivery, including the nack a stopping subscriber queues for each delivery it
+still tracks, and the future keeps the first response that completes it ([#2337]). The option
+needs the client library's other receiver flavour, which `DefaultSubscriberFactory` selects once
+and `AckHandle` hides, and the wait runs outside the acknowledgement tracker's monitor
+([ADR-0122]). **The wait runs only when every acknowledgement of the notification returned
+normally with its future** ([#2337]). An acknowledgement that throws, or
+a missing future, is thrown after every handle's acknowledgement has been attempted, and without
+waiting. The throw already fails the task (read in Flink 2.2.1 and 1.20.5: the reader's exception
+leaves the checkpoint notification mail and ends the task's invocation, after the JobManager has
+stored the completed checkpoint), so a wait there could only hold the task thread, for up to its
+timeout, before the same failure. A missing future, which `DefaultSubscriberFactory` cannot
+produce, is reported once per notification with how many were missing, and is built after the loop
+so that the tracker's own diagnostic never takes the top slot from a failure an ack threw: Flink's
+fatal-error check in `Task.preProcessException` does not look at suppressed exceptions. [ADR-0012]
+records the loop and its failure ranking beside `nackSplit`'s.
+
 ## Consequences
 
 **The real-GCP gated suite ([#82]) is the only coverage of**: ordered dispatch (per-key callback
@@ -116,4 +139,7 @@ now, and this paragraph no longer claims otherwise.
 [#118]: https://github.com/flink-gcp/flink-connector-gcp/issues/118
 [#139]: https://github.com/flink-gcp/flink-connector-gcp/issues/139
 [#546]: https://github.com/flink-gcp/flink-connector-gcp/issues/546
+[#2337]: https://github.com/flink-gcp/flink-connector-gcp/issues/2337
+[ADR-0012]: 0012-the-subscriber-teardown-absorbs-discriminates-and-releases-in-order.md
+[ADR-0122]: 0122-the-pubsub-internals-are-decomposed-by-concern-rather-than-inherited-from-the-adaptation.md
 [ADR-0198]: 0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md

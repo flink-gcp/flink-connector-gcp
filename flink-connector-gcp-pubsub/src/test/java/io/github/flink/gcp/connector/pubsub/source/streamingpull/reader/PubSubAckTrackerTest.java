@@ -194,6 +194,70 @@ class PubSubAckTrackerTest {
     }
 
     @Test
+    void aThrowingAckStillAcknowledgesTheRestOfTheCompletedCheckpoints() throws Exception {
+        // #2337: every completed checkpoint leaves the map before any handle is acknowledged, so an
+        // ack that threw used to leave every handle after it unacknowledged and tracked by nothing,
+        // and count none of them, not even those already sent.
+        IllegalStateException refused = new IllegalStateException("the consumer refused");
+        RecordingAckHandle before = new RecordingAckHandle("before");
+        RecordingAckHandle throwing = new RecordingAckHandle("throwing").failAckWith(refused);
+        RecordingAckHandle later = new RecordingAckHandle("later");
+        stageOn(SPLIT_A, "before", before);
+        stageOn(SPLIT_B, "throwing", throwing);
+        tracker.addCheckpoint(1L);
+        stageOn(SPLIT_A, "later", later);
+        tracker.addCheckpoint(2L);
+
+        assertThatThrownBy(() -> tracker.notifyCheckpointComplete(2L)).isSameAs(refused);
+
+        assertThat(before.ackCount()).isEqualTo(1);
+        assertThat(throwing.ackCount()).isEqualTo(1);
+        assertThat(later.ackCount()).isEqualTo(1);
+        // Only the acks that returned count as acknowledgements requested.
+        assertThat(metrics.counter("messagesAcked")).isEqualTo(2);
+        assertThat(tracker.outstandingAckCount()).isZero();
+        assertThat(tracker.checkpointsPendingAckCount()).isZero();
+
+        // Forgotten all the same, so a repeated notification settles nothing again.
+        tracker.notifyCheckpointComplete(2L);
+        assertThat(before.ackCount()).isEqualTo(1);
+        assertThat(throwing.ackCount()).isEqualTo(1);
+        assertThat(later.ackCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aLaterAckFailureIsSuppressedOntoTheFirst() {
+        IllegalStateException first = new IllegalStateException("first");
+        IllegalStateException second = new IllegalStateException("second");
+        RecordingAckHandle between = new RecordingAckHandle("between");
+        stageOn(SPLIT_A, "m1", new RecordingAckHandle("m1").failAckWith(first));
+        stageOn(SPLIT_A, "m2", between);
+        stageOn(SPLIT_A, "m3", new RecordingAckHandle("m3").failAckWith(second));
+        tracker.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> tracker.notifyCheckpointComplete(1L))
+                .isSameAs(first)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+        assertThat(between.ackCount()).isEqualTo(1);
+        assertThat(metrics.counter("messagesAcked")).isEqualTo(1);
+    }
+
+    @Test
+    void anErrorFromAnAckIsThrownAsItselfAfterTheRestAreAcknowledged() {
+        // The one way found for a production handle's settlement to throw is an Error from a
+        // listener of its reply future (#2326), so an Error must neither be wrapped nor end the
+        // loop.
+        AssertionError listenerFailure = new AssertionError("a listener failed");
+        RecordingAckHandle after = new RecordingAckHandle("after");
+        stageOn(SPLIT_A, "m1", new RecordingAckHandle("m1").failAckWith(listenerFailure));
+        stageOn(SPLIT_A, "m2", after);
+        tracker.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> tracker.notifyCheckpointComplete(1L)).isSameAs(listenerFailure);
+        assertThat(after.ackCount()).isEqualTo(1);
+    }
+
+    @Test
     void sameMessageIdOnDifferentSplitsIsTrackedSeparately() throws Exception {
         // Two subscriptions of one topic deliver the same message id to the same reader.
         RecordingAckHandle onA = new RecordingAckHandle("a");
@@ -270,8 +334,16 @@ class PubSubAckTrackerTest {
     }
 
     private void stageOn(String splitId, String messageId, RecordingAckHandle consumer) {
-        tracker.addPendingAck(splitId, messageId, consumer);
-        tracker.stagePendingAck(splitId, messageId);
+        stageOn(tracker, splitId, messageId, consumer);
+    }
+
+    private static void stageOn(
+            PubSubAckTracker target,
+            String splitId,
+            String messageId,
+            RecordingAckHandle consumer) {
+        target.addPendingAck(splitId, messageId, consumer);
+        target.stagePendingAck(splitId, messageId);
     }
 
     @Test
@@ -280,8 +352,7 @@ class PubSubAckTrackerTest {
         PubSubAckTracker awaiting =
                 new PubSubAckTracker(testMetrics.metrics(), Duration.ofSeconds(30));
         RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
-        awaiting.addPendingAck(SPLIT_A, "m1", handle);
-        awaiting.stagePendingAck(SPLIT_A, "m1");
+        stageOn(awaiting, SPLIT_A, "m1", handle);
         awaiting.addCheckpoint(1L);
         handle.confirm(AckResponse.SUCCESSFUL);
 
@@ -289,6 +360,99 @@ class PubSubAckTrackerTest {
 
         assertThat(handle.isAcked()).isTrue();
         assertThat(testMetrics.counter("messagesAcked")).isEqualTo(1);
+        // A future already confirmed is observed through get(); the timeout test below covers the
+        // other path, a pending future observed through addListener.
+        assertThat(handle.confirmationObservations()).isPositive();
+    }
+
+    @Test
+    void awaitingConfirmationDoesNotWaitAfterAnAckThrew() {
+        // #2337: a throwing ack already fails the task, so the bounded wait could only delay
+        // that by up to its timeout; it is skipped, and nothing observes the other futures.
+        TestReaderMetrics testMetrics = new TestReaderMetrics();
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(testMetrics.metrics(), Duration.ofMillis(50));
+        IllegalStateException refused = new IllegalStateException("the consumer refused");
+        RecordingAckHandle before = RecordingAckHandle.withConfirmation("before");
+        RecordingAckHandle throwing =
+                RecordingAckHandle.withConfirmation("throwing").failAckWith(refused);
+        RecordingAckHandle after = RecordingAckHandle.withConfirmation("after");
+        stageOn(awaiting, SPLIT_A, "before", before);
+        stageOn(awaiting, SPLIT_A, "throwing", throwing);
+        stageOn(awaiting, SPLIT_A, "after", after);
+        awaiting.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
+                .isSameAs(refused)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).isEmpty());
+
+        assertThat(after.ackCount()).isEqualTo(1);
+        assertThat(before.confirmationObservations()).isZero();
+        assertThat(after.confirmationObservations()).isZero();
+        assertThat(testMetrics.counter("messagesAcked")).isEqualTo(2);
+    }
+
+    @Test
+    void aMissingConfirmationFutureFailsOnceAfterEveryAckIsSent() {
+        // A subscriber built without acknowledgement responses returns no future. The default
+        // factory selects the flavor from the same option as the tracker, so this guards the
+        // internal seam: every ack is still sent and counted, one failure names how many futures
+        // were missing, and nothing waits on the futures that did come back.
+        TestReaderMetrics testMetrics = new TestReaderMetrics();
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(testMetrics.metrics(), Duration.ofMillis(50));
+        RecordingAckHandle confirmedFirst = RecordingAckHandle.withConfirmation("first");
+        RecordingAckHandle missing = new RecordingAckHandle("missing");
+        RecordingAckHandle missingToo = new RecordingAckHandle("missing-too");
+        RecordingAckHandle confirmedLast = RecordingAckHandle.withConfirmation("last");
+        stageOn(awaiting, SPLIT_A, "first", confirmedFirst);
+        stageOn(awaiting, SPLIT_A, "missing", missing);
+        stageOn(awaiting, SPLIT_A, "missing-too", missingToo);
+        stageOn(awaiting, SPLIT_A, "last", confirmedLast);
+        awaiting.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("2 of the 4 acknowledgements of checkpoint 1 that returned")
+                .hasMessageContaining("without acknowledgement responses")
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).isEmpty());
+
+        assertThat(confirmedFirst.ackCount()).isEqualTo(1);
+        assertThat(missing.ackCount()).isEqualTo(1);
+        assertThat(missingToo.ackCount()).isEqualTo(1);
+        assertThat(confirmedLast.ackCount()).isEqualTo(1);
+        assertThat(confirmedFirst.confirmationObservations()).isZero();
+        assertThat(confirmedLast.confirmationObservations()).isZero();
+        assertThat(testMetrics.counter("messagesAcked")).isEqualTo(4);
+    }
+
+    @Test
+    void aThrownAckFailureRanksAboveAMissingConfirmationFuture() {
+        // The tracker's own diagnostic never takes the top slot from a failure an ack threw, and it
+        // counts only the acknowledgements that returned.
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(new TestReaderMetrics().metrics(), Duration.ofMillis(50));
+        AssertionError listenerFailure = new AssertionError("a listener failed");
+        stageOn(awaiting, SPLIT_A, "missing", new RecordingAckHandle("missing"));
+        stageOn(
+                awaiting,
+                SPLIT_A,
+                "throwing",
+                RecordingAckHandle.withConfirmation("throwing").failAckWith(listenerFailure));
+        awaiting.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
+                .isSameAs(listenerFailure)
+                .satisfies(
+                        thrown ->
+                                assertThat(thrown.getSuppressed())
+                                        .singleElement()
+                                        .isInstanceOf(IllegalStateException.class)
+                                        .extracting(Throwable::getMessage)
+                                        .asString()
+                                        .contains(
+                                                "1 of the 1 acknowledgements of checkpoint 1"
+                                                        + " that returned"));
     }
 
     @Test
@@ -306,19 +470,21 @@ class PubSubAckTrackerTest {
 
     @Test
     void awaitingConfirmationFailsTheCheckpointOnTimeout() {
-        // On a subscription without exactly-once delivery a failed acknowledgement never completes
-        // its future, so the timeout is the only signal there is.
+        // On a subscription without exactly-once delivery the failure of an acknowledgement
+        // request completes nothing, so the timeout is the only signal there is.
         PubSubAckTracker awaiting =
                 new PubSubAckTracker(new TestReaderMetrics().metrics(), Duration.ofMillis(50));
         RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
-        awaiting.addPendingAck(SPLIT_A, "m1", handle);
-        awaiting.stagePendingAck(SPLIT_A, "m1");
+        stageOn(awaiting, SPLIT_A, "m1", handle);
         awaiting.addCheckpoint(1L);
 
         assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("did not confirm the acknowledgements of checkpoint 1")
-                .hasMessageContaining("never completes its future");
+                .hasMessageContaining("failure of an acknowledgement request completes nothing");
+        // A pending future is observed through addListener, the path any wait in the no-wait tests
+        // would take on their never-completed futures, so their zero readings can fail.
+        assertThat(handle.confirmationObservations()).isPositive();
     }
 
     @Test
@@ -326,8 +492,7 @@ class PubSubAckTrackerTest {
         PubSubAckTracker awaiting =
                 new PubSubAckTracker(new TestReaderMetrics().metrics(), Duration.ofSeconds(30));
         RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
-        awaiting.addPendingAck(SPLIT_A, "m1", handle);
-        awaiting.stagePendingAck(SPLIT_A, "m1");
+        stageOn(awaiting, SPLIT_A, "m1", handle);
         awaiting.addCheckpoint(1L);
         handle.confirm(AckResponse.PERMISSION_DENIED);
 
@@ -346,8 +511,7 @@ class PubSubAckTrackerTest {
         PubSubAckTracker awaiting =
                 new PubSubAckTracker(testMetrics.metrics(), Duration.ofMillis(50));
         RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
-        awaiting.addPendingAck(SPLIT_A, "m1", handle);
-        awaiting.stagePendingAck(SPLIT_A, "m1");
+        stageOn(awaiting, SPLIT_A, "m1", handle);
         awaiting.addCheckpoint(1L);
 
         assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))

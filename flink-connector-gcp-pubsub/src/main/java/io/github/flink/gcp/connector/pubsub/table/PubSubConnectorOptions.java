@@ -284,14 +284,17 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription("The longest acknowledgement deadline extension to request.");
 
-    /** How long a completing checkpoint waits for the service to confirm its acknowledgements. */
+    /**
+     * How long a completing checkpoint waits for the client library to report its acknowledgements
+     * successful.
+     */
     public static final ConfigOption<Duration> SCAN_ACK_AWAIT_CONFIRMATION =
             ConfigOptions.key("scan.ack.await-confirmation")
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
-                            "How long a completing checkpoint waits for the service to confirm its"
-                                    + " acknowledgements.");
+                            "How long a completing checkpoint waits for the client library to"
+                                    + " report its acknowledgements successful.");
 
     /** How long closing a reader waits for its subscriber to stop. */
     public static final ConfigOption<Duration> SCAN_SHUTDOWN_TIMEOUT =

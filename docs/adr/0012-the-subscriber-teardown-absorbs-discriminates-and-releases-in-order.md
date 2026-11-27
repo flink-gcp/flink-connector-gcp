@@ -21,9 +21,9 @@ limitations under the License.
   cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23); failed stub
   creation corrected by [#2291] (2026-11-23); budget clock refined by [#2302] (2026-11-23);
   failed-start deliveries released by [#2307] (2026-11-23); throwing nacks qualified by [#2326]
-  (2026-11-25)
+  (2026-11-25); throwing acks aligned by [#2337] (2026-11-26)
 - Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2291], [#2302],
-  [#2307], [#2324], [#2326]
+  [#2307], [#2324], [#2326], [#2337]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
   including the four-outcome teardown message table, and the reader metrics)
@@ -130,7 +130,12 @@ transport opened. This change leaves untouched what that decision says about the
   buys is mostly over an `@Internal` SPI whose implementations need not all be ours. One level in,
   `nackSplit` itself nacks every handle of the split before it throws the first failure, since
   the handles are already out of its maps and one it skipped would be left to the client
-  library's shutdown or lease expiry ([#2326]). `stopQuietly()` is deliberately
+  library's shutdown or lease expiry ([#2326]). The acknowledgement loop of
+  `notifyCheckpointComplete` follows the same rule for the same reason ([#2337]): every handle of
+  the completed checkpoints gets its `ack()` attempt before the first failure is thrown, and
+  `messagesAcked` counts only the acks that returned; ADR-0011 records what that means for the
+  confirmation wait. Both loops keep `Closers.closeAll`'s bound (ADR-0040): a JVM-fatal failure
+  that follows an ordinary one stays suppressed and unescalated. `stopQuietly()` is deliberately
   **not** given the same list, and the reason is a property rather than scope-drawing: there, a
   stop that threw has started no shutdown for the wait to wait out, so skipping it is the right
   outcome. `removeSplit` has **no production path** (`SplitsRemoval` reaches a reader only
@@ -433,3 +438,4 @@ transport opened. This change leaves untouched what that decision says about the
 [#2307]: https://github.com/flink-gcp/flink-connector-gcp/issues/2307
 [#2324]: https://github.com/flink-gcp/flink-connector-gcp/issues/2324
 [#2326]: https://github.com/flink-gcp/flink-connector-gcp/issues/2326
+[#2337]: https://github.com/flink-gcp/flink-connector-gcp/issues/2337
