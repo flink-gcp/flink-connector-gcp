@@ -652,10 +652,11 @@ same way.**
     dialled (`DatastoreUtils.removeScheme`), is still accepted: the scheme is removed before the
     caller-owned channel is built, since gRPC would read it as a name-resolver scheme it does not
     have. A `dns:///` target is kept for gRPC to resolve.
-    This covers the gRPC clients only: the planner's HTTP splitter refuses such an endpoint, as it
-    did before (`DatastoreOptions.Builder.localHost`, datastore-v1-proto-client 3.11.0; read, not
-    measured), so a plan that cuts key ranges fails with it (tracked in
-    [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338)).
+    The planner's HTTP splitter refused such an endpoint (`DatastoreOptions.Builder.localHost`,
+    datastore-v1-proto-client 3.11.0), so a plan that cut key ranges failed with it (measured
+    2026-11-26 with `http://`); since
+    [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338) it removes the scheme the
+    same way.
   - The `google-cloud-resource-prefix` header and the client-library token that `GrpcDatastoreRpc`
     added are no longer sent; the generated stub routes each request by its `project_id` and
     `database_id`, which every request the connector builds sets.
@@ -666,10 +667,21 @@ same way.**
   It held its client from its first plan until the enumerator closed it.
   The splitter's calls run after the session, over the HTTP client ADR-0177 describes, which opens
   no gRPC channel and which the planner's `close()` still closes.
-  That client takes an emulator's endpoint as a host, so a plan that cuts key ranges still fails
-  against an emulator given as `dns:///host:port` (measured 2026-11-25; tracked in
-  [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338)); a plan of one range, or
-  of a query that cannot be split, never calls it.
+  That client builds `http://<endpoint>/v1/projects/<project>` from an emulator's endpoint, so
+  with `dns:///host:port` a plan that cut key ranges failed there, taking `dns` for the host, once
+  its gRPC calls had succeeded (measured 2026-11-25); a plan that asks for one range, or that
+  reads a query that cannot be split, never calls it.
+  Since [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338) the client takes the
+  `host:port` the gRPC clients dial (`SplitterClient.httpAuthority`): an `http://` or `https://`
+  scheme is removed, and a target with gRPC's `dns` scheme is read as a URI, whose path or
+  scheme-specific part is that `host:port`.
+  gRPC 1.85.1 accepts `dns:///host:port`, `dns:/host:port`, `dns:host:port`,
+  `dns://<name server>/host:port` and a percent-encoded IPv6 literal, and refuses
+  `dns:///[::1]:port`, whose brackets a URI path cannot hold (measured 2026-11-26 by building a
+  channel for each).
+  `SplitterClientITCase` sends a query through the splitter's client, and plans through the
+  splitter, for `host:port` and for each prefixed form but the IPv6 one, and every prefixed form
+  failed there before the change (measured 2026-11-26).
 - The page reader holds its client from its first page until the reader closes, on the
   TaskManager, as before, and **its close ends every page still in flight before it closes the
   client**.

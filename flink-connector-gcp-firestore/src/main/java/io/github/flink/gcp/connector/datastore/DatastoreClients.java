@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.datastore;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
@@ -169,9 +168,11 @@ public final class DatastoreClients {
      * DatastoreUtils.removeScheme}, google-cloud-datastore 3.11.0), and which gRPC would take for a
      * name-resolver scheme it does not have. A {@code dns:///} target, which gRPC resolves itself,
      * is kept.
+     *
+     * @param endpoint the emulator endpoint as configured
+     * @return the endpoint without an HTTP scheme
      */
-    @VisibleForTesting
-    static EmulatorEndpoint withoutHttpScheme(EmulatorEndpoint endpoint) {
+    public static EmulatorEndpoint withoutHttpScheme(EmulatorEndpoint endpoint) {
         String target = endpoint.getTarget();
         String lower = target.toLowerCase(Locale.ROOT);
         for (String scheme : new String[] {"http://", "https://"}) {

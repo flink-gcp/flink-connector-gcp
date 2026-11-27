@@ -389,8 +389,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   appended, falling back to running it as written on `INVALID_ARGUMENT`.
 - **`QuerySplitter` is called over the proto-client HTTP `Datastore`** (`SplitterClient`, built
   through `HttpDatastoreRpc`'s factory; owner's decision, 2026-10-03), on the JobManager only while
-  planning. Readers and the planner's own queries use the generated client with the retry settings
-  the library's `Datastore` applied (`DatastoreClients.libraryRetrySettings()`, which
+  planning. It takes an emulator endpoint as an HTTP `host:port` (`SplitterClient.httpAuthority`,
+  #2338): an emulator endpoint with an HTTP scheme or gRPC's `dns` scheme reaches it as the
+  `host:port` the gRPC clients dial, and a new such form goes into `SplitterClientITCase`'s
+  `endpointPrefixes()`. Readers and the
+  planner's own queries use the generated client with the retry settings the library's
+  `Datastore` applied (`DatastoreClients.libraryRetrySettings()`, which
   `DatastoreClientsTest` compares with the library's). **The planner opens a client per plan**: its
   GQL parse, read-time probe and statistics queries are one `PerCallClientRunner` session, which
   `close()` cancels; the splitter runs after it (ADR-0208). The page reader waits on a future
