@@ -73,8 +73,9 @@ public class PubSubAckTracker implements AckTracker {
      * Creates the tracker.
      *
      * @param metrics counts the lifecycle transitions
-     * @param awaitAckConfirmation how long a completed checkpoint waits for its acknowledgements to
-     *     be confirmed, or {@code null} for fire-and-forget acknowledgement
+     * @param awaitAckConfirmation how long {@link #notifyCheckpointComplete(long)} waits for the
+     *     acknowledgements it sends to be confirmed, or {@code null} for fire-and-forget
+     *     acknowledgement
      */
     public PubSubAckTracker(
             PubSubSourceReaderMetrics metrics, @Nullable Duration awaitAckConfirmation) {
@@ -94,9 +95,9 @@ public class PubSubAckTracker implements AckTracker {
         }
         metrics.messageReceived();
         if (superseded != null) {
-            // The message was redelivered before the previous delivery was settled — its
-            // acknowledgement id is already stale, but the client library only releases that
-            // delivery's flow-control permit once the handle is settled.
+            // The message was redelivered while the previous delivery was still pending — its
+            // acknowledgement id is already stale, but the client library may still hold that
+            // delivery's flow-control permit until the handle is settled.
             superseded.nack();
             metrics.messagesNacked(1);
         }
@@ -253,11 +254,12 @@ public class PubSubAckTracker implements AckTracker {
                 toNack.addAll(splitAcks.values());
             }
             drainSplit(stagedAcks, splitId, toNack);
-            // Every checkpoint entry stays, including one this drain empties (#2325): the
-            // checkpoint has still not completed, which is what checkpointsPendingAckCount()
-            // counts, and notifyCheckpointComplete sweeps an empty entry like any other. An empty
-            // entry adds no message id to the ledger. One this drain empties becomes the shared
-            // empty list, so it stops holding the array its handles were copied into.
+            // Every checkpoint entry stays, including one this drain empties (#2325): no
+            // notification covering the checkpoint has arrived, which is what
+            // checkpointsPendingAckCount() counts, and notifyCheckpointComplete sweeps an empty
+            // entry like any other. An empty entry adds no message id to the ledger. One this
+            // drain empties becomes the shared empty list, so it stops holding the array its
+            // handles were copied into.
             checkpoints.replaceAll(
                     (checkpointId, checkpointed) -> {
                         drainSplit(checkpointed, splitId, toNack);
@@ -314,8 +316,9 @@ public class PubSubAckTracker implements AckTracker {
     }
 
     /**
-     * Returns how many checkpoints have been taken but not yet completed, and therefore how many
-     * generations of acknowledgements are being held.
+     * Returns how many checkpoints this reader has taken that no completion notification it
+     * received covers yet, and therefore how many generations of acknowledgements are being held. A
+     * notification covers its own checkpoint and every earlier one.
      *
      * @return the pending checkpoint count
      */
