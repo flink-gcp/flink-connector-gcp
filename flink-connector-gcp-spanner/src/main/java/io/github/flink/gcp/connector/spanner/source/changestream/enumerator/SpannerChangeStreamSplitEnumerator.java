@@ -1671,25 +1671,28 @@ public final class SpannerChangeStreamSplitEnumerator
             if (unreported != null) {
                 logUnreportedInitializationFailure(unreported);
             }
-            // After the flag: a start() still registering sees it and lets go of what it bound.
-            metrics.close();
-            if (closing != null) {
-                try {
+            try {
+                if (closing != null) {
                     Closers.closeAll(closing);
-                } catch (Throwable e) {
-                    // Flink closes an enumerator through IOUtils.closeQuietly, which drops
-                    // whatever close() throws (Flink 1.20.5 and 2.2.1), so this is the failure's
-                    // only trace.
-                    LOG.warn(
-                            "Failed to close the Spanner Change Streams coordinator client the"
-                                    + " enumerator's close took over.",
-                            e);
-                    if (e instanceof Error) {
-                        throw (Error) e;
-                    }
-                    throw new IOException(
-                            "Failed to close the Spanner Change Streams coordinator.", e);
                 }
+            } catch (Throwable e) {
+                // SourceCoordinator.close() closes an enumerator through IOUtils.closeQuietly,
+                // which
+                // drops whatever close() throws (Flink 1.20.5 and 2.2.1), so at job shutdown this
+                // is the failure's only trace.
+                LOG.warn(
+                        "Failed to close the Spanner Change Streams coordinator client the"
+                                + " enumerator's close took over.",
+                        e);
+                if (e instanceof Error) {
+                    throw (Error) e;
+                }
+                throw new IOException("Failed to close the Spanner Change Streams coordinator.", e);
+            } finally {
+                // After the flag, so that a start() still registering sees it and lets go of what
+                // it bound; after the client, so that an Error from a gauge's last read cannot
+                // leave it open.
+                metrics.close();
             }
         } finally {
             if (takenOver != null) {

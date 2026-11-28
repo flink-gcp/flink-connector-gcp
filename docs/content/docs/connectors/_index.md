@@ -197,6 +197,9 @@ fail as described above.
 In a thread dump, `flink-gcp-grpc-elg-*` threads left after every job using the connector has
 ended mean a client was not closed, and a `NoClassDefFoundError` from one of them after a job
 ended means a close outlasted the class loader.
+On the JobManager, Flink's source coordinator drops what an enumerator's close throws at job
+shutdown, so an enumerator's close that fails to close what the enumerator owns logs that failure
+at WARN under the enumerator's class name before throwing.
 If a job's own code uses the Storage Write API's connection pool in the same class loader as the
 connector, with the same location and credentials, the two share the pool's connections.
 So when the job's own class loader defines the connectors' shared classes, as it does by default

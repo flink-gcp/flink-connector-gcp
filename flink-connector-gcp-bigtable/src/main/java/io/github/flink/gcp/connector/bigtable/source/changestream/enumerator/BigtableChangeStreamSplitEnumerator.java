@@ -1219,8 +1219,7 @@ public final class BigtableChangeStreamSplitEnumerator
         metrics.unassignedSplitsGauge(() -> (long) unassignedMetricCount.get());
         if (closed) {
             // close() ran first, on Flink's closer thread, and closed the view this replaced: let
-            // go
-            // of what was just bound rather than leave it reading a closed enumerator.
+            // go of what was just bound rather than leave it reading a closed enumerator.
             metrics.close();
         }
     }
@@ -1243,11 +1242,20 @@ public final class BigtableChangeStreamSplitEnumerator
     public void close() throws IOException {
         // The flag first: a start() still registering sees it and lets go of what it bound.
         closed = true;
-        metrics.close();
         try {
             Closers.closeAll(client);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // SourceCoordinator.close() closes an enumerator through IOUtils.closeQuietly, which
+            // drops whatever close() throws (Flink 1.20.5 and 2.2.1), so at job shutdown this is
+            // the failure's only trace.
+            LOG.warn("Failed to close the Bigtable Change Streams coordinator.", e);
+            if (e instanceof Error) {
+                throw (Error) e;
+            }
             throw new IOException("Failed to close the Bigtable Change Streams coordinator.", e);
+        } finally {
+            // After the client, so that an Error from a gauge's last read cannot leave it open.
+            metrics.close();
         }
     }
 

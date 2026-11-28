@@ -34,7 +34,8 @@ limitations under the License.
   [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322),
   [#2329](https://github.com/flink-gcp/flink-connector-gcp/issues/2329),
   [#2330](https://github.com/flink-gcp/flink-connector-gcp/issues/2330),
-  [#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347)
+  [#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347),
+  [#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370)
 - Modules: base, bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -474,8 +475,9 @@ releases the group's last lease shuts it down and waits for its threads.**
   Only the enumerator's own refusal to start once closed is not logged.
   A `close()` that fails to close a client it took over logs the failure at WARN before it throws,
   since Flink closes the enumerator through `IOUtils.closeQuietly`, which drops what `close()`
-  throws; the other enumerators' `close()` still relies on the throw alone
-  ([#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370)).
+  throws; since [#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370) every other
+  enumerator's `close()` likewise logs a failure to close what it owns before throwing (the bullet
+  on enumerator close failures below).
   A failed call of an installed client that `close()` took over is logged at INFO, since that close
   may have caused it, or overtaken a failure of the call's own.
   One loss remains, and it is Flink's: a failure `onInitialized` throws on an open enumerator is
@@ -622,6 +624,24 @@ releases the group's last lease shuts it down and waits for its threads.**
   failure it answers instead of throwing (`NotFoundException` from `describe`, `AlreadyExists`
   from a creation, which reads the subscription back on a second client); a close failure in its
   own `close()` is still logged.
+- **An enumerator's `close()` logs a failure to close what it owns before throwing it** (refined
+  2026-11-28, [#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370)).
+  `SourceCoordinator.close()` closes a started enumerator through `IOUtils.closeQuietly`, which
+  catches every `Throwable` and logs nothing (Flink 1.20.5 and 2.2.1), so what `close()` throws
+  leaves no trace, and a client that failed to shut down may leave its channels open past the
+  release of the job's class loader.
+  `PullAssignmentSplitEnumerator`, the Bigtable Change Streams enumerator and the Pub/Sub enumerator
+  therefore log such a failure at WARN, an `Error` included, and then throw it as before: an
+  `Error` as itself, anything else wrapped in an `IOException`.
+  The subscription admin logs an ordinary close failure itself (the bullet above), so for Pub/Sub
+  the enumerator's line adds a trace only for an `Error`.
+  The Spanner Change Streams enumerator has logged a failure to close the client it took over the
+  same way since [#2358](https://github.com/flink-gcp/flink-connector-gcp/issues/2358) (its
+  initialization-failure bullet above).
+  All four release their metrics after what they own, in a `finally`: a gauge's last read is the
+  one part of that release that can throw, an `Error` only, and it must not leave what the
+  enumerator owns open. `EnumeratorMetrics.close()` itself releases every gauge before it throws
+  that `Error`, so none is left reading the closed enumerator.
 - **Spanner's batch planner stays off the runner.**
   Its calls are synchronous and expose no `ApiFuture`; it cancels them through the gRPC `Context`
   they run in, and a deferred operation's multiplexed session is created outside that context.

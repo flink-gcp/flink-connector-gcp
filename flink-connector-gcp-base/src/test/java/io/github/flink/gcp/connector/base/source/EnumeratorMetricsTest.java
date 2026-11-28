@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EnumeratorMetricsTest {
 
@@ -110,6 +111,53 @@ class EnumeratorMetricsTest {
         value.set(9);
 
         assertThat(this.<Long>gauge("assignedSplits")).isNull();
+        assertThat(this.<Long>gauge("lagMillis")).isEqualTo(3L);
+    }
+
+    @Test
+    void closingReleasesEveryGaugeBeforeThrowingAnErrorFromOnesLastRead() {
+        AtomicLong value = new AtomicLong(3);
+        StackOverflowError failure = new StackOverflowError("gauge");
+        StackOverflowError later = new StackOverflowError("later gauge");
+        EnumeratorMetrics metrics = EnumeratorMetrics.of(enumeratorGroup());
+        metrics.gauge(
+                "assignedSplits",
+                (Gauge<Long>)
+                        () -> {
+                            throw failure;
+                        });
+        metrics.gauge("lagMillis", (Gauge<Long>) value::get);
+        metrics.gauge(
+                "unassignedReaders",
+                (Gauge<Long>)
+                        () -> {
+                            throw later;
+                        });
+
+        assertThatThrownBy(metrics::close).isSameAs(failure).hasSuppressedException(later);
+        value.set(9);
+
+        assertThat(this.<Long>gauge("assignedSplits")).isNull();
+        assertThat(this.<Long>gauge("lagMillis")).isEqualTo(3L);
+        assertThat(this.<Long>gauge("unassignedReaders")).isNull();
+    }
+
+    @Test
+    void closingReleasesEveryGaugeWhenTwoThrowTheSameError() {
+        AtomicLong value = new AtomicLong(3);
+        StackOverflowError failure = new StackOverflowError("shared");
+        EnumeratorMetrics metrics = EnumeratorMetrics.of(enumeratorGroup());
+        Gauge<Long> throwing =
+                () -> {
+                    throw failure;
+                };
+        metrics.gauge("assignedSplits", throwing);
+        metrics.gauge("unassignedReaders", throwing);
+        metrics.gauge("lagMillis", (Gauge<Long>) value::get);
+
+        assertThatThrownBy(metrics::close).isSameAs(failure);
+        value.set(9);
+
         assertThat(this.<Long>gauge("lagMillis")).isEqualTo(3L);
     }
 

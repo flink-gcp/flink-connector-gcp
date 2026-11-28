@@ -518,8 +518,7 @@ public class PubSubSplitEnumerator
         metrics.unassignedSplitsGauge(() -> (long) (plan.splitCount() - assignedSplitCount()));
         if (closed) {
             // close() ran first, on Flink's closer thread, and closed the view this replaced: let
-            // go
-            // of what was just bound rather than leave it reading a closed enumerator.
+            // go of what was just bound rather than leave it reading a closed enumerator.
             metrics.close();
         }
     }
@@ -709,11 +708,20 @@ public class PubSubSplitEnumerator
         // Runs on Flink's closer thread, possibly while the check is still in flight; the flag is
         // volatile so the completion handler sees it and stays quiet.
         closed = true;
-        metrics.close();
         try {
             admin.close();
-        } catch (Exception e) {
-            throw new IOException("Failed to close the Pub/Sub subscription admin", e);
+        } catch (Throwable e) {
+            // SourceCoordinator.close() closes an enumerator through IOUtils.closeQuietly, which
+            // drops whatever close() throws (Flink 1.20.5 and 2.2.1), so at job shutdown this is
+            // the failure's only trace.
+            LOG.warn("Failed to close the Pub/Sub subscription admin.", e);
+            if (e instanceof Error) {
+                throw (Error) e;
+            }
+            throw new IOException("Failed to close the Pub/Sub subscription admin.", e);
+        } finally {
+            // After the admin, so that an Error from a gauge's last read cannot leave it open.
+            metrics.close();
         }
     }
 }
