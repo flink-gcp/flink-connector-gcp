@@ -27,9 +27,9 @@ import java.util.function.LongSupplier;
  * Fails a reader that holds unacknowledged messages but has never been asked for a checkpoint.
  *
  * <p>This source acknowledges a message only once a completed checkpoint covers it, so a streaming
- * job running without checkpointing never has a checkpoint acknowledge what it consumes: it
- * consumes until the client library's flow control fills and then stalls, silently and forever.
- * That is worse than an exception, so the reader raises one.
+ * job running without checkpoints never has what it processes covered: the source stops pulling
+ * whenever the client library's flow control fills, and nothing reports why. That is worse than an
+ * exception, so the reader raises one.
  *
  * <p><b>The configuration cannot be asked about it.</b> A reader is handed the <em>TaskManager</em>
  * configuration — {@code SourceOperatorFactory} passes {@code
@@ -42,10 +42,10 @@ import java.util.function.LongSupplier;
  * outstanding, budget spent.
  *
  * <p>Checking is driven by {@link PubSubSplitReader#fetch()} rather than by the record path,
- * because the stalled state is precisely the state with no records: once flow control fills, the
- * client stops delivering, the fetch parks and nothing polls again. {@link #parkTimeoutMillis()}
- * bounds that park while the detector is armed, and returns zero once a checkpoint has been taken —
- * so a healthy reader parks indefinitely, exactly as it did before this class existed.
+ * because the stalled state is precisely the state with no records, in which the fetch parks until
+ * a delivery, a wake-up or its timeout ends the wait. {@link #parkTimeoutMillis()} bounds that park
+ * while the detector is armed, and returns zero once a checkpoint has been taken — so a healthy
+ * reader parks indefinitely, exactly as it did before this class existed.
  *
  * <p>The budget starts at {@link #startBudget()} rather than at construction, because "waited too
  * long for a first checkpoint" is only meaningful over an interval in which there was something to
@@ -159,8 +159,8 @@ public final class MissingCheckpointDetector {
                         + outstanding
                         + " messages wait to be acknowledged. The Pub/Sub source acknowledges a"
                         + " message only once a completed checkpoint covers it, so without"
-                        + " checkpointing the source stalls once the client library's flow control"
-                        + " fills. Enable checkpointing"
+                        + " checkpointing the source stops pulling whenever the client library's"
+                        + " flow control fills. Enable checkpointing"
                         + " (execution.checkpointing.interval), or raise"
                         + " PubSubSubscriberOptions.firstCheckpointTimeout(...) above the"
                         + " checkpoint interval if the job legitimately checkpoints less often.");

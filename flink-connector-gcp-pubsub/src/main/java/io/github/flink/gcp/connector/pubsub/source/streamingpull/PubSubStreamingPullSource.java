@@ -75,7 +75,8 @@ import java.util.stream.Collectors;
  *
  * <p>Delivery state lives on the Pub/Sub server, not in Flink state: a message is acknowledged only
  * once a completed checkpoint covers it, and anything unacknowledged is redelivered. Checkpoints
- * therefore hold no message data, and a restore needs no retained checkpoint to resume.
+ * therefore hold no message data: a job restarted without restored state resumes from the
+ * subscription, except that a non-default start position is applied again.
  *
  * @param <T> type of the records produced by the source
  */
@@ -228,7 +229,7 @@ public class PubSubStreamingPullSource<T>
             // consequence instead.
             return "Acknowledgement-deadline extension is disabled"
                     + " (PubSubSubscriberOptions.maxAckExtensionPeriod is zero), so a message's"
-                    + " lease expires at the subscription's own acknowledgement deadline. This"
+                    + " lease lasts only as long as the client library's own deadline for it. This"
                     + " source acknowledges one whole checkpoint after emitting, and the checkpoint"
                     + " interval is "
                     + interval

@@ -581,8 +581,9 @@ asynchronously and flushes at each checkpoint, so a failover republishes whateve
 checkpoint did not cover.
 
 **A source table needs checkpointing enabled.** A message is acknowledged only once a completed
-checkpoint covers it, so without checkpointing no checkpoint ever acknowledges what the source
-consumes; the source detects that state and fails rather than stalling silently. Set
+checkpoint covers it, so without checkpoints nothing the source processes is ever covered. Unless
+`'scan.first-checkpoint-timeout'` is zero, the source watches for that state and can fail the job
+instead of leaving it stalled. Set
 `execution.checkpointing.interval`.
 
 The source's changelog mode is **the format's**, not a hard-coded insert-only, so a changelog format
