@@ -42,13 +42,14 @@ import java.util.function.ToLongFunction;
  * <p><b>{@code messagesAcked} counts acknowledgements <em>requested</em>, not confirmed.</b> On an
  * ordinary subscription the client library sends the acknowledgement asynchronously, and a request
  * that has finally failed raises no error the connector can see, so a message can be counted here
- * and still be redelivered. Opt into {@code PubSubSubscriberOptions.awaitAckConfirmation(...)} to
- * make a completed checkpoint fail the job unless the futures its acknowledgements return report
- * success in time, and watch Cloud Monitoring's {@code subscription/oldest_unacked_message_age} to
- * detect a persistent acknowledgement failure from outside the job. The confirmation wait covers
- * only the acknowledgements a completed checkpoint sends: a redelivery that restore deduplication
- * suppresses is acknowledged at once and counted here, but no wait reads its future, so a request
- * that fails after its acknowledgement call returned does not fail the job.
+ * and still be redelivered. Opt into {@code
+ * PubSubSubscriberOptions.Builder.awaitAckConfirmation(...)} to make each checkpoint-complete
+ * notification fail the job unless the futures the acknowledgements it sends return report success
+ * in time, and watch Cloud Monitoring's {@code subscription/oldest_unacked_message_age} to detect a
+ * persistent acknowledgement failure from outside the job. The confirmation wait covers only the
+ * acknowledgements a checkpoint-complete notification sends: an acknowledgement that restore
+ * deduplication sends for a suppressed redelivery is requested at once and is counted here, but no
+ * wait reads its future.
  *
  * <p><b>The two subscriber-teardown counters are the exception to all of that</b> (#358): their
  * values are process-wide rather than this reader's, and they are registered here without being

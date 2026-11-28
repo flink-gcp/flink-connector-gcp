@@ -673,9 +673,8 @@ the split resumes (see [Watermark alignment](#watermark-alignment)). The SDK sub
 configured with `NACK_IMMEDIATELY` shutdown, which releases messages the client buffered but never
 handed to the source; the SDK's `WAIT_FOR_PROCESSING` default would instead wait for
 acknowledgements that only arrive at checkpoint completion. Acknowledgement state is scoped per
-split, so a split that goes away releases only its own messages. A redelivery arriving before its
-predecessor was settled nacks the superseded handle, which is what releases that delivery's
-flow-control permit inside the client library.
+split, so a split that goes away releases only its own messages. A redelivery can supersede an
+earlier delivery's handle, which the reader then nacks rather than leave unsettled.
 
 ### Restore deduplication
 
@@ -790,7 +789,7 @@ now running, including one that a failover or a restart builds:
 | `messagesDropped` | counter | deliveries discarded by `DROP`; a redelivered message counts each time it is dropped |
 | `recordsSkipped` | counter | messages whose deserializer returned successfully without emitting output |
 | `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
-| `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
+| `pendingCheckpoints` | gauge | checkpoints this reader took that no completion notification it received covers yet; a notification covers its own checkpoint and every earlier one |
 | `bufferedMessages` | gauge | messages this subtask's subscribers hold that the fetch loop has not taken yet — see below |
 | `bufferedBytes` | gauge | the same in bytes; either dimension can be the one that fills a TaskManager first |
 | `fetcherBufferedMessages` | gauge | messages removed from subscriber buffers but not yet taken from Flink's fetcher batches by the source reader |
@@ -808,26 +807,35 @@ now running, including one that a failover or a restart builds:
 **`messagesAcked` counts acknowledgements requested, not confirmed.** A request whose call into the
 client library threw is not counted, although the library may already have queued it. On an
 ordinary subscription the client library sends them asynchronously, and a request that has
-finally failed completes no future and raises no error the connector can see. No data is lost
-(the lease expires and Pub/Sub redelivers, which is the at-least-once contract), but a
-*persistent* failure such as a revoked permission becomes a silent reprocessing loop that this
-counter will not show. Two ways to see it: set
-`awaitAckConfirmation(Duration)` to make each completed checkpoint wait for the client library to
-report its acknowledgements successful and fail the job on timeout, or watch Cloud Monitoring's
-`subscription/oldest_unacked_message_age`, which grows monotonically when acknowledgements stop
-landing.
+finally failed completes no future and raises no error the connector can see. The library only
+logs the failed request, through `java.util.logging`, as `failed to send operations` at `WARNING`
+while the subscriber is running. A failed lease extension writes the same message, so the message
+alone does not say which kind of request failed.
+No data is lost (the lease expires and Pub/Sub redelivers, which is the at-least-once contract),
+but an acknowledgement failure that persists while delivery continues becomes a reprocessing loop
+that neither this counter nor the job's state shows. Besides that log record, two ways to see it:
+set `awaitAckConfirmation(Duration)` to make the reader wait, on each checkpoint-complete
+notification, until the client library reports the acknowledgements that notification sends
+successful, failing the job on timeout; or watch Cloud Monitoring's
+`subscription/oldest_unacked_message_age`, which climbs while acknowledgements stop landing,
+though not monotonically: a message can leave the backlog without being acknowledged, for example
+when it expires, and the gauge can then drop.
 
-`awaitAckConfirmation` costs latency — the wait happens on the task thread at checkpoint completion
-— and **the timeout is the only detector**: on a subscription without exactly-once delivery the
-acknowledgement future completes with `SUCCESSFUL` on success, and the failure of the
-acknowledgement request completes nothing, so there is no error to observe, only the absence of a
-confirmation.
+`awaitAckConfirmation` costs latency. When the notification arrives, the task thread hands every
+acknowledgement it covers to the client library and only then starts the timed wait, so the task
+thread is held for the time those calls take plus up to the timeout. The client library sends queued
+acknowledgements in batches on a periodic timer rather than at once, so a confirmation takes that
+batching delay as well as a round trip; the timeout has to sit comfortably above both.
+**The timeout is the connector's only detector**: on a subscription without
+exactly-once delivery the acknowledgement future completes with `SUCCESSFUL` on success, and the
+failure of the acknowledgement request completes nothing, so there is no error to observe, only
+the absence of a confirmation.
 
-**The wait covers only the acknowledgements a completed checkpoint sends**, a message that `DROP`
-discards among them. A redelivery that [restore deduplication](#restore-deduplication) suppresses
-is acknowledged at once instead, outside any checkpoint, and counted in `messagesAcked`; no wait
-reads its future, so a request that fails after its acknowledgement call returned does not fail the
-job.
+**The wait covers only the acknowledgements a checkpoint-complete notification sends**, a message
+that `DROP` discards among them. Flink delivers that notification best effort, so a checkpoint whose
+notification is skipped gets no wait of its own.
+An acknowledgement that [restore deduplication](#restore-deduplication) sends for a suppressed
+redelivery is requested at once instead, outside any checkpoint, and no wait reads its future.
 
 **The wait reads the future the client library returns for each acknowledgement it covers.** The
 library returns that same future from every settlement of a delivery, including the nack a stopping

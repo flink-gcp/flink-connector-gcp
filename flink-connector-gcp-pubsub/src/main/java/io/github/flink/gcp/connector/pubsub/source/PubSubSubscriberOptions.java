@@ -210,8 +210,9 @@ public final class PubSubSubscriberOptions implements Serializable {
     }
 
     /**
-     * Returns how long a completed checkpoint waits for its acknowledgements to be confirmed, or
-     * {@code null} when acknowledgement is fire-and-forget.
+     * Returns how long the reader waits, on each checkpoint-complete notification, for the
+     * acknowledgements that notification sends to be confirmed, or {@code null} when
+     * acknowledgement is fire-and-forget.
      */
     @Nullable
     public Duration getAwaitAckConfirmation() {
@@ -590,36 +591,43 @@ public final class PubSubSubscriberOptions implements Serializable {
         }
 
         /**
-         * Makes each completed checkpoint wait for the client library to report its
-         * acknowledgements successful, failing the job if it does not within the given time.
-         * Optional; defaults to fire-and-forget acknowledgement, which adds no latency.
+         * Makes the reader wait, on each checkpoint-complete notification, until the client library
+         * reports the acknowledgements that notification sends successful, failing the job if that
+         * takes longer than the given time. Optional; defaults to fire-and-forget acknowledgement,
+         * which adds no latency.
          *
-         * <p>This exists because a failed acknowledgement is otherwise invisible. On an ordinary
-         * subscription a request the client library has finally failed to send completes no future
-         * and raises no error the connector can see. No data is lost, since an unacknowledged
+         * <p>This exists because, once an acknowledgement call has returned, the connector
+         * otherwise never learns that its request failed. On an ordinary subscription a request the
+         * client library has finally failed to send completes no future and raises no error the
+         * connector can see; the library only logs it. No data is lost, since an unacknowledged
          * message has its lease expire and is redelivered, which is the at-least-once contract; but
-         * a <em>persistent</em> failure such as a revoked permission becomes a silent reprocessing
-         * loop.
+         * an acknowledgement failure that persists while delivery continues becomes a reprocessing
+         * loop that does not fail the job.
          *
-         * <p><b>The timeout is the only detector.</b> On a subscription without exactly-once
-         * delivery the acknowledgement future completes with {@code SUCCESSFUL} on success, and the
-         * failure of the acknowledgement request <em>completes nothing</em>, so there is no error
-         * to observe — only the absence of a confirmation. Choose a value comfortably above a
-         * normal acknowledgement round trip.
+         * <p><b>The timeout is the connector's only detector.</b> On a subscription without
+         * exactly-once delivery the acknowledgement future completes with {@code SUCCESSFUL} on
+         * success, and the failure of the acknowledgement request <em>completes nothing</em>, so
+         * there is no error to observe — only the absence of a confirmation. The client library
+         * sends queued acknowledgements in batches on a periodic timer rather than at once, so a
+         * confirmation takes that batching delay as well as a round trip; choose a value
+         * comfortably above both.
          *
-         * <p>The wait covers only the acknowledgements a completed checkpoint sends, a message that
-         * {@link DeserializationFailurePolicy#DROP} discards among them. A redelivery that {@link
-         * PubSubSourceBuilder#restoreDeduplication(boolean) restore deduplication} suppresses is
-         * acknowledged at once instead, outside any checkpoint; no wait reads its future, so a
-         * request that fails after its acknowledgement call returned does not fail the job.
+         * <p>The wait covers only the acknowledgements a checkpoint-complete notification sends, a
+         * message that {@link DeserializationFailurePolicy#DROP} discards among them. Flink
+         * delivers that notification best effort, so a checkpoint whose notification is skipped
+         * gets no wait of its own. An acknowledgement that {@link
+         * PubSubSourceBuilder#restoreDeduplication(boolean) restore deduplication} sends for a
+         * suppressed redelivery is requested at once instead, outside any checkpoint, and no wait
+         * reads its future.
          *
          * <p>The wait reads the future the client library returns for each acknowledgement it
          * covers. The library returns that same future from every settlement of a delivery,
          * including the nack a stopping subscriber queues for each delivery it still tracks, and
          * the future keeps the first response that completes it.
          *
-         * <p>The wait happens on the task thread when the checkpoint completes, so it delays
-         * processing by up to this long. That is the price of the confirmation.
+         * <p>When the notification arrives, the task thread hands every acknowledgement it covers
+         * to the client library and only then starts the timed wait, so it is held for the time
+         * those calls take plus up to this long. That is the price of the confirmation.
          *
          * @param awaitAckConfirmation how long to wait for confirmation, at least 1 ms
          * @return this builder

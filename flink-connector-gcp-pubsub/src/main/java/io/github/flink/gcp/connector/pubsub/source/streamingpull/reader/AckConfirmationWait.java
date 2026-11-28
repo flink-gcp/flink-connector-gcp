@@ -31,18 +31,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Waits for the futures the acknowledgements of one completed checkpoint returned to complete with
- * {@code SUCCESSFUL}, and reports a rejection, a timeout, a failed round trip and an interrupt as
- * an {@link IOException} saying what the operator has to decide.
+ * Waits for the futures the acknowledgements one checkpoint-complete notification sent returned to
+ * complete with {@code SUCCESSFUL}, and reports a rejection, a timeout, a failed round trip and an
+ * interrupt as an {@link IOException} saying what the operator has to decide.
  *
  * <p>Immutable, and holds no acknowledgement state: {@link PubSubAckTracker} calls it outside its
  * monitor, because with confirmation requested the wait is a server round trip and holding the lock
  * across it would stall the callback threads delivering new messages.
  *
  * <p>On a subscription without exactly-once delivery the failure of an acknowledgement request
- * completes nothing. The timeout is therefore the only signal a failure produces, which is why it
- * is reported as an ambiguity — the acknowledgements may have failed, or merely be slow — rather
- * than as a server error.
+ * completes nothing. The timeout is therefore the only signal of a failure the connector gets,
+ * which is why it is reported as an ambiguity — the acknowledgements may have failed, or merely be
+ * slow — rather than as a server error.
  */
 @Internal
 final class AckConfirmationWait {
@@ -52,18 +52,18 @@ final class AckConfirmationWait {
     /**
      * Creates the wait.
      *
-     * @param timeout how long the acknowledgements of one checkpoint may take to be confirmed
+     * @param timeout how long the acknowledgements of one notification may take to be confirmed
      */
     AckConfirmationWait(Duration timeout) {
         this.timeout = Preconditions.checkNotNull(timeout);
     }
 
     /**
-     * Waits for every confirmation of one checkpoint, and fails if any is rejected, late, or
-     * interrupted.
+     * Waits for every confirmation of one checkpoint-complete notification, and fails if any is
+     * rejected, late, or interrupted.
      *
-     * @param confirmations the futures the checkpoint's acknowledgements returned
-     * @param checkpointId the completed checkpoint, named in every failure
+     * @param confirmations the futures the notification's acknowledgements returned
+     * @param checkpointId the notified checkpoint, named in every failure
      * @throws IOException if an acknowledgement was rejected, the wait timed out, the round trip
      *     failed, or the thread was interrupted
      */
@@ -94,8 +94,9 @@ final class AckConfirmationWait {
                             + " failure of an acknowledgement request completes nothing, so this"
                             + " timeout is the only signal there is — the acknowledgements may have"
                             + " failed, or merely be slow. Raise"
-                            + " PubSubSubscriberOptions.awaitAckConfirmation(...) if the"
-                            + " subscription is simply slow to respond.",
+                            + " PubSubSubscriberOptions.Builder.awaitAckConfirmation(...), or"
+                            + " scan.ack.await-confirmation in SQL, if the subscription is simply"
+                            + " slow to respond.",
                     e);
         } catch (ExecutionException e) {
             throw new IOException(
