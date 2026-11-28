@@ -21,8 +21,10 @@ import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.Test;
 
@@ -40,8 +42,10 @@ class SpannerLookupEventLoopITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void theLookupsClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
-        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
-                .as("no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         DatabaseDestination database =
                 createDatabase(
@@ -58,15 +62,19 @@ class SpannerLookupEventLoopITCase extends AbstractSpannerEmulatorITCase {
                                         .to("Ada")
                                         .build()));
 
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         SpannerDatabaseRowLookup lookup =
                 new SpannerDatabaseRowLookup(
                         database, "people", Arrays.asList("id", "name"), emulatorEndpoint());
         try {
             lookup.open(new UnregisteredMetricsGroup());
             assertThat(lookup.read(Key.of(1L))).isNotNull();
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the lookup is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the lookup is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the lookup still holds its lease").isTrue();
         } finally {
             lookup.close();
         }

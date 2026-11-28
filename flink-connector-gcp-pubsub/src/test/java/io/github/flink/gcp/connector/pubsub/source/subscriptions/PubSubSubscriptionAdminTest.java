@@ -30,7 +30,7 @@ import io.github.flink.gcp.connector.pubsub.EventLoopChannelChecks;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
-import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -85,6 +85,7 @@ class PubSubSubscriptionAdminTest {
     void closeCancelsTheCallInFlightAndReleasesItsClient() throws Exception {
         try (ServerSocket silent = new ServerSocket(0)) {
             silent.setSoTimeout(10_000);
+            EventLoopObserver.LoopStarts starts = EventLoopChannelChecks.loopStartsFromNow();
             PubSubSubscriptionAdmin admin =
                     new PubSubSubscriptionAdmin(
                             EmulatorEndpoint.parse(
@@ -106,8 +107,8 @@ class PubSubSubscriptionAdminTest {
                 try (Socket accepted = silent.accept()) {
                     assertThat(describe).as("the call is waiting on the silent server").isNotDone();
                     // The call's channel connects on the connector's group, not gRPC's.
-                    assertThat(GrpcEventLoopThreads.alive())
-                            .as("a %s* thread serves the call", GrpcEventLoopThreads.PREFIX)
+                    assertThat(starts.anyStarted())
+                            .as("a group event loop started for the call")
                             .isTrue();
 
                     long started = System.nanoTime();
@@ -153,6 +154,9 @@ class PubSubSubscriptionAdminTest {
                 new EmulatorEndpoint[] {
                     null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint")
                 }) {
+            // Read before the client opens its lease, on both arms; only the production arm's
+            // channel check uses it.
+            EventLoopObserver.LoopStarts starts = EventLoopChannelChecks.loopStartsFromNow();
             GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client =
                     new PubSubSubscriptionAdmin(endpoint, NoCredentialsProvider.create())
                             .newClient();
@@ -161,7 +165,7 @@ class PubSubSubscriptionAdminTest {
                 TransportChannelProvider provider =
                         client.client().getSettings().getTransportChannelProvider();
                 if (endpoint == null) {
-                    EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider);
+                    EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider, starts);
                 } else {
                     assertThat(provider.shouldAutoClose())
                             .as("the emulator channel is the holder's, not the client's")

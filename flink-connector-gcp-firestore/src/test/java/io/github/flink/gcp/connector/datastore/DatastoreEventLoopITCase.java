@@ -107,6 +107,7 @@ class DatastoreEventLoopITCase {
     @ValueSource(strings = {"", "dns:///", "http://"})
     void theSinksClientRunsOnTheGroupAndStopsItOnClose(String prefix) throws Exception {
         String kind = TestNames.unique("K");
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         DatastoreDatabaseAccess access =
                 new DefaultDatastoreDatabaseAccessFactory(
                                 DATABASE, Duration.ofSeconds(30), endpoint(prefix), null)
@@ -121,7 +122,7 @@ class DatastoreEventLoopITCase {
                     .singleElement()
                     .satisfies(key -> assertThat(key.hasId()).isTrue());
 
-            assertOnTheGroup("the sink's client");
+            assertOnTheGroup("the sink's client", starts);
         } finally {
             access.close();
         }
@@ -132,12 +133,13 @@ class DatastoreEventLoopITCase {
     @ParameterizedTest(name = "endpoint prefix \"{0}\"")
     @ValueSource(strings = {"", "dns:///", "http://"})
     void thePageReadersClientRunsOnTheGroupAndStopsItOnClose(String prefix) throws Exception {
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         ClientQueryPageReader reader = new ClientQueryPageReader(endpoint(prefix));
         try {
             QueryResultBatch batch = reader.read(DATABASE, request(TestNames.unique("K")));
             assertThat(batch.getEntityResultsList()).isEmpty();
 
-            assertOnTheGroup("the page reader's client");
+            assertOnTheGroup("the page reader's client", starts);
         } finally {
             reader.close();
         }
@@ -203,10 +205,20 @@ class DatastoreEventLoopITCase {
                 .build();
     }
 
-    private static void assertOnTheGroup(String client) {
-        assertThat(GrpcEventLoopThreads.alive())
-                .as("a %s* thread while %s is open", GrpcEventLoopThreads.PREFIX, client)
+    /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     */
+    private static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
+    }
+
+    private static void assertOnTheGroup(String client, EventLoopObserver.LoopStarts starts) {
+        assertThat(starts.anyStarted())
+                .as("a group event loop started while %s is open", client)
                 .isTrue();
+        assertThat(GrpcEventLoops.isRunning()).as("%s still holds its lease", client).isTrue();
         assertThat(sharedGroupThreadAlive())
                 .as("a %s* thread while %s is open", SHARED_GROUP_PREFIX, client)
                 .isFalse();

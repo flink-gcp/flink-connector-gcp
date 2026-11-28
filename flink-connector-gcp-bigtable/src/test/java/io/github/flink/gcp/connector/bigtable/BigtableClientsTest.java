@@ -35,6 +35,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -62,8 +63,6 @@ class BigtableClientsTest {
     private static final EmulatorEndpoint EMULATOR =
             EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint");
 
-    private static final String PREFIX = GrpcEventLoopThreads.PREFIX;
-
     @BeforeEach
     void noLeaseIsOpenBeforehand() {
         assertThat(GrpcEventLoops.isRunning())
@@ -82,6 +81,9 @@ class BigtableClientsTest {
      */
     @Test
     void theProductionProviderBuildsItsChannelsOnTheGroup() throws Exception {
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try (ServerSocket server = new ServerSocket(0)) {
             EnhancedBigtableStubSettings.Builder stub =
@@ -97,8 +99,8 @@ class BigtableClientsTest {
             try {
                 // Connecting registers the channel on an event loop, which starts its thread.
                 channel.getState(true);
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a %s* thread while the channel connects", GrpcEventLoopThreads.PREFIX)
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started while the channel connects")
                         .isTrue();
             } finally {
                 channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
@@ -146,16 +148,12 @@ class BigtableClientsTest {
      */
     @Test
     void theProductionAdminClientsBuildTheirChannelsOnTheGroup() throws Exception {
-        // An earlier test's released group shuts down by starting its never-run loops, whose
-        // threads would otherwise pass the checks below.
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread beforehand", PREFIX)
-                .isTrue();
         try (ServerSocket server = new ServerSocket(0)) {
             String local = "127.0.0.1:" + server.getLocalPort();
             BaseBigtableTableAdminSettings.Builder tables =
                     BigtableClients.tableAdminSettings(null, NoCredentialsProvider.create());
             tables.setEndpoint(local);
+            EventLoopObserver.LoopStarts tableStarts = loopStartsFromNow();
             try (GrpcEventLoops.LeasedClient<BigtableTableAdminClientV2> client =
                     BigtableClients.openTableAdmin(tables, null)) {
                 ApiFuture<?> call =
@@ -166,8 +164,8 @@ class BigtableClientsTest {
                                                 .setName("projects/p/instances/i/tables/t")
                                                 .build());
                 try {
-                    assertThat(GrpcEventLoopThreads.awaitAlive())
-                            .as("a %s* thread while the table admin connects", PREFIX)
+                    assertThat(tableStarts.awaitAnyStarted())
+                            .as("a group event loop started while the table admin connects")
                             .isTrue();
                 } finally {
                     call.cancel(true);
@@ -178,6 +176,7 @@ class BigtableClientsTest {
             BaseBigtableInstanceAdminSettings.Builder instances =
                     BigtableClients.instanceAdminSettings(null, NoCredentialsProvider.create());
             instances.setEndpoint(local);
+            EventLoopObserver.LoopStarts instanceStarts = loopStartsFromNow();
             try (GrpcEventLoops.LeasedClient<BigtableInstanceAdminClientV2> client =
                     BigtableClients.openInstanceAdmin(instances, null)) {
                 ApiFuture<?> call =
@@ -188,8 +187,8 @@ class BigtableClientsTest {
                                                 .setName("projects/p/instances/i/appProfiles/a")
                                                 .build());
                 try {
-                    assertThat(GrpcEventLoopThreads.awaitAlive())
-                            .as("a %s* thread while the instance admin connects", PREFIX)
+                    assertThat(instanceStarts.awaitAnyStarted())
+                            .as("a group event loop started while the instance admin connects")
                             .isTrue();
                 } finally {
                     call.cancel(true);
@@ -267,6 +266,15 @@ class BigtableClientsTest {
         } finally {
             channel.shutdownNow();
         }
+    }
+
+    /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     */
+    private static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
     }
 
     @SuppressWarnings("rawtypes")

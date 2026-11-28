@@ -81,6 +81,9 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
     @Test
     void theSinksClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
         TableDestination destination = createTable("event-loop-sink");
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         DefaultMutationBatcherFactory factory =
                 new DefaultMutationBatcherFactory(
                         null, BigtableWriterOptions.builder().build(), endpoint(), null);
@@ -91,10 +94,11 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
                 batcher.sendOutstanding();
                 written.get(30, TimeUnit.SECONDS);
 
-                assertThat(GrpcEventLoopThreads.alive())
-                        .as(
-                                "a %s* thread while the sink's client is open",
-                                GrpcEventLoopThreads.PREFIX)
+                assertThat(starts.anyStarted())
+                        .as("a group event loop started while the sink's client is open")
+                        .isTrue();
+                assertThat(GrpcEventLoops.isRunning())
+                        .as("the sink's client still holds its lease")
                         .isTrue();
             } finally {
                 batcher.close();
@@ -114,16 +118,20 @@ class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {
     void aReadersClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
         TableDestination destination = createTable("event-loop-reader");
         seedRows(destination, "k1");
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         LazyBigtableDataClient holder =
                 new LazyBigtableDataClient("event-loop reader", null, endpoint(), true);
         try {
             assertThat(holder.get(destination).readRow(TableId.of(destination.getTable()), "k1"))
                     .isNotNull();
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as(
-                            "a %s* thread while the reader's client is open",
-                            GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the reader's client is open")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the reader's client still holds its lease")
                     .isTrue();
         } finally {
             holder.close();

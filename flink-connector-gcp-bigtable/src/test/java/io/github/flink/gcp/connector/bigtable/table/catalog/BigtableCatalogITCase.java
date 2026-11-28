@@ -157,6 +157,9 @@ class BigtableCatalogITCase extends AbstractBigtableEmulatorITCase {
                 .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         createTable("held", "cf");
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         TableEnvironment table = catalog(null);
 
         assertThat(collect(table, "SHOW TABLES")).contains(Row.of("held"));
@@ -164,8 +167,8 @@ class BigtableCatalogITCase extends AbstractBigtableEmulatorITCase {
         assertThat(GrpcEventLoops.isRunning())
                 .as("the open catalog holds its client's lease")
                 .isTrue();
-        assertThat(GrpcEventLoopThreads.alive())
-                .as("a %s* thread while the catalog is open", GrpcEventLoopThreads.PREFIX)
+        assertThat(starts.anyStarted())
+                .as("a group event loop started while the catalog is open")
                 .isTrue();
 
         table.getCatalog("bt").orElseThrow().close();

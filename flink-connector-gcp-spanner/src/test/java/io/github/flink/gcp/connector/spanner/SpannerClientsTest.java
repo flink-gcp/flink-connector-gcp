@@ -25,6 +25,7 @@ import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -120,18 +121,18 @@ class SpannerClientsTest {
     }
 
     /**
-     * Connects a channel through the settings' configurator under a lease and checks that the
-     * group's threads serve it.
+     * Connects a channel through the settings' configurator under a lease and checks that one of
+     * the group's event loops started for it.
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static void assertRunsOnTheGroup(SpannerOptions settings) throws Exception {
         ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
                 settings.getChannelConfigurator();
-        // A group an earlier test released may still be stopping; its threads would answer the
-        // check below for a channel that never reached the group.
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread before the channel is built", GrpcEventLoopThreads.PREFIX)
-                .isTrue();
+        // A group an earlier test released may still be stopping, so a live thread would not show
+        // which group the channel reached; the group's count does.
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try (ServerSocket server = new ServerSocket(0)) {
             ManagedChannel channel =
@@ -142,8 +143,8 @@ class SpannerClientsTest {
                             .build();
             try {
                 channel.getState(true);
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a %s* thread while the channel connects", GrpcEventLoopThreads.PREFIX)
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started while the channel connects")
                         .isTrue();
             } finally {
                 channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);

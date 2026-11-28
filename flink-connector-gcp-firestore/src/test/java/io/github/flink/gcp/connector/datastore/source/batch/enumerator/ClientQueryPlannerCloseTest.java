@@ -20,7 +20,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceConfig;
 import io.github.flink.gcp.connector.datastore.source.TestSources;
-import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,6 +92,9 @@ class ClientQueryPlannerCloseTest {
             DatastoreSourceConfig<String> config =
                     TestSources.kindConfig(
                             builder -> builder.emulatorEndpoint(target).splitCount(1));
+            EventLoopObserver.LoopStarts starts =
+                    EventLoopObserver.loopStartsFromNow(
+                            GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
             ClientQueryPlanner planner =
                     new ClientQueryPlanner(EmulatorEndpoint.parse(target, "emulatorEndpoint"));
             CompletableFuture<Throwable> plan =
@@ -111,8 +114,8 @@ class ClientQueryPlannerCloseTest {
                 assertThat(GrpcEventLoops.isRunning())
                         .as("the plan's client holds a lease while its call waits")
                         .isTrue();
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a %s* thread carries the plan's call", GrpcEventLoopThreads.PREFIX)
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started for the plan's call")
                         .isTrue();
 
                 long closing = System.nanoTime();

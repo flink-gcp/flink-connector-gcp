@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.storage.v1.WriteStream;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.EmulatorConnections;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import io.grpc.Server;
@@ -144,6 +145,7 @@ class BigQueryWriteClientsTest {
             assertThat(GrpcEventLoops.isRunning())
                     .as("no lease open before the client opens")
                     .isFalse();
+            EventLoopObserver.LoopStarts starts = EmulatorConnections.loopStartsFromNow();
             try (GrpcEventLoops.LeasedClient<BigQueryWriteClient> client =
                     BigQueryWriteClients.forEmulator(
                             EmulatorEndpoint.parse(target, "emulatorEndpoint"))) {
@@ -151,7 +153,7 @@ class BigQueryWriteClientsTest {
                 assertThat(settings.getCredentialsProvider())
                         .isInstanceOf(NoCredentialsProvider.class);
                 EmulatorConnections.assertPlaintextOnTheGroup(
-                        settings.getTransportChannelProvider(), server, target);
+                        settings.getTransportChannelProvider(), server, target, starts);
             }
             assertThat(GrpcEventLoops.isRunning())
                     .as("closing the client released both leases")

@@ -100,10 +100,10 @@ class FirestoreEventLoopITCase {
         assertThat(System.getenv("FIRESTORE_EMULATOR_HOST"))
                 .as("FIRESTORE_EMULATOR_HOST is set; unset it to run this test")
                 .isNull();
-        assertThat(GrpcEventLoopThreads.awaitNone(LEFTOVER_TEARDOWN))
+        assertThat(EventLoopObserver.awaitNoGroup(GrpcEventLoops::isRunning, LEFTOVER_TEARDOWN))
                 .as(
-                        "no %s* thread before the test: an earlier class in this fork left the"
-                                + " group running",
+                        "no lease and no %s* thread before the test: an earlier class in this fork"
+                                + " left the group running",
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         assertThat(awaitNoSharedGroupThread(LEFTOVER_TEARDOWN))
@@ -112,14 +112,12 @@ class FirestoreEventLoopITCase {
                                 + " channel open on gRPC's shared group",
                         SHARED_GROUP_PREFIXES)
                 .isTrue();
-        assertThat(GrpcEventLoops.isRunning())
-                .as("a lease open before the test: an earlier class in this fork left it open")
-                .isFalse();
     }
 
     @Test
     void theSinksClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
         String collection = uniqueCollection();
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         FirestoreDatabaseAccess access =
                 new DefaultFirestoreDatabaseAccessFactory(
                                 TestSources.DATABASE,
@@ -134,7 +132,7 @@ class FirestoreEventLoopITCase {
             // The write's result arrives once its batch was sent and answered.
             written.get(30, TimeUnit.SECONDS);
 
-            assertOnTheGroup("the sink's client");
+            assertOnTheGroup("the sink's client", starts);
         } finally {
             access.close();
         }
@@ -145,6 +143,7 @@ class FirestoreEventLoopITCase {
     @ParameterizedTest(name = "endpoint prefix \"{0}\"")
     @ValueSource(strings = {"", "dns:///", "http://"})
     void thePageReadersClientRunsOnTheGroupAndStopsItOnClose(String prefix) throws Exception {
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         ClientQueryPageReader reader = new ClientQueryPageReader(endpoint(prefix));
         try {
             Query page = reader.query(TestSources.DATABASE, scan(uniqueCollection()));
@@ -154,7 +153,7 @@ class FirestoreEventLoopITCase {
                             TimeUnit.MILLISECONDS.toMicros(System.currentTimeMillis() - 1000));
             assertThat(reader.read(page, readTime)).isEmpty();
 
-            assertOnTheGroup("the page reader's client");
+            assertOnTheGroup("the page reader's client", starts);
         } finally {
             reader.close();
         }
@@ -164,12 +163,13 @@ class FirestoreEventLoopITCase {
 
     @Test
     void theLookupsClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         TestDocumentLookups.OpenLookup lookup =
                 TestDocumentLookups.open(TestSources.DATABASE, uniqueCollection(), target());
         try {
             assertThat(lookup.read("absent").exists()).isFalse();
 
-            assertOnTheGroup("the lookup's client");
+            assertOnTheGroup("the lookup's client", starts);
         } finally {
             lookup.close();
         }
@@ -235,6 +235,7 @@ class FirestoreEventLoopITCase {
     @ValueSource(strings = {"", "dns:///", "http://"})
     void aClientOfTheEmulatorTheVariableNamesRunsOnTheGroup(String prefix) throws Exception {
         String variable = prefix + target();
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         GrpcEventLoops.LeasedClient<Firestore> client =
                 FirestoreClients.open(
                         TestSources.DATABASE,
@@ -260,7 +261,7 @@ class FirestoreEventLoopITCase {
                                     .exists())
                     .isFalse();
 
-            assertOnTheGroup("the client of the variable's emulator");
+            assertOnTheGroup("the client of the variable's emulator", starts);
         } finally {
             client.close();
         }
@@ -289,10 +290,20 @@ class FirestoreEventLoopITCase {
         return TestNames.unique("c").toLowerCase(Locale.ROOT);
     }
 
-    private static void assertOnTheGroup(String client) {
-        assertThat(GrpcEventLoopThreads.alive())
-                .as("a %s* thread while %s is open", GrpcEventLoopThreads.PREFIX, client)
+    /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     */
+    private static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
+    }
+
+    private static void assertOnTheGroup(String client, EventLoopObserver.LoopStarts starts) {
+        assertThat(starts.anyStarted())
+                .as("a group event loop started while %s is open", client)
                 .isTrue();
+        assertThat(GrpcEventLoops.isRunning()).as("%s still holds its lease", client).isTrue();
         assertThat(sharedGroupThreadAlive())
                 .as("a %s thread while %s is open", SHARED_GROUP_PREFIXES, client)
                 .isFalse();

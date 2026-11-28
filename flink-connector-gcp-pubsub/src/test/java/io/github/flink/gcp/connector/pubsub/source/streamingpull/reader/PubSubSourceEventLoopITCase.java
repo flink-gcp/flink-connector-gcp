@@ -80,6 +80,9 @@ class PubSubSourceEventLoopITCase extends AbstractPubSubSourceEmulatorITCase {
         PubSubAckTracker ackTracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
         PubSubSubscriberOptions options = PubSubSubscriberOptions.builder().build();
 
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         try (PubSubSplitReader reader = reader(ackTracker, options)) {
             reader.handleSplitsChanges(
                     new SplitsAddition<>(
@@ -87,9 +90,10 @@ class PubSubSourceEventLoopITCase extends AbstractPubSubSourceEmulatorITCase {
 
             assertThat(payloads(fetchUntil(reader, 1, Duration.ofSeconds(30))))
                     .containsExactly("m1");
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the reader is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the reader is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the reader still holds its lease").isTrue();
         }
 
         assertThat(GrpcEventLoopThreads.awaitNone())

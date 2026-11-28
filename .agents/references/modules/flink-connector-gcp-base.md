@@ -365,10 +365,12 @@ record — context, evidence, declined alternatives — is the named ADR under `
   only the BigQuery default-stream writer calls it (why: `docs/adr/0208`). A test of the pinned
   state uses package-private `pin` with test-utils' `FakeUserCodeClassLoader` and runs its
   `release()` in a `finally`; `StubWriterInitContext` hands out an empty child loader, so a
-  writer's pin is a no-op there. A module test observing the group's threads uses test-utils'
-  `GrpcEventLoopThreads`, and a test of a client opened and closed within one call also asserts
-  `EventLoopObserver.sawGroupDuring` (#2303), which reads
-  `GrpcEventLoops.loopsStartedWhileRunning()` before and after the call (#2350): the group's
+  writer's pin is a no-op there. A module test checks that no group thread remains with test-utils'
+  `GrpcEventLoopThreads`. A test of a client it keeps open reads the count below through
+  `EventLoopObserver.loopStartsFromNow` before the client opens and `LoopStarts.anyStarted()` while
+  it is open (#2354), and a test of a client opened and closed within one call asserts
+  `EventLoopObserver.sawGroupDuring` (#2303); both read
+  `GrpcEventLoops.loopsStartedWhileRunning()` (#2350): the group's
   thread factory counts, under the lock, a thread started while its own group is the attached
   one, so a shutdown's threads (started after the release detached the group) and an earlier
   group's never count. The count shows nothing for an operation that begins while a group runs,

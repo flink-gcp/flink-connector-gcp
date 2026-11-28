@@ -25,7 +25,8 @@ import java.util.function.LongSupplier;
 
 /**
  * Observes the connectors' own gRPC event-loop group around an operation that opens its client and
- * closes it before returning, such as an enumerator's or an admin's call.
+ * closes it before returning, such as an enumerator's or an admin's call, and around a client a
+ * test keeps open, such as a writer's or a reader's.
  *
  * <p>A check that only finds no group thread afterwards passes as well when the operation never
  * used the group, so {@link #sawGroupDuring(BooleanSupplier, LongSupplier, ThrowingRunnable)} also
@@ -35,7 +36,10 @@ import java.util.function.LongSupplier;
  * down from before the operation shows threads while the operation's own lease is open. So the
  * answer comes from base instead: {@code base.rpc.GrpcEventLoops.loopsStartedWhileRunning()} counts
  * the event-loop threads that started while their own group was the running one, and leaves out
- * both kinds.
+ * both kinds. A client the test keeps open is observed through the same count, by {@link
+ * #loopStartsFromNow(BooleanSupplier, LongSupplier)} before it opens and {@link
+ * LoopStarts#anyStarted()} while it is open, since a live group thread there can as well be one of
+ * an earlier group that is still shutting down.
  *
  * <p>Base's state reaches this class as suppliers the caller passes in, {@code
  * GrpcEventLoops::isRunning} and {@code GrpcEventLoops::loopsStartedWhileRunning}, because base
@@ -78,14 +82,37 @@ public final class EventLoopObserver {
             LongSupplier loopsStarted,
             ThrowingRunnable<? extends Exception> operation)
             throws Exception {
+        LoopStarts starts = loopStartsFromNow(running, loopsStarted);
+        operation.run();
+        return starts.anyStarted();
+    }
+
+    /**
+     * Reads the count of event-loop threads started while their group was running, before a test
+     * opens a client it keeps open, so that {@link LoopStarts#anyStarted()} can say while the
+     * client is open whether a group the client opened gave one of its event loops a first task. A
+     * live group thread cannot say that: it can as well belong to an earlier group that is still
+     * shutting down ({@link GrpcEventLoopThreads}).
+     *
+     * <p>The same conditions as for {@link #sawGroupDuring(BooleanSupplier, LongSupplier,
+     * ThrowingRunnable)} hold: no group may be running when the count is read, and the client must
+     * be the only user of the group until it is read again, since the count does not say which
+     * client started a loop.
+     *
+     * @param running whether a group is running: {@code GrpcEventLoops::isRunning}
+     * @param loopsStarted the count of event-loop threads started while their group was running:
+     *     {@code GrpcEventLoops::loopsStartedWhileRunning}
+     * @return a baseline that later readings of the count are compared against
+     * @throws IllegalStateException if a group is already running
+     */
+    public static LoopStarts loopStartsFromNow(BooleanSupplier running, LongSupplier loopsStarted) {
         if (running.getAsBoolean()) {
             throw new IllegalStateException(
-                    "A gRPC event-loop group is already running, so the operation's own use of one"
-                            + " cannot be told apart");
+                    "A gRPC event-loop group is already running, so what follows cannot be told"
+                            + " apart from what holds it: a lease is still open, perhaps left by an"
+                            + " earlier class in this fork, or a pin holds the group");
         }
-        long before = loopsStarted.getAsLong();
-        operation.run();
-        return loopsStarted.getAsLong() > before;
+        return new LoopStarts(loopsStarted, loopsStarted.getAsLong());
     }
 
     /**
@@ -113,5 +140,56 @@ public final class EventLoopObserver {
         }
         return GrpcEventLoopThreads.awaitNone(
                 Duration.ofNanos(Math.max(0, deadline - System.nanoTime())));
+    }
+
+    /**
+     * A baseline of the count of event-loop threads started while their group was running, taken by
+     * {@link #loopStartsFromNow(BooleanSupplier, LongSupplier)} with no group running. Later
+     * readings of the count are compared against it.
+     */
+    public static final class LoopStarts {
+
+        private static final Duration TIMEOUT = Duration.ofSeconds(10);
+
+        private final LongSupplier loopsStarted;
+        private final long before;
+
+        private LoopStarts(LongSupplier loopsStarted, long before) {
+            this.loopsStarted = loopsStarted;
+            this.before = before;
+        }
+
+        /**
+         * Returns whether Netty has asked for an event-loop thread since the count was read, while
+         * the thread's own group was running. An event loop's thread starts once the loop has a
+         * first task, such as a channel's registration, so a client that registers a channel on a
+         * group it opened starts one, and a client whose channels run elsewhere starts none. The
+         * count is taken just before Netty starts the thread, so a start that fails counts too. It
+         * never goes down, so it does not say that the group is still running; {@code
+         * GrpcEventLoops.isRunning()} does, for any lease or pin, not for a particular one.
+         *
+         * @return whether Netty has
+         */
+        public boolean anyStarted() {
+            return loopsStarted.getAsLong() > before;
+        }
+
+        /**
+         * Waits up to ten seconds for {@link #anyStarted()}, for a client whose channels register
+         * on an event loop after the call that opened them has returned.
+         *
+         * @return whether one started in time
+         * @throws InterruptedException if interrupted while waiting
+         */
+        public boolean awaitAnyStarted() throws InterruptedException {
+            long deadline = System.nanoTime() + TIMEOUT.toNanos();
+            while (!anyStarted()) {
+                if (System.nanoTime() >= deadline) {
+                    return false;
+                }
+                Thread.sleep(20);
+            }
+            return true;
+        }
     }
 }

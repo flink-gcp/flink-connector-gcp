@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.EventLoopChannelChecks;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -61,6 +62,9 @@ class PubSubTopicAdminTest {
                 new EmulatorEndpoint[] {
                     null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint")
                 }) {
+            // Read before the client opens its lease, on both arms; only the production arm's
+            // channel check uses it.
+            EventLoopObserver.LoopStarts starts = EventLoopChannelChecks.loopStartsFromNow();
             GrpcEventLoops.LeasedClient<TopicAdminClient> client =
                     new PubSubTopicAdmin(endpoint, NoCredentialsProvider.create()).newClient();
             try {
@@ -68,7 +72,7 @@ class PubSubTopicAdminTest {
                 TransportChannelProvider provider =
                         client.client().getSettings().getTransportChannelProvider();
                 if (endpoint == null) {
-                    EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider);
+                    EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider, starts);
                 } else {
                     assertThat(provider.shouldAutoClose())
                             .as("the emulator channel is the holder's, not the client's")

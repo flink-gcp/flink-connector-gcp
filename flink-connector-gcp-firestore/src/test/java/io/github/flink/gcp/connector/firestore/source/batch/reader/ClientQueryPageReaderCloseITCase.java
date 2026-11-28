@@ -24,6 +24,7 @@ import com.google.firestore.v1.StructuredQuery;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.firestore.source.TestSources;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.MethodDescriptor;
 import io.grpc.Server;
@@ -75,8 +76,10 @@ class ClientQueryPageReaderCloseITCase {
      */
     @BeforeEach
     void startSilentServer() throws IOException, InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
-                .as("no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         assertThat(GrpcEventLoops.isRunning()).as("a lease open before the test").isFalse();
         server =
@@ -102,6 +105,9 @@ class ClientQueryPageReaderCloseITCase {
     @Test
     void closingTheReaderMidPageEndsThePageAndStopsTheGroup() throws Exception {
         String target = "127.0.0.1:" + server.getPort();
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         ClientQueryPageReader reader =
                 new ClientQueryPageReader(EmulatorEndpoint.parse(target, "emulatorEndpoint"));
         try {
@@ -120,8 +126,11 @@ class ClientQueryPageReaderCloseITCase {
             assertThat(queried.await(30, TimeUnit.SECONDS))
                     .as("the page's query reached the server")
                     .isTrue();
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread carries the page's call", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started for the page's call")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the reader's client holds its lease while the call waits")
                     .isTrue();
 
             CompletableFuture<Void> closing =

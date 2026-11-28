@@ -16,9 +16,13 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,16 +43,24 @@ class CloudTasksEventLoopITCase extends AbstractCloudTasksEmulatorITCase {
         QueueDestination queue = createPausedQueue("event-loop");
         // A group left running by an earlier class in this reused fork would make the checks below
         // pass or fail for the wrong reason, so it is ruled out first.
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread before the writer opens", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as(
+                        "no lease and no %s* thread before the writer opens",
+                        GrpcEventLoopThreads.PREFIX)
                 .isTrue();
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
 
         try (CloudTasksWriter<String> writer = newWriter(TestSinkConfigs.builder(queue))) {
             write(writer, "task");
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the writer is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the writer is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the writer still holds its lease").isTrue();
         }
 
         assertThat(GrpcEventLoopThreads.awaitNone())
