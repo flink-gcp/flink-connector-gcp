@@ -45,8 +45,10 @@ public enum DeserializationFailurePolicy {
     /**
      * Discards the message and carries on. Its acknowledgement waits for a checkpoint as an emitted
      * message's does, rather than being sent at once, so records the schema emitted from it before
-     * failing get the protection an emitted message's records have. Failures are counted and logged
-     * at a decreasing rate, so a burst of bad messages does not flood the log.
+     * failing get the protection an emitted message's records have. The message can be redelivered
+     * wherever an emitted message can, and a redelivered copy that reaches the schema is
+     * deserialized again like any other delivery. Each delivery this policy drops is counted, and
+     * failures are logged at a decreasing rate, so a burst of bad messages does not flood the log.
      *
      * <p><b>This drops data.</b> A schema that collected records before failing keeps those — the
      * emitted prefix has already reached the output and cannot be recalled — so a partial message

@@ -747,7 +747,7 @@ A pipeline that must not see a duplicate at all still needs deduplication downst
 | Policy | Behavior |
 |---|---|
 | `FAIL` (default) | Fails the job. The message stays unacknowledged, so it is redelivered — a permanently bad message fails the job again after every restart until it is removed or the schema is fixed |
-| `DROP` | Discards the message. Its acknowledgement waits for a checkpoint as an emitted message's does, rather than being sent at once, so records the schema emitted from it before failing get the protection an emitted message's records have. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
+| `DROP` | Discards the message. Its acknowledgement waits for a checkpoint as an emitted message's does, rather than being sent at once, so records the schema emitted from it before failing get the protection an emitted message's records have. The message can be redelivered wherever an emitted message can, and a redelivered copy that reaches the schema is deserialized again like any other delivery. Counted in `messagesDropped` once per dropped delivery, and logged at a decreasing rate so a bad batch cannot flood the log |
 | `NACK` | Returns the message for redelivery and carries on, leaving it to the subscription's dead-letter policy. Counted in `messagesNacked`, logged at the same decreasing rate |
 
 Whichever is chosen, the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops
@@ -787,7 +787,7 @@ now running, including one that a failover or a restart builds:
 | `messagesReceived` | counter | messages handed over by the client library |
 | `messagesAcked` | counter | acknowledgements **requested** (see below) |
 | `messagesNacked` | counter | messages returned for redelivery |
-| `messagesDropped` | counter | messages discarded by `DROP` |
+| `messagesDropped` | counter | deliveries discarded by `DROP`; a redelivered message counts each time it is dropped |
 | `recordsSkipped` | counter | messages whose deserializer returned successfully without emitting output |
 | `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
 | `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
