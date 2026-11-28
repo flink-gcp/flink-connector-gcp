@@ -51,11 +51,11 @@ import java.util.function.Consumer;
  *
  * <ul>
  *   <li><b>Shutdown mode.</b> The SDK defaults to {@code WAIT_FOR_PROCESSING}, which waits for
- *       every outstanding message to be acknowledged — but this source only acknowledges on
- *       checkpoint completion, so shutdown would stall. {@code NACK_IMMEDIATELY} instead releases
- *       messages the client still holds, including any it buffered without ever handing them to the
- *       receiver, so Pub/Sub redelivers them at once instead of after the acknowledgement deadline.
- *       The mode is fixed for that reason; only its timeout is a knob.
+ *       every outstanding message to be acknowledged — but this source acknowledges a message only
+ *       once a completed checkpoint covers it, so shutdown would stall. {@code NACK_IMMEDIATELY}
+ *       instead releases messages the client still holds, including any it buffered without ever
+ *       handing them to the receiver, so Pub/Sub redelivers them at once instead of after the
+ *       acknowledgement deadline. The mode is fixed for that reason; only its timeout is a knob.
  *   <li><b>Parallel pull count under {@link OrderingMode#PER_KEY}.</b> Ordered subscriptions use
  *       exactly one streaming-pull connection; {@code PubSubSourceBuilder.build()} rejects an
  *       explicit count above one and explains why, so forcing it here only ever overrides the SDK

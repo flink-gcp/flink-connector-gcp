@@ -147,7 +147,8 @@ class PubSubRecordEmitterTest {
     }
 
     @Test
-    void aRedeliveryTheRestoredLedgerCoversIsAcknowledgedInsteadOfEmitted() throws Exception {
+    void aRedeliveryTheRestoredLedgerCoversIsSuppressedAndItsPendingDeliveryAcknowledged()
+            throws Exception {
         RestoredLedger ledger =
                 new RestoredLedger(Duration.ofMinutes(5), () -> 0L, testMetrics.metrics());
         testMetrics.metrics().bindRestoredLedger(ledger);

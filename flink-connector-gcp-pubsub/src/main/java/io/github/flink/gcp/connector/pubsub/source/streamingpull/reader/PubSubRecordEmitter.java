@@ -98,7 +98,7 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
      * @param failurePolicy what to do with a message the schema cannot convert
      * @param metrics counts drops and deserialization failures
-     * @param restoredLedger acknowledges, instead of emitting, redeliveries the restored checkpoint
+     * @param restoredLedger suppresses, instead of emitting, redeliveries the restored checkpoint
      *     already covers; {@code null} when restore deduplication is off
      */
     public PubSubRecordEmitter(
@@ -120,9 +120,8 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
             throws Exception {
         if (restoredLedger != null
                 && restoredLedger.suppresses(split.getSubscription(), message.getMessageId())) {
-            // The restored checkpoint already covers this message's records; only its
-            // acknowledgement was lost. Settling it now is what the lost notification would have
-            // done.
+            // The restored checkpoint already covers this message's records, so the delivery the
+            // tracker still holds, if it holds one, can be acknowledged without a checkpoint.
             ackTracker.ackPendingImmediately(split.splitId(), message.getMessageId());
             return;
         }

@@ -35,7 +35,7 @@ import java.util.function.LongSupplier;
 
 /**
  * The message ids a restored checkpoint covers, held by a reader so that their redeliveries are
- * acknowledged instead of emitted (#2049).
+ * suppressed rather than emitted (#2049).
  *
  * <p>A job restores only from a completed checkpoint, so every id in the ledger had its records
  * committed by that checkpoint, whether or not the acknowledgement reached Pub/Sub before the
@@ -118,7 +118,7 @@ public final class RestoredLedger {
      *
      * @param subscription the subscription the message was received on
      * @param messageId the message id
-     * @return {@code true} to acknowledge the delivery instead of emitting it
+     * @return {@code true} to suppress the delivery instead of emitting it
      */
     public boolean suppresses(SubscriptionDestination subscription, String messageId) {
         if (size == 0) {

@@ -259,7 +259,8 @@ public final class PubSubConnectorOptions {
 
     /**
      * How long the subscriber keeps extending a message's acknowledgement deadline. It has to
-     * outlast the checkpoint interval, since a completing checkpoint is what acknowledges.
+     * outlast the checkpoint interval, since a message is acknowledged only once a completed
+     * checkpoint covers it.
      */
     public static final ConfigOption<Duration> SCAN_ACK_MAX_EXTENSION_PERIOD =
             ConfigOptions.key("scan.ack.max-extension-period")
@@ -268,7 +269,8 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "How long the subscriber keeps extending a message's acknowledgement"
                                     + " deadline. It has to outlast the checkpoint interval, since"
-                                    + " a completing checkpoint is what acknowledges.");
+                                    + " a message is acknowledged only once a completed"
+                                    + " checkpoint covers it.");
 
     /** The shortest acknowledgement deadline extension to request. */
     public static final ConfigOption<Duration> SCAN_ACK_MIN_DURATION_PER_EXTENSION =
@@ -325,20 +327,17 @@ public final class PubSubConnectorOptions {
                                     + " without checkpointing is caught. Zero disables the check.");
 
     /**
-     * Whether a restore suppresses redeliveries of messages the restored checkpoint already covers,
-     * whose acknowledgement was lost because the job stopped before the checkpoint's completion
-     * reached the readers. Each checkpoint then records the ids of those messages.
+     * Whether each checkpoint records ids of messages it covers, so that after a restore their
+     * redeliveries can be suppressed rather than emitted.
      */
     public static final ConfigOption<Boolean> SCAN_RESTORE_DEDUPLICATION_ENABLED =
             ConfigOptions.key("scan.restore-deduplication.enabled")
                     .booleanType()
                     .noDefaultValue()
                     .withDescription(
-                            "Whether a restore suppresses redeliveries of messages the restored"
-                                    + " checkpoint already covers, whose acknowledgement was lost"
-                                    + " because the job stopped before the checkpoint's completion"
-                                    + " reached the readers. Each checkpoint then records the ids"
-                                    + " of those messages.");
+                            "Whether each checkpoint records ids of messages it covers, so that"
+                                    + " after a restore their redeliveries can be suppressed rather"
+                                    + " than emitted.");
 
     /**
      * How long a restored deduplication ledger is kept once the reader starts consuming. A

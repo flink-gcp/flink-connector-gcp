@@ -119,8 +119,8 @@ has the timing an emitted message's has, and its records the protection an emitt
 records have. The cost is the acknowledgement's delay, which an emitted message already pays, and the acknowledgement now
 falls under `awaitAckConfirmation`. A dropped message bound to a checkpoint enters that
 checkpoint's restore-deduplication ledger like an emitted one ([ADR-0198]), so after a restore a
-redelivery the live ledger matches is suppressed and counted in `redeliveriesSuppressed`. Only a redelivery that restore deduplication suppresses is still acknowledged at
-once: its records are already in the restored checkpoint.
+redelivery the live ledger matches is suppressed and counted in `redeliveriesSuppressed`. Only restore deduplication still acknowledges at
+once, and only a message whose records are already in the restored checkpoint.
 
 ## Consequences
 

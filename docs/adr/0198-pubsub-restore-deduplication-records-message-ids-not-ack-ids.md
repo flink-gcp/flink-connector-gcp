@@ -34,7 +34,7 @@ The Apache connector's legacy source keeps the acknowledgement ids of each check
 
 ## Decision
 
-An opt-in setting, `restoreDeduplication(true)` (Table API `scan.restore-deduplication.enabled`), records with every checkpoint the message ids it covers that are not acknowledged yet, and after a restore acknowledges instead of emitting a redelivery whose id is in the restored ledger.
+An opt-in setting, `restoreDeduplication(true)` (Table API `scan.restore-deduplication.enabled`), records with every checkpoint ids of messages it covers, and after a restore suppresses a redelivery whose id is in the restored ledger: it is not emitted, and it can be acknowledged at once rather than with a checkpoint.
 
 - **Content.** The ids of messages bound to a checkpoint and not yet acknowledged when the snapshot is taken (`AckTracker.checkpointedMessageIds`), keyed by subscription.
   A message received but not yet processed, neither emitted nor dropped by `DROP`, is never included: its records are not in the checkpoint, so suppressing its redelivery would lose it.
@@ -82,7 +82,7 @@ Measured on 2026-11-07 on one workstation core with synthetic 17-digit ids, the 
 The ids do not grow with publish time (twelve sequential publishes to one topic on 2026-11-07 came back in no order), so a range check cannot skip the lookup for a message published after the restore; a lookup costs about the same in either form, roughly 50 to 170 ns in the same measurement, depending on whether the id's table slot is in cache.
 A checkpoint taken with the setting on holds ledger chunks in split serializer version 2, which a connector before 1.4.0 rejects, so that checkpoint cannot be restored by a downgrade; turning the setting off and completing one checkpoint empties the reader state again.
 A restore transfers the ledger to the enumerator and on to each reader of its subscription, and consumption waits for that.
-A seek inside the ledger's lifetime acknowledges, rather than emits, replayed messages that are in it.
+A seek inside the ledger's lifetime suppresses, rather than emits, replayed messages that are in it.
 A restore that drops downstream state, such as a sink whose uid changed, can lose the output the ledger assumes committed; that is a state-compatibility break the connector cannot detect.
 
 `PubSubSourceRestoreDeduplicationITCase` reproduces the lost notification deterministically with a savepoint that does not stop the job, which Flink never notifies to tasks (`CheckpointCoordinator` notifies checkpoints and synchronous savepoints only).

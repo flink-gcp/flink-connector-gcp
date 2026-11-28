@@ -35,14 +35,14 @@ import java.util.Map;
  *   <li><b>acknowledged</b> — that checkpoint completed
  * </ol>
  *
- * <p>Only step 4 tells Pub/Sub the message is done, so a failure at any earlier point leaves the
- * message unacknowledged and Pub/Sub redelivers it. Messages still pending or staged when the
- * reader closes are nacked instead of left to expire, so redelivery is immediate.
+ * <p>On this path only step 4 tells Pub/Sub the message is done, so a failure at any earlier point
+ * leaves the message unacknowledged and Pub/Sub redelivers it. Messages still pending or staged
+ * when the reader closes are nacked instead of left to expire, so redelivery is immediate.
  *
  * <p>Three paths settle a pending message at once instead. A message whose emission failed
  * downstream, and one the deserialization failure policy nacks, are nacked for redelivery. A
- * redelivery that restore deduplication suppresses is acknowledged, since the restored checkpoint
- * already holds its records.
+ * message restore deduplication suppresses is acknowledged if it is still pending, since the
+ * restored checkpoint already holds its records.
  *
  * <p>Every operation is keyed by split. Two subscriptions of the same topic deliver the same
  * message id to the same reader, so a reader-wide message-id map would silently drop one of the two

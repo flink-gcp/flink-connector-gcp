@@ -31,15 +31,16 @@ import java.util.function.LongSupplier;
  * with SDK flow control.
  *
  * <p><b>Flow control is what holds a backpressured subscriber back.</b> Because the source
- * acknowledges only at checkpoint completion, a subscriber whose downstream drains more slowly than
- * Pub/Sub delivers fills its buffer until the client's flow control stops pulling, which is at most
- * one flow-control window. A bound below that window is therefore crossed by ordinary backpressure,
- * and a job resumed over a backlog crosses it again within seconds of every restart (#2020). The
- * lapse the bounds exist for is larger: once {@code maxAckExtensionPeriod} passes for a message
- * nobody is draining, the client releases a whole window of permits per expiry wave, so the first
- * wave carries the buffer to {@code 2 × limit + 1} (measured: a 50-message window stepped to 101).
- * <b>Twice the limit, the {@linkplain #lapseBoundMessages() lapse bound}, is crossed by the lapse
- * and by nothing smaller</b>, without anybody choosing a number.
+ * acknowledges a message only once a completed checkpoint covers it, a subscriber whose downstream
+ * drains more slowly than Pub/Sub delivers fills its buffer until the client's flow control stops
+ * pulling, which is at most one flow-control window. A bound below that window is therefore crossed
+ * by ordinary backpressure, and a job resumed over a backlog crosses it again within seconds of
+ * every restart (#2020). The lapse the bounds exist for is larger: once {@code
+ * maxAckExtensionPeriod} passes for a message nobody is draining, the client releases a whole
+ * window of permits per expiry wave, so the first wave carries the buffer to {@code 2 × limit + 1}
+ * (measured: a 50-message window stepped to 101). <b>Twice the limit, the {@linkplain
+ * #lapseBoundMessages() lapse bound}, is crossed by the lapse and by nothing smaller</b>, without
+ * anybody choosing a number.
  *
  * <p><b>Why not the limit itself.</b> The buffer is <em>nearly</em> a subset of what the client
  * holds outstanding, but a bound at the limit has one message of headroom, and at least three

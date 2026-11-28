@@ -59,7 +59,7 @@ None of the attempts that the savepoints stopped had processed an input after it
 
 The oracle counted no covered redelivery: no repeat was of an input that the state its attempt restored already covered, so no repeat was one that restore deduplication should have suppressed.
 The counter can miss coverage at a region failover that leaves subtasks running, and this run's TaskManager deletion was one, but every repeat after that restore was on subscription 0, the region the deletion restarted.
-A redelivery the ledger suppresses is acknowledged rather than emitted and leaves no output, and the sequence reads no metrics, so whether the ledger suppressed anything is not visible.
+A redelivery the ledger suppresses is not emitted and leaves no output, and the sequence reads no metrics, so whether the ledger suppressed anything is not visible.
 
 The final receipt records `success` and `idle`, and `just tier3-analyze` recomputes `usable` with no problem and lists the five faults.
 After the run, no topic or subscription of the run remained, and nothing remained under the run's prefix in `gs://flink-gcp-tier3-pubsub`.
