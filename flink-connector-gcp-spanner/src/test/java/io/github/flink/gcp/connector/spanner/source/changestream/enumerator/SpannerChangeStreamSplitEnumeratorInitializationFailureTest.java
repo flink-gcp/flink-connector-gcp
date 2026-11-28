@@ -31,14 +31,15 @@ import javax.annotation.Nullable;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongConsumer;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -376,7 +377,21 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
                     releaseGate.await();
                     throw releaseFailure;
                 };
-        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client);
+        // Taken where the release is about to let the waiting close go: the count-down after the
+        // creation is the first, the one after the release the second.
+        AtomicInteger countDowns = new AtomicInteger();
+        AtomicReference<Long> countAtReleaseEnd = new AtomicReference<>();
+        AtomicReference<List<Throwable>> suppressedAtReleaseEnd = new AtomicReference<>();
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        clientMetrics -> client,
+                        count -> {
+                            if (countDowns.incrementAndGet() == 2) {
+                                countAtReleaseEnd.set(count);
+                                suppressedAtReleaseEnd.set(List.of(failure.getSuppressed()));
+                            }
+                        });
         enumerator.start();
         Thread initializing = new Thread(() -> context.runAsyncCallsDeferringHandlers(), "init");
         AtomicReference<Throwable> closeResult = new AtomicReference<>();
@@ -407,17 +422,7 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
                 assertThat(capture.getEvents())
                         .as("logged while the release is still closing the client")
                         .isEmpty();
-                assertHoldsNoMonitorOf(closing, enumerator);
-                // Held while the release fails, the enumerator's monitor stops it where it records
-                // its failure: after it has added that failure to initialization's, and before it
-                // publishes its end to the waiting close.
-                synchronized (enumerator) {
-                    releaseGate.countDown();
-                    awaitBlockedOnAMonitorThisThreadHolds(initializing);
-                    assertThat(failure.getSuppressed())
-                            .as("what the initialization failure carries before the release ends")
-                            .containsExactly(releaseFailure);
-                }
+                releaseGate.countDown();
             } finally {
                 releaseGate.countDown();
                 initializing.join(10_000);
@@ -425,6 +430,14 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
             }
             assertThat(initializing.isAlive()).as("initialization ended").isFalse();
             assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+            assertThat(countAtReleaseEnd.get())
+                    .as(
+                            "the release's latch as it was about to let the close go, which nothing"
+                                    + " may count down earlier")
+                    .isEqualTo(1L);
+            assertThat(suppressedAtReleaseEnd.get())
+                    .as("what the initialization failure carried by then")
+                    .containsExactly(releaseFailure);
             // The release's own failure is logged as well, since the enumerator had closed by the
             // time it failed; this test asserts only the initialization failure.
             assertThat(loggedByClose.get())
@@ -514,6 +527,222 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
         assertThat(client.closeCalls).isOne();
     }
 
+    /** The step whose failure initialization records before it lets a waiting close go. */
+    private enum RecordedStep {
+        /** The client's creation fails. */
+        CREATION,
+        /** Initialization succeeds and the client's release fails. */
+        RELEASE,
+        /** The client's call fails, and its release fails with a JVM-fatal error carrying it. */
+        FATAL_RELEASE
+    }
+
+    @ParameterizedTest
+    @EnumSource(RecordedStep.class)
+    void aCloseLandingJustBeforeInitializationLetsItGoLogsTheFailureItRecorded(RecordedStep step)
+            throws Exception {
+        // Initialization records the failure a step observes before it counts down the latch a
+        // close() waits on. A close that lands between the two finds the failure recorded and logs
+        // it; recorded only after the latch, it would be left to initialization's thread, which
+        // would log it racing the close's return.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        RuntimeException failure = new IllegalStateException("initialization failed");
+        ScriptedClient client = new ScriptedClient();
+        SpannerChangeStreamCoordinatorClientFactory clientFactory = clientMetrics -> client;
+        OutOfMemoryError fatal = new OutOfMemoryError("release failed");
+        Throwable logged;
+        switch (step) {
+            case CREATION:
+                clientFactory =
+                        clientMetrics -> {
+                            throw failure;
+                        };
+                logged = failure;
+                break;
+            case RELEASE:
+                client.duringClose =
+                        () -> {
+                            throw failure;
+                        };
+                logged = failure;
+                break;
+            case FATAL_RELEASE:
+                client.initializationFailure = failure;
+                client.duringClose =
+                        () -> {
+                            throw fatal;
+                        };
+                logged = fatal;
+                break;
+            default:
+                throw new IllegalArgumentException(step.name());
+        }
+        // Initialization lets a waiting close go once after creating the client and once after
+        // releasing it; the step that failed is the first for a creation, the second otherwise.
+        GatedCountDown countDown = new GatedCountDown(step == RecordedStep.CREATION ? 1 : 2);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, clientFactory, countDown);
+        enumerator.start();
+        Thread initializing = new Thread(() -> context.runAsyncCallsDeferringHandlers(), "init");
+        AtomicReference<Throwable> closeResult = new AtomicReference<>();
+        AtomicReference<List<LogCapture.Event>> loggedByClose = new AtomicReference<>();
+
+        try (LogCapture capture =
+                LogCapture.of(SpannerChangeStreamSplitEnumerator.class, LogCapture.Level.INFO)) {
+            Thread closing =
+                    new Thread(
+                            () -> {
+                                closeResult.set(catchThrowable(enumerator::close));
+                                // Taken as close() returns: Flink may never run the handler after
+                                // it.
+                                loggedByClose.set(new ArrayList<>(capture.getEvents()));
+                            },
+                            "c");
+            try {
+                initializing.start();
+                assertThat(countDown.awaitReached())
+                        .as("initialization reached the end of the step that failed")
+                        .isTrue();
+                assertThat(countDown.countAtGate())
+                        .as(
+                                "the step's latch as initialization was about to let a close go, which"
+                                        + " nothing may count down earlier")
+                        .isEqualTo(1L);
+                if (step == RecordedStep.FATAL_RELEASE) {
+                    assertThat(fatal.getSuppressed())
+                            .as("what the fatal release failure carried by then")
+                            .containsExactly(failure);
+                }
+                assertThat(capture.getEvents()).as("logged before the close").isEmpty();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the enumerator's close waits for that step")
+                        .isEqualTo(Thread.State.WAITING);
+                assertHoldsNoMonitorOf(closing, enumerator);
+                // Holding the enumerator's monitor once the close is let go keeps initialization's
+                // thread from recording or logging the failure until the close has returned, so
+                // what the close logged cannot be confused with what that thread logs after it.
+                synchronized (enumerator) {
+                    countDown.open();
+                    closing.join(10_000);
+                    assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+                }
+            } finally {
+                countDown.open();
+                initializing.join(10_000);
+                closing.join(10_000);
+            }
+            assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+            assertThat(loggedByClose.get())
+                    .as("the failure initialization recorded, logged by the time close() returns")
+                    .singleElement()
+                    .satisfies(
+                            SpannerChangeStreamSplitEnumeratorInitializationFailureTest::isAWarning)
+                    .satisfies(
+                            event ->
+                                    assertThat(event.getThrowable())
+                                            .as("the failure recorded when the close was let go")
+                                            .isSameAs(logged));
+            assertThat(capture.getEvents()).as("events once initialization ended").hasSize(1);
+        }
+        assertThat(closeResult.get()).isNull();
+    }
+
+    /** The step at which initialization, holding a client, finds the enumerator closed. */
+    private enum ClosedStep {
+        /** The client is created after the close landed, so it is closed at once. */
+        CREATION,
+        /** The client is released after the close landed. */
+        RELEASE
+    }
+
+    @ParameterizedTest
+    @EnumSource(ClosedStep.class)
+    void aClientCloseFailureAfterTheEnumeratorClosedIsLoggedBeforeTheCloseIsLetGo(ClosedStep step)
+            throws Exception {
+        // The enumerator's close lands while initialization is creating or releasing a client, and
+        // closing that client then fails. Initialization logs the failure before it lets the
+        // waiting close go, so it is logged by the time close() returns: Flink may never run the
+        // handler after it.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        RuntimeException closeFailure = new IllegalStateException("close failed");
+        CountDownLatch stepEntered = new CountDownLatch(1);
+        CountDownLatch stepGate = new CountDownLatch(1);
+        ScriptedClient client = new ScriptedClient();
+        SpannerChangeStreamCoordinatorClientFactory clientFactory;
+        if (step == ClosedStep.CREATION) {
+            client.duringClose =
+                    () -> {
+                        throw closeFailure;
+                    };
+            clientFactory =
+                    clientMetrics -> {
+                        stepEntered.countDown();
+                        stepGate.await();
+                        return client;
+                    };
+        } else {
+            client.duringClose =
+                    () -> {
+                        stepEntered.countDown();
+                        stepGate.await();
+                        throw closeFailure;
+                    };
+            clientFactory = clientMetrics -> client;
+        }
+        // The first count-down follows the creation, the second the release.
+        GatedCountDown countDown = new GatedCountDown(step == ClosedStep.CREATION ? 1 : 2);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, clientFactory, countDown);
+        enumerator.start();
+        Thread initializing = new Thread(() -> context.runAsyncCallsDeferringHandlers(), "init");
+        AtomicReference<Throwable> closeResult = new AtomicReference<>();
+        Thread closing = new Thread(() -> closeResult.set(catchThrowable(enumerator::close)), "c");
+
+        try (LogCapture capture =
+                LogCapture.of(SpannerChangeStreamSplitEnumerator.class, LogCapture.Level.INFO)) {
+            try {
+                initializing.start();
+                assertThat(stepEntered.await(10, TimeUnit.SECONDS))
+                        .as("initialization began the step")
+                        .isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the enumerator's close waits for that step")
+                        .isEqualTo(Thread.State.WAITING);
+                stepGate.countDown();
+                assertThat(countDown.awaitReached())
+                        .as("initialization reached the count-down after the step")
+                        .isTrue();
+                assertThat(countDown.countAtGate())
+                        .as(
+                                "the step's latch as initialization was about to let the close go,"
+                                        + " which nothing may count down earlier")
+                        .isEqualTo(1L);
+                assertThat(capture.getEvents())
+                        .as("logged before initialization lets the close go")
+                        .singleElement()
+                        .satisfies(
+                                SpannerChangeStreamSplitEnumeratorInitializationFailureTest
+                                        ::isAWarning)
+                        .satisfies(
+                                event ->
+                                        assertThat(event.getThrowable())
+                                                .as("the client's close failure")
+                                                .isSameAs(closeFailure));
+            } finally {
+                stepGate.countDown();
+                countDown.open();
+                initializing.join(10_000);
+                closing.join(10_000);
+            }
+            assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+            assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+            assertThat(capture.getEvents()).as("events once both ended").hasSize(1);
+        }
+        assertThat(closeResult.get()).isNull();
+    }
+
     @ParameterizedTest
     @MethodSource("closeFailures")
     void aCloseFailureOfTheClientTheEnumeratorsCloseTookOverIsLoggedBeforeItIsThrown(
@@ -581,6 +810,51 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
         }
     }
 
+    /**
+     * A {@code beforeClientReleasedCountDown} hook that records the latch's count at its {@code
+     * gated}-th call and holds initialization there until {@link #open()}.
+     */
+    private static final class GatedCountDown implements LongConsumer {
+
+        private final int gated;
+        private final AtomicInteger calls = new AtomicInteger();
+        private final CountDownLatch reached = new CountDownLatch(1);
+        private final CountDownLatch gate = new CountDownLatch(1);
+        private volatile long countAtGate = -1;
+
+        GatedCountDown(int gated) {
+            this.gated = gated;
+        }
+
+        @Override
+        public void accept(long count) {
+            if (calls.incrementAndGet() == gated) {
+                countAtGate = count;
+                reached.countDown();
+                try {
+                    gate.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        /** Waits for the gated call; false if it did not come in time. */
+        boolean awaitReached() throws InterruptedException {
+            return reached.await(10, TimeUnit.SECONDS);
+        }
+
+        /** The latch's count at the gated call, or -1 before it. */
+        long countAtGate() {
+            return countAtGate;
+        }
+
+        /** Lets the gated call, and any later one, go on. */
+        void open() {
+            gate.countDown();
+        }
+    }
+
     private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
                 new FakeSplitEnumeratorContext<>(parallelism);
@@ -598,7 +872,27 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
     private static SpannerChangeStreamSplitEnumerator enumerator(
             FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             SpannerChangeStreamCoordinatorClientFactory clientFactory) {
-        return enumerator(context, clientFactory, null);
+        return enumerator(context, clientFactory, count -> {});
+    }
+
+    private static SpannerChangeStreamSplitEnumerator enumerator(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            SpannerChangeStreamCoordinatorClientFactory clientFactory,
+            LongConsumer beforeClientReleasedCountDown) {
+        return new SpannerChangeStreamSplitEnumerator(
+                context,
+                clientFactory,
+                StartPosition.latest(),
+                null,
+                null,
+                2_000,
+                true,
+                Duration.ofMinutes(10),
+                null,
+                null,
+                System::currentTimeMillis,
+                System::nanoTime,
+                beforeClientReleasedCountDown);
     }
 
     private static SpannerChangeStreamSplitEnumerator enumerator(
@@ -651,28 +945,6 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
                                 monitor.getIdentityHashCode() == System.identityHashCode(object)
                                         && monitor.getClassName()
                                                 .equals(object.getClass().getName()));
-    }
-
-    /**
-     * Waits until {@code thread} is blocked on a monitor the calling thread holds, rather than in
-     * any state that a class initialization or a wake-up from a latch passes through.
-     */
-    private static void awaitBlockedOnAMonitorThisThreadHolds(Thread thread) {
-        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
-        long holder = Thread.currentThread().getId();
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (true) {
-            ThreadInfo info = threads.getThreadInfo(thread.getId());
-            if (info != null
-                    && info.getThreadState() == Thread.State.BLOCKED
-                    && info.getLockOwnerId() == holder) {
-                return;
-            }
-            assertThat(System.nanoTime())
-                    .as("%s blocked on the test's monitor in time", thread.getName())
-                    .isLessThan(deadline);
-            Thread.onSpinWait();
-        }
     }
 
     /** Asserts that a captured event was logged at WARN, which its rendering starts with. */
