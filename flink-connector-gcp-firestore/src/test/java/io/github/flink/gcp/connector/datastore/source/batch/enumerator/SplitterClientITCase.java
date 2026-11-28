@@ -45,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Each form is checked twice: a query sent straight through the splitter's HTTP client, and a
  * plan asking for several ranges, whose planner's {@code split} is wrapped to witness that it was
  * reached and returned. Why each prefixed form needs the repair is recorded on {@code
- * SplitterClient.httpAuthority} and in ADR-0208; how many ranges the emulator's sampling answers is
- * not what this holds.
+ * EmulatorEndpoint.httpAuthority} and in ADR-0208; how many ranges the emulator's sampling answers
+ * is not what this holds.
  */
 class SplitterClientITCase extends AbstractDatastoreEmulatorITCase {
 

@@ -286,6 +286,13 @@ class DatastoreDynamicTableFactoryTest {
                                 FactoryMocks.createTableSink(
                                         KEYED, options("emulator-endpoint", "no-port")))
                 .hasStackTraceContaining("emulator-endpoint must be host:port");
+        // An HTTP scheme with no host after it, which the sink would otherwise meet only at run
+        // time, when its writer removes the scheme as it opens its client on a TaskManager.
+        assertThatThrownBy(
+                        () ->
+                                FactoryMocks.createTableSink(
+                                        KEYED, options("emulator-endpoint", "http://:8085")))
+                .hasStackTraceContaining("emulator-endpoint must be host:port, was 'http://:8085'");
     }
 
     @Test

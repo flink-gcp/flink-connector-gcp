@@ -35,7 +35,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Locale;
 
 /**
  * Opens the Datastore client every direction of the Datastore-mode connector uses: the generated
@@ -54,7 +53,7 @@ import java.util.Locale;
  * <p><b>The endpoint is always chosen here</b>: the generated client's default endpoint, or an
  * emulator's caller-owned channel ({@link EmulatorChannels#openLeasedClient}), built from the
  * endpoint's gRPC target, a resolver scheme such as {@code dns:///} included and an {@code http://}
- * or {@code https://} one removed ({@link #withoutHttpScheme(EmulatorEndpoint)}), with the API's
+ * or {@code https://} one removed ({@link EmulatorEndpoint#withoutHttpScheme()}), with the API's
  * channel defaults, such as its unbounded inbound message size. The client never reads {@code
  * DATASTORE_EMULATOR_HOST}: this connector reaches an emulator only through the builder's {@code
  * emulatorEndpoint(...)} (ADR-0064), over plaintext with no credentials.
@@ -153,35 +152,13 @@ public final class DatastoreClients {
             }
             return EmulatorChannels.openLeasedClient(
                     DatastoreSettings.defaultGrpcTransportProviderBuilder(),
-                    withoutHttpScheme(emulatorEndpoint),
+                    emulatorEndpoint.withoutHttpScheme(),
                     channel ->
                             DatastoreClient.create(
                                     settings.setTransportChannelProvider(channel).build()));
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Datastore client for " + database + ".", e);
         }
-    }
-
-    /**
-     * Returns the endpoint without a leading {@code http://} or {@code https://}, which the
-     * library's {@code Datastore} removed before it dialled an emulator ({@code
-     * DatastoreUtils.removeScheme}, google-cloud-datastore 3.11.0), and which gRPC would take for a
-     * name-resolver scheme it does not have. A {@code dns:///} target, which gRPC resolves itself,
-     * is kept.
-     *
-     * @param endpoint the emulator endpoint as configured
-     * @return the endpoint without an HTTP scheme
-     */
-    public static EmulatorEndpoint withoutHttpScheme(EmulatorEndpoint endpoint) {
-        String target = endpoint.getTarget();
-        String lower = target.toLowerCase(Locale.ROOT);
-        for (String scheme : new String[] {"http://", "https://"}) {
-            if (lower.startsWith(scheme)) {
-                return EmulatorEndpoint.parse(
-                        target.substring(scheme.length()), "emulatorEndpoint");
-            }
-        }
-        return endpoint;
     }
 
     /**

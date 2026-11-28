@@ -17,28 +17,36 @@
 package io.github.flink.gcp.connector.firestore;
 
 import com.google.api.core.ApiFunction;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
+import com.google.cloud.firestore.spi.v1.FirestoreRpc;
 import com.google.cloud.firestore.v1.FirestoreSettings;
+import com.google.cloud.grpc.GrpcTransportOptions;
+import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.testutils.LogCapture;
-import io.grpc.ForwardingChannelBuilder2;
 import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -64,57 +72,42 @@ class FirestoreClientsTest {
     }
 
     @Test
-    void theDatabaseAndTheEmulatorReachTheSettings() {
+    void theDatabaseReachesTheSettings() {
         FirestoreOptions settings =
-                FirestoreClients.settings(DATABASE, EMULATOR, null, null, variable -> null).build();
+                FirestoreClients.settings(DATABASE, null, credentials(), null).build();
 
         assertThat(settings.getProjectId()).isEqualTo("p");
         assertThat(settings.getDatabaseId()).isEqualTo("orders");
-        assertThat(
-                        ((InstantiatingGrpcChannelProvider) settings.getTransportChannelProvider())
-                                .getEndpoint())
-                .isEqualTo("localhost:8080");
     }
 
     @Test
     void credentialsCannotBeCombinedWithAnEmulator() {
-        GoogleCredentials credentials = GoogleCredentials.create(new AccessToken("t", null));
-
-        assertThatThrownBy(
-                        () ->
-                                FirestoreClients.settings(
-                                        DATABASE, EMULATOR, credentials, null, v -> null))
+        assertThatThrownBy(() -> FirestoreClients.settings(DATABASE, EMULATOR, credentials(), null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /** Without an endpoint, the client dials what the variable names, as the library would. */
     @Test
-    void anInheritedEmulatorVariableIsWarnedAboutWhenNoEmulatorIsConfigured() {
+    void anInheritedEmulatorVariableIsFollowedWithAWarningWhenNoEmulatorIsConfigured() {
         try (LogCapture capture = LogCapture.of(FirestoreClients.class)) {
-            FirestoreClients.settings(
-                    DATABASE,
-                    null,
-                    GoogleCredentials.create(new AccessToken("t", null)),
-                    null,
-                    variable ->
-                            variable.equals(FirestoreClients.EMULATOR_HOST_VARIABLE)
-                                    ? "stray:9000"
-                                    : null);
+            assertThat(FirestoreClients.emulator(DATABASE, null, variable -> "dns:///stray:9000"))
+                    .isEqualTo(EmulatorEndpoint.parse("dns:///stray:9000", "e"));
 
             assertThat(capture.getMessages())
                     .singleElement()
                     .asString()
                     .contains(
                             "FIRESTORE_EMULATOR_HOST",
-                            "stray:9000",
+                            "dns:///stray:9000",
                             "projects/p/databases/orders",
-                            "shared event-loop group");
+                            "placeholder token");
         }
     }
 
     @Test
-    void theVariableIsNotWarnedAboutBesideAConfiguredEmulator() {
+    void noVariableAndNoEndpointMeanTheService() {
         try (LogCapture capture = LogCapture.of(FirestoreClients.class)) {
-            FirestoreClients.settings(DATABASE, EMULATOR, null, null, variable -> "stray:9000");
+            assertThat(FirestoreClients.emulator(DATABASE, null, variable -> null)).isNull();
 
             assertThat(capture.getMessages()).isEmpty();
         }
@@ -134,7 +127,7 @@ class FirestoreClientsTest {
                     return builder;
                 };
         FirestoreOptions.Builder settings =
-                FirestoreClients.settings(DATABASE, null, credentials(), null, variable -> null)
+                FirestoreClients.settings(DATABASE, null, credentials(), null)
                         .setChannelProvider(
                                 FirestoreSettings.defaultGrpcTransportProviderBuilder()
                                         .setChannelConfigurator(library)
@@ -142,8 +135,7 @@ class FirestoreClientsTest {
 
         GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try {
-            FirestoreOptions options =
-                    FirestoreClients.options(DATABASE, null, settings, lease, variable -> null);
+            FirestoreOptions options = FirestoreClients.serviceOptions(settings, lease);
 
             assertThat(options.getEmulatorHost()).isNull();
             InstantiatingGrpcChannelProvider provider =
@@ -180,13 +172,10 @@ class FirestoreClientsTest {
         try {
             InstantiatingGrpcChannelProvider provider =
                     (InstantiatingGrpcChannelProvider)
-                            FirestoreClients.options(
-                                            DATABASE,
-                                            null,
+                            FirestoreClients.serviceOptions(
                                             FirestoreClients.settings(
-                                                    DATABASE, null, credentials(), null, v -> null),
-                                            lease,
-                                            variable -> null)
+                                                    DATABASE, null, credentials(), null),
+                                            lease)
                                     .getTransportChannelProvider();
 
             assertThat(provider.getEndpoint()).isNotNull().isEqualTo(library.getEndpoint());
@@ -199,112 +188,146 @@ class FirestoreClientsTest {
     }
 
     /**
-     * The emulator arm dials the configured endpoint through the API's own provider, on the group,
-     * with the emulator's fixed token, rather than through the library's emulator setting.
+     * The emulator arm sends every call through the connector's RPC on the caller's channel, with
+     * the emulator's fixed token, and sets the emulator host so the library never reads {@value
+     * FirestoreClients#EMULATOR_HOST_VARIABLE}.
      */
     @Test
-    void theEmulatorArmUsesTheApisProviderRatherThanTheLibrarysEmulatorSetting() {
-        FirestoreOptions.Builder settings =
-                FirestoreClients.settings(DATABASE, EMULATOR, null, null, v -> null);
-        PlaintextRecorder channel = new PlaintextRecorder();
-        ((InstantiatingGrpcChannelProvider) settings.build().getTransportChannelProvider())
-                .toBuilder().getChannelConfigurator().apply(channel);
-        assertThat(channel.plaintext).as("the emulator's channel is plaintext").isTrue();
-
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
-        try {
+    void theEmulatorArmSendsEveryCallThroughTheConnectorsRpc() throws Exception {
+        try (GrpcEventLoops.LeasedClient<GrpcTransportChannel> channel =
+                EmulatorChannels.openLeasedPlaintextChannel(
+                        FirestoreSettings.defaultGrpcTransportProviderBuilder(), EMULATOR)) {
             FirestoreOptions options =
-                    FirestoreClients.options(DATABASE, EMULATOR, settings, lease, v -> null);
-
-            assertThat(options.getEmulatorHost()).isNull();
-            InstantiatingGrpcChannelProvider provider =
-                    (InstantiatingGrpcChannelProvider) options.getTransportChannelProvider();
-            assertThat(provider.getEndpoint()).isEqualTo("localhost:8080");
-            // The library's emulator provider sets none, which leaves gRPC's 4 MiB.
-            assertThat(provider.toBuilder().getMaxInboundMessageSize())
-                    .isEqualTo(Integer.MAX_VALUE);
-            assertThat(options.getCredentials())
-                    .isInstanceOf(FirestoreOptions.EmulatorCredentials.class);
-        } finally {
-            lease.close();
+                    FirestoreClients.emulatorOptions(
+                            FirestoreClients.settings(DATABASE, EMULATOR, null, null),
+                            EMULATOR,
+                            channel.client());
+            FirestoreRpc rpc = (FirestoreRpc) options.getRpc();
+            try {
+                assertThat(rpc).isInstanceOf(FirestoreEmulatorRpc.class);
+                assertThat(options.getEmulatorHost()).isEqualTo("localhost:8080");
+                assertThat(options.getCredentials())
+                        .isInstanceOf(FirestoreOptions.EmulatorCredentials.class);
+            } finally {
+                rpc.shutdownNow();
+                rpc.close();
+            }
         }
     }
 
-    /**
-     * With {@value FirestoreClients#EMULATOR_HOST_VARIABLE} set beside a configured endpoint, the
-     * configured endpoint still wins, through the library's emulator setting, and the warning says
-     * the client is off the group.
-     */
-    @Test
-    void theVariableYieldsToTheConfiguredEndpointWithAWarning() {
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+    /** A variable set beside a configured endpoint is ignored, empty or not, with a warning. */
+    @ParameterizedTest
+    @ValueSource(strings = {"stray:9000", ""})
+    void theVariableYieldsToTheConfiguredEndpointWithAWarning(String value) {
         try (LogCapture capture = LogCapture.of(FirestoreClients.class)) {
-            FirestoreOptions options =
-                    FirestoreClients.options(
-                            DATABASE,
-                            EMULATOR,
-                            FirestoreClients.settings(DATABASE, EMULATOR, null, null, v -> null),
-                            lease,
-                            variable -> "stray:9000");
+            assertThat(FirestoreClients.emulator(DATABASE, EMULATOR, variable -> value))
+                    .isSameAs(EMULATOR);
 
-            assertThat(options.getEmulatorHost()).isEqualTo("localhost:8080");
-            assertThat(
-                            ((InstantiatingGrpcChannelProvider)
-                                            options.getTransportChannelProvider())
-                                    .getEndpoint())
-                    .isEqualTo("localhost:8080");
             assertThat(capture.getMessages())
                     .singleElement()
                     .asString()
                     .contains(
                             "FIRESTORE_EMULATOR_HOST",
-                            "stray:9000",
-                            "localhost:8080",
-                            "shared event-loop group");
-        } finally {
-            lease.close();
+                            "'" + value + "'",
+                            "is ignored",
+                            "localhost:8080");
         }
+    }
+
+    /** A variable that names no {@code host:port} fails the client, naming the variable. */
+    @Test
+    void aMalformedVariableWithoutAnEndpointIsRefused() {
+        assertThatThrownBy(() -> FirestoreClients.emulator(DATABASE, null, variable -> ""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("FIRESTORE_EMULATOR_HOST");
     }
 
     /**
-     * The library refuses a value it cannot parse, an empty one included, but never sees it beside
-     * a configured endpoint.
+     * A client whose creation fails gives back the executor the library took for it, which the
+     * library's {@code GrpcFirestoreRpc} keeps when its constructor fails (#2343): here gax cannot
+     * read the provider's {@code dns:///} endpoint.
      */
     @Test
-    void anEmptyVariableBesideAConfiguredEndpointIsNotParsed() {
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
-        try (LogCapture capture = LogCapture.of(FirestoreClients.class)) {
-            FirestoreOptions options =
-                    FirestoreClients.options(
-                            DATABASE,
-                            EMULATOR,
-                            FirestoreClients.settings(DATABASE, EMULATOR, null, null, v -> null),
-                            lease,
-                            variable -> "");
+    void aFailedClientGivesItsExecutorBack() {
+        assertThat(GrpcEventLoops.isRunning()).as("a lease is open before the test").isFalse();
+        RecordingExecutorFactory executors = new RecordingExecutorFactory();
+        // The factory goes in through the settings, where a caller would set one.
+        FirestoreOptions.Builder settings =
+                FirestoreClients.settings(DATABASE, null, credentials(), null)
+                        .setTransportOptions(
+                                GrpcTransportOptions.newBuilder()
+                                        .setExecutorFactory(executors)
+                                        .build())
+                        .setChannelProvider(
+                                FirestoreSettings.defaultGrpcTransportProviderBuilder()
+                                        .setEndpoint("dns:///localhost:1")
+                                        .build());
 
-            assertThat(options.getEmulatorHost()).isEqualTo("localhost:8080");
-            assertThat(capture.getMessages()).singleElement().asString().contains("set to ''");
-        } finally {
-            lease.close();
+        assertThatThrownBy(() -> FirestoreClients.open(DATABASE, null, settings, variable -> null))
+                .isInstanceOf(IOException.class);
+        assertThat(executors.taken).as("an executor was taken").isPositive();
+        assertThat(executors.given)
+                .as("every executor taken was given back")
+                .isEqualTo(executors.taken);
+        assertThat(GrpcEventLoops.isRunning()).as("the lease was released").isFalse();
+    }
+
+    /**
+     * An emulator endpoint with an IPv6 literal in an {@code http://} scheme or as a gRPC target's
+     * DNS server builds: the library checks the emulator host as part of an {@code http://} URL,
+     * which either, left on the endpoint, would fail.
+     */
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource({"http://[::1]:1, [::1]:1", "dns://[::1]/localhost:1, localhost:1"})
+    void anIpv6EmulatorEndpointBuilds(String configured, String emulatorHost) throws Exception {
+        EmulatorEndpoint endpoint = EmulatorEndpoint.parse(configured, "emulatorEndpoint");
+
+        try (GrpcEventLoops.LeasedClient<Firestore> client =
+                FirestoreClients.open(
+                        DATABASE,
+                        endpoint,
+                        FirestoreClients.settings(DATABASE, endpoint, null, null),
+                        variable -> null)) {
+            assertThat(client.client().getOptions().getEmulatorHost()).isEqualTo(emulatorHost);
         }
     }
 
-    /** Without an endpoint, the library's own emulator host stays; settings(...) warned already. */
     @Test
-    void anInheritedEmulatorHostWithoutAnEndpointIsLeftToTheLibrary() {
-        FirestoreOptions.Builder settings =
-                FirestoreClients.settings(DATABASE, null, credentials(), null, v -> null)
-                        .setEmulatorHost("stray:9000");
+    void theReleasingFactoryGivesBackOnlyWhatIsStillHeld() {
+        RecordingExecutorFactory executors = new RecordingExecutorFactory();
+        FirestoreClients.ReleasingExecutorFactory releasing =
+                new FirestoreClients.ReleasingExecutorFactory(executors);
 
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
-        try (LogCapture capture = LogCapture.of(FirestoreClients.class)) {
-            FirestoreOptions options =
-                    FirestoreClients.options(DATABASE, null, settings, lease, variable -> null);
+        ScheduledExecutorService first = releasing.get();
+        ScheduledExecutorService second = releasing.get();
+        releasing.release(first);
+        releasing.releaseHeld();
+        releasing.releaseHeld();
+        // A late release from the library, after the cleanup gave the executor back already.
+        releasing.release(second);
 
-            assertThat(options.getEmulatorHost()).isEqualTo("stray:9000");
-            assertThat(capture.getMessages()).isEmpty();
-        } finally {
-            lease.close();
+        assertThat(executors.taken).isEqualTo(2);
+        assertThat(executors.given).isEqualTo(2);
+    }
+
+    /** Counts what it hands out and gets back; one executor, never shut down here. */
+    private static final class RecordingExecutorFactory
+            implements GrpcTransportOptions.ExecutorFactory<ScheduledExecutorService> {
+
+        private final ScheduledExecutorService executor =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        private int taken;
+        private int given;
+
+        @Override
+        public synchronized ScheduledExecutorService get() {
+            taken++;
+            return executor;
+        }
+
+        @Override
+        public synchronized void release(ScheduledExecutorService released) {
+            given++;
         }
     }
 
@@ -316,7 +339,7 @@ class FirestoreClientsTest {
                 FirestoreClients.open(
                         DATABASE,
                         null,
-                        FirestoreClients.settings(DATABASE, null, credentials(), null, v -> null));
+                        FirestoreClients.settings(DATABASE, null, credentials(), null));
         try {
             assertThat(GrpcEventLoops.isRunning()).as("the client's lease").isTrue();
         } finally {
@@ -429,25 +452,5 @@ class FirestoreClientsTest {
                             }
                             return null;
                         });
-    }
-
-    /** A channel builder that records whether it was made plaintext. */
-    private static final class PlaintextRecorder
-            extends ForwardingChannelBuilder2<PlaintextRecorder> {
-
-        private final ManagedChannelBuilder<?> delegate =
-                ManagedChannelBuilder.forTarget("localhost:1");
-        private boolean plaintext;
-
-        @Override
-        protected ManagedChannelBuilder<?> delegate() {
-            return delegate;
-        }
-
-        @Override
-        public PlaintextRecorder usePlaintext() {
-            plaintext = true;
-            return super.usePlaintext();
-        }
     }
 }

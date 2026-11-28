@@ -75,10 +75,10 @@ gcloud emulators firestore start --host-port=localhost:8080
 ```
 
 Then point the sink at it.
-The emulator needs no credentials, so the sink sends none.
+The emulator needs no credentials, so the sink sends the emulator's placeholder owner token instead of the job's.
 
 {{< java-snippet file="FirestoreExamplesEmulatorSink.java" tag="firestore-examples-emulator-sink" >}}
 
 Set the endpoint on the builder rather than exporting `FIRESTORE_EMULATOR_HOST`.
-The client library would honor the variable too, and would then send a job meant for the real service to the emulator; the sink warns when the variable is set without an endpoint.
+The connector honors the variable too, as the client library would, and would then send a job meant for the real service to the emulator; the sink warns when the variable is set without an endpoint.
 The emulator is not the service: it does not enforce the request-size limit or IAM, and the [deviation table]({{< relref "docs/connectors/datastream/firestore" >}}#emulator-deviations) lists what is known to differ.

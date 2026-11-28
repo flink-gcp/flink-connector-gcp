@@ -87,17 +87,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   would share an isolation pass's solo request). Buffered writes count against both in-flight
   bounds, and drawn-id creates bypass the sequencer. `PerKeyWriteSequencer` lives in `base.sink`
   since Bigtable adopted it (#1620, `docs/adr/0190`); Spanner (#1619) takes the same spelling.
-- The emulator endpoint reaches the client only through the builder; the library also reads
-  `FIRESTORE_EMULATOR_HOST` itself, and `FirestoreClients` warns when it is set without an
-  endpoint. **Native clients run on the event-loop group** (`docs/adr/0208`, #2330):
-  `FirestoreClients.open` builds the options, applies the lease to the provider they carry (the
-  library's tracing configurator, present only with a tracer provider installed, stays first) and
-  builds again; the emulator arm sets a plaintext provider from `FirestoreSettings`' defaults with
-  `EmulatorCredentials`, not `setEmulatorHost` (except with the variable set, below).
-  With the variable set beside a configured endpoint, `FirestoreClients.options` reads it before
-  the library would (an empty value fails the library's build) and builds on the endpoint through
-  `setEmulatorHost` (off the group) with a warning. `dns:///` and `http://` endpoints fail at
-  creation, as before (gax parses `host:port`); those and the client-certificate trap are #2343.
+- The emulator endpoint reaches the client through the builder; without one, a Native client
+  follows `FIRESTORE_EMULATOR_HOST` as the library would, with a warning, and with one the variable
+  is ignored, with a warning. **Native clients run on the event-loop group** (`docs/adr/0208`,
+  #2330, #2343): for the service, `FirestoreClients.open` builds the options, applies the lease to
+  the provider they carry (the library's tracing configurator, present only with a tracer provider
+  installed, stays first) and builds again, with the transport's executor factory wrapped so a
+  failed creation gives its executor back; an emulator client sends every call through
+  `EmulatorFirestoreRpc` (a `GrpcFirestoreStub` set through `setServiceRpcFactory`) on a
+  caller-owned plaintext channel, and always sets the emulator host so the library never reads the
+  variable. Keep `EmulatorFirestoreRpc`'s retry settings equal to `GrpcFirestoreRpc`'s
+  (`EmulatorFirestoreRpcTest`), its own background executor (stopped by `shutdownNow()`) apart
+  from the shared one it gives back, and cut the channel before its bounded close.
   **Close a Native client through `FirestoreClients.close`** (`shutdownNow()` then `close()`):
   cancelling a query's future does not end its `RunQuery` stream, and `close()` alone waited 300 s
   for it (`ClientQueryPlannerCloseITCase`).
@@ -394,9 +395,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   appended, falling back to running it as written on `INVALID_ARGUMENT`.
 - **`QuerySplitter` is called over the proto-client HTTP `Datastore`** (`SplitterClient`, built
   through `HttpDatastoreRpc`'s factory; owner's decision, 2026-10-03), on the JobManager only while
-  planning. It takes an emulator endpoint as an HTTP `host:port` (`SplitterClient.httpAuthority`,
-  #2338): an emulator endpoint with an HTTP scheme or gRPC's `dns` scheme reaches it as the
-  `host:port` the gRPC clients dial, and a new such form goes into `SplitterClientITCase`'s
+  planning. It takes an emulator endpoint as an HTTP `host:port` (`EmulatorEndpoint.httpAuthority`,
+  #2338, moved to the base in #2343, where Native mode's emulator host takes it too): an
+  emulator endpoint with an HTTP scheme or gRPC's `dns` scheme reaches it as the `host:port` the
+  gRPC clients dial, and a new such form goes into `SplitterClientITCase`'s
   `endpointPrefixes()`. Readers and the
   planner's own queries use the generated client with the retry settings the library's
   `Datastore` applied (`DatastoreClients.libraryRetrySettings()`, which

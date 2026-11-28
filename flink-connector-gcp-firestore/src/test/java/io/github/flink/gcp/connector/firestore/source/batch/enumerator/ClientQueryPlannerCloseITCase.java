@@ -150,8 +150,11 @@ class ClientQueryPlannerCloseITCase {
                                     throw new UncheckedIOException(e);
                                 }
                             });
-            // Fails with a TimeoutException if the close takes 10 s or more.
-            closing.get(10, TimeUnit.SECONDS);
+            // Fails with a TimeoutException if the close takes 4 s or more: below the 5 s a
+            // channel's bounded close waits for its calls before it cuts them, which an emulator
+            // client's close must not wait out (#2343). Both cases took under 1 s once the
+            // channel was cut first (measured 2026-11-26).
+            closing.get(4, TimeUnit.SECONDS);
             assertThatThrownBy(() -> plan.get(10, TimeUnit.SECONDS))
                     .hasStackTraceContaining("closed while a call was in flight");
             assertThat(GrpcEventLoopThreads.awaitNone())

@@ -17,7 +17,10 @@
 package io.github.flink.gcp.connector.firestore;
 
 import com.google.api.core.ApiFuture;
+import com.google.auth.oauth2.AccessToken;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.Timestamp;
+import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.WriteResult;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
@@ -40,6 +43,8 @@ import io.github.flink.gcp.connector.testutils.firestore.FirestoreEmulatorContai
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.containers.FirestoreEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -56,7 +61,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The Firestore Native clients run on the connector's own event-loop group and stop it when they
- * close (docs/adr/0208, #2330).
+ * close (docs/adr/0208, #2330), and reach an emulator whose endpoint carries a scheme, or that
+ * {@code FIRESTORE_EMULATOR_HOST} names, on that group too (#2343).
  *
  * <p>The class starts an emulator of its own and opens no client outside the connector's, so a
  * thread of gRPC's shared group, such as {@code grpc-default-worker-ELG}, can only come from a
@@ -89,8 +95,8 @@ class FirestoreEventLoopITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        // The library reads the variable whenever no emulator host was set, and a client it
-        // builds from it runs off the group (FirestoreClients).
+        // FirestoreClients reads the variable when no emulator is configured, and a client then
+        // dials what it names; the test that models it passes the value itself.
         assertThat(System.getenv("FIRESTORE_EMULATOR_HOST"))
                 .as("FIRESTORE_EMULATOR_HOST is set; unset it to run this test")
                 .isNull();
@@ -136,9 +142,10 @@ class FirestoreEventLoopITCase {
         assertGroupStopped("the sink's client");
     }
 
-    @Test
-    void thePageReadersClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
-        ClientQueryPageReader reader = new ClientQueryPageReader(endpoint());
+    @ParameterizedTest(name = "endpoint prefix \"{0}\"")
+    @ValueSource(strings = {"", "dns:///", "http://"})
+    void thePageReadersClientRunsOnTheGroupAndStopsItOnClose(String prefix) throws Exception {
+        ClientQueryPageReader reader = new ClientQueryPageReader(endpoint(prefix));
         try {
             Query page = reader.query(TestSources.DATABASE, scan(uniqueCollection()));
             // A second back, so the emulator, on this machine's clock, never sees a future time.
@@ -176,16 +183,17 @@ class FirestoreEventLoopITCase {
      * loops while the group is running, and hold no lease the moment it returns ({@link
      * EventLoopObserver}).
      */
-    @Test
-    void thePlannerClosesItsClientWhenThePlanReturns() throws Exception {
+    @ParameterizedTest(name = "endpoint prefix \"{0}\"")
+    @ValueSource(strings = {"", "dns:///", "http://"})
+    void thePlannerClosesItsClientWhenThePlanReturns(String prefix) throws Exception {
         FirestoreSourceConfig<String> config =
                 TestSources.source(
                                 builder ->
                                         builder.collectionGroup(uniqueCollection())
                                                 .partitionCount(1)
-                                                .emulatorEndpoint(target()))
+                                                .emulatorEndpoint(prefix + target()))
                         .getConfig();
-        try (ClientQueryPlanner planner = new ClientQueryPlanner(endpoint())) {
+        try (ClientQueryPlanner planner = new ClientQueryPlanner(endpoint(prefix))) {
             QueryPlan plan = planOnTheGroup(planner, config);
 
             assertThat(plan.getQueries()).hasSize(1);
@@ -216,6 +224,48 @@ class FirestoreEventLoopITCase {
                             query -> assertThat(query.getStructuredQuery().getOffset()).isZero());
             assertGroupStopped("the planner's client, once the plan returned");
         }
+    }
+
+    /**
+     * Without a configured emulator, a client reaches the emulator {@code FIRESTORE_EMULATOR_HOST}
+     * names, as the client library would send it there, but on the connector's group, whatever
+     * spelling of the endpoint gRPC accepts.
+     */
+    @ParameterizedTest(name = "variable prefix \"{0}\"")
+    @ValueSource(strings = {"", "dns:///", "http://"})
+    void aClientOfTheEmulatorTheVariableNamesRunsOnTheGroup(String prefix) throws Exception {
+        String variable = prefix + target();
+        GrpcEventLoops.LeasedClient<Firestore> client =
+                FirestoreClients.open(
+                        TestSources.DATABASE,
+                        null,
+                        // A stand-in token rather than Application Default Credentials, so a client
+                        // that missed the variable could reach no project with real credentials.
+                        FirestoreClients.settings(
+                                TestSources.DATABASE,
+                                null,
+                                GoogleCredentials.create(new AccessToken("t", null)),
+                                null),
+                        name ->
+                                name.equals(FirestoreClients.EMULATOR_HOST_VARIABLE)
+                                        ? variable
+                                        : null);
+        try {
+            assertThat(
+                            client.client()
+                                    .collection(uniqueCollection())
+                                    .document("absent")
+                                    .get()
+                                    .get(30, TimeUnit.SECONDS)
+                                    .exists())
+                    .isFalse();
+
+            assertOnTheGroup("the client of the variable's emulator");
+        } finally {
+            client.close();
+        }
+
+        assertGroupStopped("the client of the variable's emulator");
     }
 
     private static com.google.firestore.v1.RunQueryRequest scan(String collection) {
@@ -289,7 +339,11 @@ class FirestoreEventLoopITCase {
     }
 
     private static EmulatorEndpoint endpoint() {
-        return EmulatorEndpoint.parse(target(), "emulatorEndpoint");
+        return endpoint("");
+    }
+
+    private static EmulatorEndpoint endpoint(String prefix) {
+        return EmulatorEndpoint.parse(prefix + target(), "emulatorEndpoint");
     }
 
     private static boolean sharedGroupThreadAlive() {

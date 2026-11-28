@@ -383,7 +383,7 @@ All of this is streaming behaviour: in batch execution Flink 2.3 plans such a st
 | `database` | *unset ⇒ the default database* | The id of the Firestore database in Datastore mode |
 | `kind` | **required** | The kind of the table's entities |
 | `namespace` | *unset ⇒ the default namespace* | The namespace of the table's entities |
-| `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started in Datastore mode; setting it also stops credential discovery |
+| `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Firestore emulator started in Datastore mode (also as `dns:///host:port` or another gRPC `dns` target, or with an `http://` or `https://` scheme, which is removed); setting it also stops credential discovery |
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path, read by the scan's JobManager and readers and by each lookup and sink subtask; rejected with `emulator-endpoint` |
 | `geo-point-field-paths` | empty | Semicolon-separated field paths of `ROW<latitude DOUBLE, longitude DOUBLE>` values written and read as geographical points |
 | `reference-field-paths` | empty | Semicolon-separated field paths of `ROW<kind STRING, name STRING, id BIGINT>` values, optionally with `ancestors`, written and read as key values in the table's namespace |

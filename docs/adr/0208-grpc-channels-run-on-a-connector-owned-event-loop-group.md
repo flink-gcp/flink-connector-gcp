@@ -761,9 +761,30 @@ same way.**
   its gRPC calls had succeeded (measured 2026-11-25); a plan that asks for one range, or that
   reads a query that cannot be split, never calls it.
   Since [#2338](https://github.com/flink-gcp/flink-connector-gcp/issues/2338) the client takes the
-  `host:port` the gRPC clients dial (`SplitterClient.httpAuthority`): an `http://` or `https://`
-  scheme is removed, and a target with gRPC's `dns` scheme is read as a URI, whose path or
-  scheme-specific part is that `host:port`.
+  `host:port` the gRPC clients dial (`EmulatorEndpoint.httpAuthority`, in `SplitterClient` until
+  #2343): an `http://` or `https://` scheme is removed, and a target with gRPC's `dns` scheme is
+  read as a URI whose decoded path, without its leading slash, is that `host:port`.
+  Since #2343 it follows gRPC's DNS resolver further: an opaque target such as `dns:host:port` is
+  read as `dns:///host:port`, so that a query is left out, and the name is read as `//name`, whose
+  host and port are the `host:port`, so that an encoded `?` or `/` inside the name ends it and user
+  information before an `@` is left out; #2338 had passed such a query or suffix on to the HTTP
+  client. A path of more than one segment is reduced to its first segment, and a name without a
+  port to its host, which gRPC's plaintext transport and HTTP both dial on port 80.
+  gRPC connected to `localhost:18081` for `dns:localhost:18081?zone=west%20region:1`,
+  `dns:localhost:18081%3Ftag=one?zone=west:1`, `dns:///localhost:18081%3Ftag=one`,
+  `dns:///localhost:18081%2Fextra`, `dns:///a%2520b@localhost:18081` and
+  `dns:///a%252Fb@localhost:18081` (measured 2026-11-28).
+  Whether it accepts a path of two segments, such as `dns:///localhost:18081/extra`, depends on
+  the classpath and a flag (measured 2026-11-28, gRPC 1.85.1): `grpc-grpclb`'s `dns` provider,
+  which the Firestore module has, refuses it (`expected 1 path segment`) on the RFC 3986 path that
+  `GRPC_ENABLE_RFC3986_URIS` selects by default; with the flag `false`, or on a classpath without
+  `grpc-grpclb`, gRPC connected to the first segment of that target.
+  That mode does not accept every target: its resolver decodes the whole path before reading it as
+  `//name`, so a later segment with an encoded space fails channel creation, and it refuses an
+  opaque `dns:host:port`, whose Java URI has no path (read from grpc-java 1.85.1, not measured).
+  Where gRPC dials a target of more than one segment, it dials the first, so reducing to the first
+  segment matches it; where it refuses one, the plan fails on its gRPC calls before the splitter
+  runs.
   gRPC 1.85.1 accepts `dns:///host:port`, `dns:/host:port`, `dns:host:port`,
   `dns://<name server>/host:port` and a percent-encoded IPv6 literal, and refuses
   `dns:///[::1]:port`, whose brackets a URI path cannot hold (measured 2026-11-26 by building a
@@ -813,19 +834,84 @@ same way.**
 **In the Firestore connector's Native mode (#2330, 2026-11-25), every client holds a lease the
 same way.**
 
-- **`FirestoreClients.open` builds the options twice.**
+- **`FirestoreClients.open` builds a service client's options twice.**
   `FirestoreOptions.Builder.setChannelProvider` accepts only an `InstantiatingGrpcChannelProvider`
-  and `FirestoreOptions` is `final` (google-cloud-firestore 3.53.0), so a caller-owned channel
-  can reach the client only through a hand-written `FirestoreRpc` (`setServiceRpcFactory`), which
-  [#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343) weighs.
+  and `FirestoreOptions` is `final` (google-cloud-firestore 3.53.0).
   The first build sets up the provider the library would use, with its tracing configurator; the
   second takes that provider with the lease applied after its configurator.
-  An emulator's arm sets a plaintext provider from `FirestoreSettings`' transport defaults, which
-  keep the maximum inbound message size at `Integer.MAX_VALUE`, with the emulator's fixed token,
-  in place of `setEmulatorHost`, whose provider the library builds itself at gRPC's 4 MiB and off
-  the group.
   `GrpcFirestoreRpc` takes the provider for any client whose service host is not a `localhost`
   name and whose credentials are not `NoCredentials`; the connector sets neither.
+- **An emulator client sends every call through a `FirestoreRpc` of the connector's own**
+  ([#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343)), set through
+  `setServiceRpcFactory`: `FirestoreEmulatorRpc` is the generated `GrpcFirestoreStub`, which
+  already carries the RPC callables `FirestoreRpc` declares, on a plaintext channel the connector
+  opens on the group (`EmulatorChannels.openLeasedPlaintextChannel`, with `FirestoreSettings`'
+  transport defaults, which keep the maximum inbound message size at `Integer.MAX_VALUE`).
+  It replaced a plaintext instantiating provider, through which three failures reached the
+  emulator arm: gax parses the provider's endpoint as `host:port`, so an endpoint written as
+  `dns:///host:port` or `http://host:port` failed at client creation (`URISyntaxException:
+  Expected closing bracket for IPv6 address`, measured 2026-11-25 through the planner);
+  `GOOGLE_API_USE_CLIENT_CERTIFICATE` made the provider build TLS credentials, which the plaintext
+  configurator could not override (read, not measured, for Firestore, as recorded for Cloud
+  Tasks above); and `FIRESTORE_EMULATOR_HOST` took a client off the group.
+  The certificate configuration is still read while the options are built: with the variable
+  `true` and `GOOGLE_API_CERTIFICATE_CONFIG` naming a missing file, an emulator client of either
+  mode fails to start (`IllegalStateException: Certificate configuration file specified via
+  GOOGLE_API_CERTIFICATE_CONFIG … does not exist`, in Native mode as the cause of the connector's
+  `IOException`, measured 2026-11-27); with `GOOGLE_API_CERTIFICATE_CONFIG` unset and no
+  configuration in its default location, both start (measured 2026-11-28). The DataStream page
+  says so; the channel such a client uses is the connector's plaintext one.
+  - Its client context is built by hand, as `GrpcFirestoreRpc` builds one for a `localhost` host
+    or `NoCredentials`, where every client the connector opened before, an emulator one included,
+    went through `ClientContext.create`: the calls no longer carry the
+    `google-cloud-resource-prefix`, `x-goog-api-client` or `x-goog-request-params` header, which
+    gax adds through the interceptor of the channels it builds, or a header the options add, and
+    no stream watchdog runs, which no stream idle timeout needs.
+    The emulator routes each request by the database the request names: a document written to a
+    named database through this RPC was found there through the client library and not in the
+    default one (measured 2026-11-26, now `FirestoreEmulatorRoutingITCase`).
+    It takes the library's retry settings (five attempts for every unary method and the four
+    server-streaming reads under the default settings, the given ones otherwise), sends the
+    emulator's fixed owner token (`FirestoreOptions.EmulatorCredentials`) as the connector's
+    emulator clients always did, and installs no API tracer.
+    As in the library, two executors serve it: the shared one the transport options' factory hands
+    out, which the client takes from it and which it gives back once when it shuts down, closes or
+    fails to be built; and one of its own for gax's retries and timeouts, which `shutdownNow()`
+    stops, so a retry scheduled before a close does not run on the closed channel after it.
+  - Every emulator client sets the emulator host itself, so `FirestoreOptions.Builder.build()`
+    never reads `FIRESTORE_EMULATOR_HOST`; the provider and credentials it then sets are never
+    used, since the RPC ignores them.
+    With an endpoint configured, the variable is ignored with a warning.
+    Without one, a client dials the emulator the variable names, which the library would have
+    dialled off the group, parsed as `host:port` under the variable's name, and the warning
+    ADR-0171 kept still says so; failing the job on the variable stays declined (ADR-0171).
+    A value with a `dns:///` or `http://` prefix, on which the library's provider failed at
+    client creation, now reaches that emulator too.
+    The emulator host set on the options is the endpoint the channel dials, with any HTTP scheme
+    removed: the library checks it as part of an `http://` URL, which an `http://[::1]:port`
+    endpoint would otherwise fail.
+  - An endpoint's `http://` or `https://` scheme is removed before the channel is built, and a
+    resolver scheme such as `dns:///` is kept for gRPC.
+    `FirestoreEventLoopITCase` holds the page reader and the planner on the group with `host:port`,
+    `dns:///` and `http://` endpoints, and a client of the variable's emulator, with and without
+    `dns:///`.
+  - Its close cuts the channel too (`shutdownNow()`) before the channel's own bounded close, which
+    waits five seconds for calls still open before it cuts them: the two cases of
+    `ClientQueryPlannerCloseITCase`, which close a planner against a server that never answers,
+    took 10.7 s together until it did, and 0.9 s and 0.08 s after (measured 2026-11-26); the test
+    now bounds the close at four seconds.
+  - `FirestoreRpc` is public but not documented as an extension point, so a libraries-bom bump
+    that adds a method to it fails the build here, unless `GrpcFirestoreStub` already carries
+    it.
+- **A service client whose creation fails gives its executor back**, whichever factory the
+  settings carry.
+  `GrpcFirestoreRpc`'s constructor takes the shared `grpc-transport` executor from the transport
+  options' executor factory before it builds the channel, and keeps it when a later step fails,
+  so the reference count that shuts the executor down never returns to zero (google-cloud-firestore
+  3.53.0; its threads still end after 5 s idle, google-cloud-core-grpc 2.81.0).
+  `FirestoreClients.open` wraps the factory for each client and gives back what a failed creation
+  took; `FirestoreClientsTest` fails a creation on a `dns:///` service endpoint and counts the
+  executors taken and given back.
 - **A client closes with `shutdownNow()` before `close()`** (`FirestoreClients.close`, through
   `GrpcEventLoops.openAutoCloseable(factory, closer)`).
   Cancelling the future of `Query.get()` or of a read-only transaction ends the caller's wait but
@@ -854,30 +940,6 @@ same way.**
 - The sink's database access, the page reader and the table lookup hold their clients until they
   close, as before; a full lookup cache load plans, opens, fetches and closes inside
   `interruptibleReleases()`, through `FullCacheInputFormat`.
-- **Residuals** ([#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343)):
-  - An emulator endpoint written as `dns:///host:port` or `http://host:port` fails at client
-    creation, since gax parses the provider's endpoint as `host:port`
-    (`URISyntaxException: Expected closing bracket for IPv6 address`, measured 2026-11-25 through
-    the planner, with the same result before this change).
-  - `GOOGLE_API_USE_CLIENT_CERTIFICATE` makes an instantiating provider build TLS credentials,
-    which the plaintext configurator cannot override, as recorded for Cloud Tasks above (read, not
-    measured, for Firestore).
-  - `FIRESTORE_EMULATOR_HOST` takes a client off the group.
-    `FirestoreOptions.Builder.build()` reads it whenever no emulator host was set and replaces the
-    channel provider with a bare plaintext one.
-    With an emulator endpoint configured, the connector reads the variable before the library
-    does and builds the client on that endpoint through `setEmulatorHost`, so the configured
-    endpoint still wins and the library never parses the variable's value, which it refuses when
-    empty or malformed; a warning says the client runs on gRPC's shared group.
-    Without an endpoint, the warning ADR-0171 kept says so too.
-    Failing the job on the variable stays declined (ADR-0171).
-  - A connector-owned `FirestoreRpc` through `setServiceRpcFactory` would remove the first two
-    and could keep the third's channel on the group, though `build()` would still read the
-    variable and replace the provider and credentials it was given.
-    `FirestoreRpc` is public and not `@InternalApi`, but not documented as an extension point; it
-    has twelve RPC callables besides its executor and shutdown methods, and its implementation,
-    `GrpcFirestoreRpc`, wires a `ClientContext` and per-method retry settings the connector would
-    have to copy; #2343 weighs that route.
 - **The planner pages `PartitionQuery` itself**
   ([#2346](https://github.com/flink-gcp/flink-connector-gcp/issues/2346)).
   The client library's `CollectionGroup.getPartitions(long)` fetched a later page inside its
@@ -1198,8 +1260,6 @@ writing jobs here were not traced.
   of a default-stream writer is evicted as idle in a `lib/` deployment, and the next client starts
   a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  A Firestore Native client built while `FIRESTORE_EMULATOR_HOST` is set is one
-  ([#2343](https://github.com/flink-gcp/flink-connector-gcp/issues/2343)).
 - **A Bigtable data client's built-in Cloud Monitoring export still uses gRPC's group.**
   Its `MetricServiceClient` takes no channel settings from the data client, so while the export
   is on, which is the default for the readers', the sinks' and the lookups' clients, each such
