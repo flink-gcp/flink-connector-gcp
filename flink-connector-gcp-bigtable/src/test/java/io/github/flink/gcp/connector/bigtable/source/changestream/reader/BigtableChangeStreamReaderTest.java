@@ -39,6 +39,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTrans
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
@@ -55,6 +56,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 
@@ -98,6 +100,62 @@ class BigtableChangeStreamReaderTest {
         assertThat(reader.snapshotState(1L))
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("first", "second", "queued");
+    }
+
+    /**
+     * A source that a stop-with-savepoint stopped still snapshots but is never polled again, so
+     * only the poll after a snapshot may tell the coordinator the reader still runs (#2404); an
+     * idle reader wakes for it.
+     */
+    @Test
+    void aSnapshotWakesTheReaderAndOnlyItsNextPollReportsIt() throws Exception {
+        reader = reader(1);
+        reader.start();
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        CompletableFuture<Void> idle = reader.isAvailable();
+        assertThat(idle).isNotDone();
+
+        reader.snapshotState(1L);
+        reader.snapshotState(2L);
+
+        assertThat(idle).isDone();
+        assertThat(reader.isAvailable()).as("asked again before the poll").isDone();
+        assertThat(pollReports()).isEmpty();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        assertThat(pollReports())
+                .extracting(ReaderPolledEvent::getCheckpointId)
+                .containsExactly(2L);
+        assertThat(reader.isAvailable()).isNotDone();
+        reader.pollNext(output);
+        assertThat(pollReports()).hasSize(1);
+    }
+
+    /**
+     * It needs nothing more, and under a HybridSource the next source's coordinator would get it.
+     */
+    @Test
+    void aReaderThatReadAllItsInputReportsNoPoll() throws Exception {
+        reader = reader(1);
+        reader.start();
+        reader.notifyNoMoreSplits();
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
+
+        reader.snapshotState(1L);
+
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
+        assertThat(pollReports()).isEmpty();
+    }
+
+    private List<ReaderPolledEvent> pollReports() {
+        List<ReaderPolledEvent> reports = new ArrayList<>();
+        for (SourceEvent event : context.sourceEvents()) {
+            if (event instanceof ReaderPolledEvent) {
+                reports.add((ReaderPolledEvent) event);
+            }
+        }
+        return reports;
     }
 
     @Test

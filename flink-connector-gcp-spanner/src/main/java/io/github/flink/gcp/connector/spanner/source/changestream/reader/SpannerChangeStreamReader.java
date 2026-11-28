@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
@@ -196,6 +197,13 @@ public final class SpannerChangeStreamReader<T>
     private long pendingSourceWatermark = Long.MIN_VALUE;
     private long emittedSourceWatermark = Long.MIN_VALUE;
     private boolean sourceWatermarkPending;
+
+    /**
+     * The latest checkpoint whose snapshot this reader took and has not yet reported from a poll,
+     * or {@code Long.MIN_VALUE}. The report tells the coordinator the reader is still running.
+     */
+    private long unreportedSnapshot = Long.MIN_VALUE;
+
     private volatile boolean closed;
 
     public SpannerChangeStreamReader(
@@ -370,6 +378,7 @@ public final class SpannerChangeStreamReader<T>
 
     @Override
     public InputStatus pollNext(ReaderOutput<T> output) throws Exception {
+        reportPolledSnapshot();
         releaseRestoredOutputs(output);
         if (sourceWatermarkPending) {
             output.emitWatermark(new Watermark(pendingSourceWatermark));
@@ -473,7 +482,29 @@ public final class SpannerChangeStreamReader<T>
             checkpointProgress.pollFirstEntry();
         }
         state.addAll(finishedUnacknowledged.values());
+        // Wakes an idle reader, so even one waiting for a split reports from its next poll.
+        unreportedSnapshot = Math.max(unreportedSnapshot, checkpointId);
+        signalAvailable();
         return state;
+    }
+
+    /**
+     * Tells the coordinator, from a poll, that this reader took its latest snapshot and still runs.
+     * A source that a stop-with-savepoint stopped is never polled after that snapshot, so the
+     * coordinator sends it nothing that could reach it after it finished. A reader that has read
+     * all its input reports nothing: it needs nothing more, and under a {@code HybridSource} the
+     * next source's coordinator would receive the report.
+     */
+    private void reportPolledSnapshot() {
+        if (unreportedSnapshot == Long.MIN_VALUE) {
+            return;
+        }
+        if (finished()) {
+            unreportedSnapshot = Long.MIN_VALUE;
+            return;
+        }
+        context.sendSourceEventToCoordinator(new ReaderPolledEvent(unreportedSnapshot));
+        unreportedSnapshot = Long.MIN_VALUE;
     }
 
     /**
@@ -554,6 +585,7 @@ public final class SpannerChangeStreamReader<T>
     public CompletableFuture<Void> isAvailable() {
         synchronized (availabilityLock) {
             if (sourceWatermarkPending
+                    || unreportedSnapshot != Long.MIN_VALUE
                     || !outputsToRelease.isEmpty()
                     || firstAvailable() != null
                     || finished()) {

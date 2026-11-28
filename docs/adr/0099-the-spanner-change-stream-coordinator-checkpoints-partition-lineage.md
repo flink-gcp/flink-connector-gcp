@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21, and by [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257) on 2026-11-21
+- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21, by [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257) on 2026-11-21, and by [#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404) on 2026-11-28
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
@@ -27,7 +27,8 @@ limitations under the License.
   [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193),
   [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205),
   [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204),
-  [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257)
+  [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257),
+  [#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -57,7 +58,8 @@ A reader keeps a finished split in its checkpointed state until the coordinator 
 Flink snapshots the coordinator before it injects a checkpoint's barriers, and a reader's event sent between the two reaches neither snapshot.
 Before this, a finish sent there left the partition running in the restored ledger while no restored reader held it, so its children never started.
 The finished split now carries the child reports the reader forwarded, and a restored reader sends those reports and the finish again once the coordinator is initialized.
-The coordinator acknowledges every finish as soon as it handles it, and applying a report again changes nothing: a finish or child report for a partition the ledger no longer runs is ignored.
+The coordinator acknowledges every finish when it handles it, unless the reader may not be reached yet (below), in which case the acknowledgement goes out with the reader's next poll report.
+Applying a report again changes nothing: a finish or child report for a partition the ledger no longer runs is ignored.
 A partition that finished but is still pending, as described next, stays in the ledger, so a repeated report for it is ignored as well.
 Flink holds a coordinator's events to a subtask back between the coordinator's snapshot and that subtask's barrier, so a finish the coordinator applied after its snapshot is still in the reader's snapshot of the same checkpoint.
 The `TaskExecutor` of Flink 2.2.1 and 1.20.5 fails the sending task when a reader-to-coordinator event cannot be delivered, so a restore is the only way a finish can be lost; unlike Flink CDC's MySQL source, which keeps its finished snapshot splits the same way, the coordinator does not periodically ask readers to report again.
@@ -101,8 +103,31 @@ The coordinator also owns the source-wide event-time frontier.
 It is the minimum safe watermark across every `CREATED`, `SCHEDULED`, `RUNNING` and pending `FINISHED` entry in the ledger, including partitions that no reader currently owns.
 Because running entries carry committed positions and a pending finish still counts, the frontier never passes a record that a region failover reads again, as Debezium's low watermark follows committed offsets; it trails the newest records by about one checkpoint interval.
 Finished-parent proofs carry no progress and do not participate in this minimum.
-The enumerator checkpoints the last emitted source frontier beside the ledger and sends it to every registered reader, including readers with no split, so restore and rescaling cannot move event time backwards.
+The enumerator checkpoints the last emitted source frontier beside the ledger and sends it to every registered reader, including readers with no split, each once it may be reached (below), so restore and rescaling cannot move event time backwards.
 At runtime, a counted ordered index tracks unfinished partition watermarks and is rebuilt from the ledger after restore; ordinary data progress with an unchanged partition watermark does not scan or rewrite that index.
+
+No coordinator event reaches a reader that may have finished ([#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)).
+A stop-with-savepoint without drain stops each source before its task snapshots the savepoint (`SourceOperatorStreamTask#triggerStopWithSavepointAsync` in Flink 2.2.1 and 1.20.5), and the task finishes once the savepoint completes, while the JobManager can still see it running.
+An event that reaches the task then is lost, and `SubtaskGatewayImpl` fails the task for it, which fails the stop.
+Only an event that declares itself loss-tolerant is exempt, as Flink's own `WatermarkAlignmentEvent` does; a connector `SourceEvent` travels in `SourceEventWrapper`, which does not, and neither do split assignments and end signals.
+`notifyCheckpointComplete` does not say whether the checkpoint is that savepoint, and completing a checkpoint makes finishes final and releases children, so the coordinator would send exactly then.
+A stopped source still snapshots but is never polled again (`SourceOperator` returns `STOPPED` without calling `pollNext`), so each reader reports, from its first poll after a snapshot, which checkpoint it snapshotted, and an idle reader wakes for that poll.
+After the coordinator's own `snapshotState` for a checkpoint, it sends a reader nothing, no assignment, watermark, finish acknowledgement or end signal, until that reader reports that checkpoint or a later one; what waited goes out when the report arrives.
+The coordinator snapshots before the readers do, so a report can only follow the snapshot it names.
+The gating snapshot is the latest one the coordinator took and was not told was aborted, and an abort makes the latest earlier one gate instead; when every snapshot was aborted, nothing gates.
+A stop-with-savepoint's savepoint is the latest snapshot when it is taken, so a snapshot taken after it, a manual savepoint for instance, leaves it gating when that one is aborted; its own abort fails the stop anyway, because Flink fails a task whose synchronous savepoint is aborted.
+A batch job's recovery snapshot, which a `HybridSource` forwards with Flink's `BATCH_CHECKPOINT_ID`, stops no task and has no reader snapshot to report, so it gates nothing.
+When a poll report or a registration finds more than one snapshot held, those below the oldest one every registered reader has reported are forgotten, since they could gate no reader.
+Flink notifies a coordinator of every abort of a checkpoint it snapshotted, because `CheckpointCoordinator` creates the pending checkpoint before it snapshots coordinators, and aborting a pending checkpoint calls `notifyCheckpointAborted` on them.
+The initialization event goes out at once, because only a newly registered reader receives it, and such a reader is running.
+A newly registered reader is reached at once as well.
+A reader registers while its task initializes, and Flink triggers a checkpoint only once every task runs, so an attempt the coordinator learns of after a snapshot normally takes no part in it; making it wait for that snapshot instead would leave it waiting for good after an ordinary savepoint, whose completion Flink does not announce.
+The window this leaves, a registration that reaches the coordinator after the snapshot of a checkpoint the attempt takes part in, is the gap between two messages one TaskManager sends one after the other: the reader's registration, then the task's switch to running.
+A request, a finish acknowledgement or a watermark that waited for a failed attempt does not pass to the next one.
+A reader that has read all its input reports nothing: it needs nothing more, and under a `HybridSource`, whose coordinator forwards every reader event other than its own finish event to the current source's coordinator, the next source would receive the report.
+The wait is runtime state: a restored coordinator has snapshotted nothing yet and sends at once.
+The gate covers only snapshots this coordinator took.
+Under a `HybridSource` whose later source is this one, the switch between sources is outside it: Flink's `SwitchSourceEvent`, the initialization broadcast of a coordinator that has taken no snapshot yet, and a reader that registers when it finishes replaying the previous source can all reach a task a stop-with-savepoint stopped around the switch ([#2406](https://github.com/flink-gcp/flink-connector-gcp/issues/2406)); schedule a planned stop after the change-stream source has become active.
 
 Fresh initialization resolves `StartPosition` once and creates exactly one null-token entry.
 Restore validates every unfinished entry against the one retained window from ADR-0094 and never creates an initial entry while the ledger remains valid.
@@ -161,6 +186,10 @@ A region failover is reproduced by an integration test with a `keyBy` behind the
 After checkpoint 1, one child runs to its finish and another emits ten records before the failure; on the code before the [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) revision 15 or 16 of their 35 records, depending on timing, were never counted, while the control, with a second checkpoint covering both, lost none, and with the revision neither variant loses a record.
 For the lost finish, with the acknowledgement, all three cases read the child and never reopen the finished partition, and the window cases fail unless the restored reader logs that it reported a finish again, so a run whose coordinator snapshot came too late to open the window cannot pass silently.
 
+The stop-with-savepoint failure ([#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)) was found by the E2E run of 2026-11-28 and reproduced locally with the scripted two-partition source at parallelism 2, a checkpoint every 250 ms, and a stop-with-savepoint as soon as its first records arrived.
+On `9af92ddc0` the stop failed in 41 of 200 runs, each time with `TaskNotRunningException` for a `SpannerChangeStreamWatermarkEvent` sent from `notifyCheckpointComplete`; on v1.4.0, whose coordinator sent nothing at checkpoint completion, it failed in none of 200, and with this revision in none of 200.
+Unit tests hold that a completed checkpoint, a committed progress report, a split request and a report for an older snapshot send nothing to a reader that has not reported, that a report before the completion lets it send at once, that an aborted snapshot leaves the latest earlier one gating until every one is aborted, in either order, and then sends at once to a reader that already reported the one gating now, that a batch recovery snapshot gates nothing, that a new attempt is reached at once and inherits neither its predecessor's request nor its acknowledgements, and that a finish acknowledgement and a bounded ledger's end signal, whether its request came before or after the ledger drained, wait and then go out once; together they fail on the code before this revision, and targeted mutants of the abort, batch-snapshot, attempt and finished-reader rules are each killed.
+
 ## Alternatives declined
 
 - **Let a restored ledger keep its bound whatever the configuration says.**
@@ -189,6 +218,13 @@ For the lost finish, with the acknowledgement, all three cases read the child an
   merge child waits for a parent still reading. As for the Bigtable source (ADR-0097), a hold that
   lasts most often means checkpoints are not completing, and a dedicated gauge was judged not
   worth its metric name and reference row.
+- **Send what checkpoint N released from the coordinator's snapshot of checkpoint N+1** ([#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)).
+  A split assigned inside that snapshot reaches its reader before the barrier, but `SourceCoordinator` calls `context.onCheckpoint` before the enumerator's snapshot, so Flink's assignment tracker counts the split toward the following checkpoint, and a region failover to N+1 could return a split the restored reader also holds.
+  It would also delay the watermark and the children by a checkpoint interval, or indefinitely when no later checkpoint comes.
+- **Send only in reply to a reader event** ([#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)).
+  A watermark or a released child goes to readers other than the sender, which may have finished, and every reader can be idle with nothing more to send.
+- **Delay the sends with a timer** ([#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)).
+  A timer moves the race rather than removing it: a task that is slow to finish meets it again.
 - **Make `IMMEDIATE` the default.**
   The reordering is silent, and an upsert sink then keeps a stale row; a delay of one checkpoint interval per partition split or merge is the cheaper default.
 - **Accept unknown partition modes as immutable.**
@@ -203,6 +239,7 @@ For the lost finish, with the acknowledgement, all three cases read the child an
 - A running child may outlive its parent's finish in the ledger: a region failover reads the parent again while another reader keeps reading the child, so restore validation accepts a running partition with an unfinished parent.
 - By default each partition split or merge delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's duration, and the source watermark holds at the children's start meanwhile; once a checkpoint has completed, the children do not start while later checkpoints keep failing.
 - The order holds between failures and for operators that handle their input before the barrier; an unaligned checkpoint, an operator that stores pending elements, and a failover's replay are outside it.
+- Each reader sends one small report per coordinator snapshot ([#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)). What a checkpoint releases goes to a reader once it has polled after the coordinator's latest snapshot, which normally happens while the checkpoint completes, so the hand-off and the watermark keep their delay. What waits goes out when a report from that reader names the gating snapshot or a later one, or when aborts lower the gate to a snapshot the reader has reported or remove it, so a reader that is not polled, under backpressure or while watermark alignment holds it, waits longer, and one whose reports keep naming an older snapshot, under sustained backpressure with frequent checkpoints for instance, can keep waiting.
 - `changeStreamPartitionLedgerEntries` and `changeStreamFinishedParentProofs` expose those two bounded structures without partition-token labels.
 - Version-1 and version-2 restore pays one validation and compaction pass before subsequent checkpoints use version 4.
 - The public source and reader can be added independently in #536 because the coordinator-facing split and event contracts are now fixed.

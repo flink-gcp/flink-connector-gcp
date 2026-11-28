@@ -302,11 +302,28 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The enumerator owns one checkpointed source-watermark frontier: the minimum safe watermark across
   every `CREATED`, `SCHEDULED`, `RUNNING` and pending `FINISHED` ledger entry, built from the
   positions completed checkpoints recorded (Debezium's low watermark). Broadcast it to every reader,
-  including readers with no assigned split, and reject any transition that would move it backwards
+  including readers with no assigned split, each once `mayReach` holds (#2404), and reject any transition that would move it backwards
   unless live positions were ever applied. Maintain its counted ordered runtime index incrementally
   and rebuild that index from the ledger. Readers report progress on `notifyCheckpointComplete`
   (Flink CDC's `IncrementalSourceReaderWithCommit`) and, until their first completed checkpoint,
   live at most once a second; never add a per-record coordinator event again (#2204).
+- **Nothing goes to a reader that has not polled since the coordinator's latest snapshot** (#2404,
+  ADR-0099). A stop-with-savepoint stops the source, then snapshots it, then finishes the task once
+  the savepoint completes; an event that reaches a finished task fails it and the stop, and
+  `SourceEventWrapper`, `AddSplitEvent` and `NoMoreSplitsEvent` are not loss-tolerant. Readers send
+  `ReaderPolledEvent` from the first `pollNext` after each `snapshotState`, waking an idle reader
+  for it; every assignment, watermark, finish acknowledgement and end signal goes through
+  `mayReach` and waits in the enumerator until that report. The gating snapshot is the latest one not
+  aborted and not a batch snapshot (id -1; a `HybridSource` forwards it), in a `TreeSet` pruned below
+  each completion and below the oldest snapshot every reader reported, so a failed manual savepoint
+  never reopens a
+  stop-with-savepoint's stopped readers. A newly registered reader is reached at once (making it wait
+  stalls it for good after an ordinary savepoint, which Flink never announces as complete) and
+  inherits no waiting request or acknowledgement; a finished reader reports nothing (`HybridSource`
+  forwards the other reader events to the current source's coordinator). A `HybridSource` switch is
+  outside the gate (#2406). Never
+  send from `notifyCheckpointComplete` or a timer around that gate, and never send from inside
+  `snapshotState` (Flink's assignment tracker already counts such a split toward the next checkpoint).
 - A finish is final only once a completed checkpoint covers it (#2204, ADR-0099): every finished
   partition, one that emitted nothing included, stays in the ledger as pending `FINISHED` until then, because region
   failover keeps the coordinator while Flink returns post-checkpoint assignments through

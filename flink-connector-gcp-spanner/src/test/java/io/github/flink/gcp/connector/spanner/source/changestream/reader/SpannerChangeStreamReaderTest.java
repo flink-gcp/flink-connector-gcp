@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
@@ -412,6 +413,35 @@ class SpannerChangeStreamReaderTest {
 
         assertThat(output.releasedSplits)
                 .containsExactly("change-stream-token:a", replacement.splitId());
+    }
+
+    /**
+     * A source that a stop-with-savepoint stopped still snapshots but is never polled again, so
+     * only the poll after a snapshot may tell the coordinator the reader still runs (#2404); an
+     * idle reader wakes for it.
+     */
+    @Test
+    void aSnapshotWakesTheReaderAndOnlyItsNextPollReportsIt() throws Exception {
+        reader = reader(2, new SequenceDeserializer());
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        CompletableFuture<Void> idle = reader.isAvailable();
+        assertThat(idle).isNotDone();
+
+        reader.snapshotState(1);
+        reader.snapshotState(2);
+
+        assertThat(idle).isDone();
+        assertThat(reader.isAvailable()).as("asked again before the poll").isDone();
+        assertThat(pollReports()).isEmpty();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        assertThat(pollReports())
+                .extracting(ReaderPolledEvent::getCheckpointId)
+                .containsExactly(2L);
+        assertThat(reader.isAvailable()).isNotDone();
+        reader.pollNext(output);
+        assertThat(pollReports()).hasSize(1);
     }
 
     @Test
@@ -1119,6 +1149,33 @@ class SpannerChangeStreamReaderTest {
         // The last acknowledgement wakes the mailbox that waits on the earlier future.
         assertThat(waiting).isCompleted();
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
+    }
+
+    /**
+     * It needs nothing more, and under a HybridSource the next source's coordinator would get it.
+     */
+    @Test
+    void aReaderThatReadAllItsInputReportsNoPoll() throws Exception {
+        reader = reader(2, new SequenceDeserializer());
+        reader.start();
+        reader.notifyNoMoreSplits();
+        TrackingOutput<String> output = new TrackingOutput<>();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
+
+        reader.snapshotState(1L);
+
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
+        assertThat(pollReports()).isEmpty();
+    }
+
+    private List<ReaderPolledEvent> pollReports() {
+        List<ReaderPolledEvent> reports = new java.util.ArrayList<>();
+        for (SourceEvent event : context.sourceEvents()) {
+            if (event instanceof ReaderPolledEvent) {
+                reports.add((ReaderPolledEvent) event);
+            }
+        }
+        return reports;
     }
 
     private SpannerChangeStreamReader<String> reader(

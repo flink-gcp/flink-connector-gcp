@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0097: The Bigtable Change Streams coordinator checkpoints the partition ledger
 
 - Status: Accepted
-- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17, 2026-11-21)
+- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17, 2026-11-21, 2026-11-28)
 - Issues: [#35](https://github.com/flink-gcp/flink-connector-gcp/issues/35),
   [#510](https://github.com/flink-gcp/flink-connector-gcp/issues/510),
   [#532](https://github.com/flink-gcp/flink-connector-gcp/issues/532),
@@ -26,7 +26,8 @@ limitations under the License.
   [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951),
   [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206),
   [#2194](https://github.com/flink-gcp/flink-connector-gcp/issues/2194),
-  [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257)
+  [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257),
+  [#2404](https://github.com/flink-gcp/flink-connector-gcp/issues/2404)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -148,6 +149,23 @@ execution attempts, so the coordinator counts reader registrations per subtask a
 transition deferred during its initialization only if no attempt has registered since. A reader
 releases the split output Flink creates for each restored closed split, which nothing emits to and
 which would otherwise hold the source watermark back.
+
+No coordinator event reaches a reader that may have finished (#2404), the rule ADR-0099 records
+for the Spanner source and its Flink evidence. A stop-with-savepoint without drain stops a source
+before its task snapshots the savepoint, and the task finishes once the savepoint completes while
+the JobManager can still see it running, so a split assignment, an acknowledgement or an end signal
+that reaches it then fails the task and the stop. Completing a checkpoint makes closes final and
+releases successors, which this coordinator would assign at that moment. Each reader therefore
+reports, from its first poll after a snapshot, which checkpoint it snapshotted, and a stopped
+source is never polled again. After the coordinator's own snapshot it sends a reader nothing until
+that reader reports that checkpoint or a later one; an aborted snapshot leaves the latest earlier
+one gating, and a newly registered reader is reached at once, as ADR-0099 explains. Free slots wait
+for their own reader's report. Beyond the free slots, the hand-out still waits until every source
+subtask has registered and reported capacity, and then gives each split to the least-loaded reader
+that has polled since the gating snapshot, so one reader that has not cannot hold the excess back. A
+bounded run's end signal waits for each reader's report as well, a reader that has read all its
+input reports nothing, and a batch recovery snapshot gates nothing. The gate covers only snapshots
+this coordinator took; a `HybridSource` switch to this source is outside it (#2406).
 
 Initial partitions are generated only for a fresh start. A restored enumerator validates the
 checkpointed low watermarks no reader holds (unassigned splits, pending merges and missing
@@ -277,6 +295,19 @@ materializing the public mutation or any public entry/value/range object.
   progress through filtered mutations. No new service behavior is assumed, so #586 requires no
   additional real-GCP acceptance run.
 
+- The stop-with-savepoint failure (#2404) was reproduced only for the Spanner source, as ADR-0099
+  records; the Bigtable coordinator assigned released successors from `notifyCheckpointComplete`
+  in the same way. Unit tests hold that a completed checkpoint and a capacity report send nothing to
+  a reader that has not reported a poll, that a transition acknowledgement waits for a poll after
+  the gating snapshot and then goes out once, that an aborted snapshot leaves the earlier one gating
+  until every one is aborted and then sends at once to a reader that reported it, that a batch
+  recovery snapshot gates nothing, that a new attempt is reached at once and inherits no
+  acknowledgement, that the hand-out beyond free slots goes to the least-loaded reader that has
+  polled, and that a bounded
+  run's end signal waits for each reader and goes out once; together they fail on the code before
+  the revision, and targeted mutants of the hand-out, batch-snapshot, attempt and finished-reader
+  rules are each killed.
+
 ## Alternatives declined
 
 - **Beam's metadata table.** Flink already checkpoints a coordinator and reader state; the table
@@ -375,3 +406,10 @@ other parent has not closed yet is recovered from the closed parent's token, so
 checkpoints, for operators that finish their input before the barrier, and between failures; the
 DataStream page states these limits. The split
 checkpoint format is version 2 and the enumerator state version 4; older versions still restore.
+
+Since #2404 each reader sends one small report per coordinator snapshot, and what a checkpoint
+releases goes to a reader once it has polled after that checkpoint's snapshot, which normally
+happens while the checkpoint completes. A reader that is not polled, under backpressure for
+instance, or whose poll reports keep reaching the coordinator after it has taken a newer
+snapshot, waits longer for its successors, and the excess beyond free slots goes to the readers
+that have reported meanwhile, so such a reader may get none of it.

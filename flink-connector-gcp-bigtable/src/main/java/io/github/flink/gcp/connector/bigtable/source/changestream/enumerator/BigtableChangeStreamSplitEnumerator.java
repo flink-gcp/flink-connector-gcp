@@ -47,6 +47,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTrans
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderPolledEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,6 +70,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -175,6 +177,12 @@ public final class BigtableChangeStreamSplitEnumerator
     /** The covering checkpoint of a pending close that no snapshot has run after yet. */
     private static final long UNCOVERED = -1L;
 
+    /**
+     * {@link #gatingSnapshot()} while no reader has to report a poll: before this coordinator's
+     * first snapshot, and while every snapshot it took was aborted.
+     */
+    private static final long NO_GATING_SNAPSHOT = Long.MIN_VALUE;
+
     /** Bounds on how often a coordinator waiting for its first checkpoint looks at the clock. */
     private static final long MIN_FIRST_CHECKPOINT_CHECK_MILLIS = 1_000L;
 
@@ -229,6 +237,24 @@ public final class BigtableChangeStreamSplitEnumerator
      * enumerator initializes is acknowledged only if the attempt that sent it is still the latest.
      */
     private final Map<Integer, Integer> readerAttempts = new HashMap<>();
+
+    /**
+     * Per reader subtask, the latest snapshot it reported polling after; see {@link
+     * #mayReach(int)}.
+     */
+    private final Map<Integer, Long> polledSnapshots = new HashMap<>();
+
+    /**
+     * Per reader subtask, the transition acknowledgements waiting until {@link #mayReach(int)}
+     * holds.
+     */
+    private final Map<Integer, List<String>> unsentTransitionAcknowledgements = new HashMap<>();
+
+    /**
+     * The checkpoints this coordinator snapshotted and was not told were aborted, from the latest
+     * completed one on; the latest of them gates the readers, see {@link #mayReach(int)}.
+     */
+    private final TreeSet<Long> gatingSnapshots = new TreeSet<>();
 
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicInteger unassignedMetricCount = new AtomicInteger();
@@ -671,6 +697,9 @@ public final class BigtableChangeStreamSplitEnumerator
             readers.remove(subtaskId);
             return;
         }
+        if (!mayReach(subtaskId)) {
+            return;
+        }
         ReaderState reader = readers.get(subtaskId);
         int capacity = reader == null ? 0 : reader.free();
         if (capacity <= 0 || !hasAssignable()) {
@@ -753,6 +782,12 @@ public final class BigtableChangeStreamSplitEnumerator
         // A new attempt of a subtask was told nothing yet, whatever its previous attempt was.
         toldNoMoreSplits.remove(subtaskId);
         readerAttempts.merge(subtaskId, 1, Integer::sum);
+        // A newly registered attempt is running. A reader registers while its task initializes, and
+        // Flink triggers a checkpoint only once every task runs, so an attempt this coordinator
+        // learns of after a snapshot normally takes no part in it.
+        polledSnapshots.put(subtaskId, gatingSnapshot());
+        forgetSnapshotsEveryReaderPassed();
+        unsentTransitionAcknowledgements.remove(subtaskId);
         if (boundedComplete) {
             signalNoMoreSplits(subtaskId);
             return;
@@ -762,6 +797,10 @@ public final class BigtableChangeStreamSplitEnumerator
 
     @Override
     public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        if (sourceEvent instanceof ReaderPolledEvent) {
+            acceptPoll(subtaskId, ((ReaderPolledEvent) sourceEvent).getCheckpointId());
+            return;
+        }
         if (!initialized) {
             deferredActions.add(
                     new DeferredSourceEvent(subtaskId, readerAttempt(subtaskId), sourceEvent));
@@ -772,6 +811,86 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private int readerAttempt(int subtaskId) {
         return readerAttempts.getOrDefault(subtaskId, 0);
+    }
+
+    /**
+     * Whether this coordinator may send the reader subtask anything: no snapshot gates the readers,
+     * or the reader reported polling after the gating snapshot, the latest this coordinator took.
+     *
+     * <p>A stop-with-savepoint without drain stops a source before its task snapshots the
+     * savepoint, and the task finishes once the savepoint completes, while the JobManager may still
+     * see it running. An event that reaches the task then is lost, and Flink fails the task for it,
+     * which fails the stop (#2404). A stopped source still snapshots but is never polled again, so
+     * only a reader that is still running reports polling after the snapshot. Every assignment,
+     * transition acknowledgement and end signal waits for that report and goes out once it arrives.
+     * An aborted gating snapshot opens every reader: see {@link #notifyCheckpointAborted(long)}.
+     */
+    private boolean mayReach(int subtaskId) {
+        long gating = gatingSnapshot();
+        return gating == NO_GATING_SNAPSHOT
+                || polledSnapshots.getOrDefault(subtaskId, NO_GATING_SNAPSHOT) >= gating;
+    }
+
+    @VisibleForTesting
+    int heldSnapshotCount() {
+        return gatingSnapshots.size();
+    }
+
+    /** The latest snapshot this coordinator took and was not told was aborted. */
+    private long gatingSnapshot() {
+        return gatingSnapshots.isEmpty() ? NO_GATING_SNAPSHOT : gatingSnapshots.last();
+    }
+
+    private void acceptPoll(int subtaskId, long checkpointId) {
+        polledSnapshots.merge(subtaskId, checkpointId, Math::max);
+        forgetSnapshotsEveryReaderPassed();
+        deliverWaiting(subtaskId);
+    }
+
+    /**
+     * Drops the snapshots below the oldest one every registered reader has reported: should every
+     * later one be aborted, such a snapshot would gate no reader. An ordinary savepoint, whose
+     * completion Flink does not announce, would otherwise stay for as long as no checkpoint
+     * completes.
+     */
+    private void forgetSnapshotsEveryReaderPassed() {
+        if (gatingSnapshots.size() < 2) {
+            // Only the gating snapshot itself, or nothing, is held: nothing to forget.
+            return;
+        }
+        long everyReaderPassed = Long.MAX_VALUE;
+        for (Integer subtaskId : context.registeredReaders().keySet()) {
+            everyReaderPassed =
+                    Math.min(
+                            everyReaderPassed,
+                            polledSnapshots.getOrDefault(subtaskId, NO_GATING_SNAPSHOT));
+        }
+        if (everyReaderPassed != Long.MAX_VALUE) {
+            gatingSnapshots.headSet(everyReaderPassed).clear();
+        }
+    }
+
+    /** Sends the reader subtask what waited for {@link #mayReach(int)} to hold. */
+    private void deliverWaiting(int subtaskId) {
+        if (closed
+                || !initialized
+                || !context.registeredReaders().containsKey(subtaskId)
+                || !mayReach(subtaskId)) {
+            return;
+        }
+        List<String> acknowledgements = unsentTransitionAcknowledgements.remove(subtaskId);
+        if (acknowledgements != null) {
+            for (String splitId : acknowledgements) {
+                context.sendEventToSourceReader(
+                        subtaskId, new PartitionTransitionAckEvent(splitId));
+            }
+        }
+        if (boundedComplete) {
+            signalNoMoreSplits(subtaskId);
+            return;
+        }
+        assignAvailable(subtaskId);
+        assignBeyondFreeSlots();
     }
 
     /**
@@ -874,9 +993,16 @@ public final class BigtableChangeStreamSplitEnumerator
      * the registrations itself.
      */
     private void acknowledgeTransition(int subtaskId, int attempt, String splitId) {
-        if (attempt == readerAttempt(subtaskId)
-                && context.registeredReaders().containsKey(subtaskId)) {
+        if (attempt != readerAttempt(subtaskId)
+                || !context.registeredReaders().containsKey(subtaskId)) {
+            return;
+        }
+        if (mayReach(subtaskId)) {
             context.sendEventToSourceReader(subtaskId, new PartitionTransitionAckEvent(splitId));
+        } else {
+            unsentTransitionAcknowledgements
+                    .computeIfAbsent(subtaskId, ignored -> new ArrayList<>())
+                    .add(splitId);
         }
     }
 
@@ -968,14 +1094,22 @@ public final class BigtableChangeStreamSplitEnumerator
             if (!isAssignable(split)) {
                 continue;
             }
+            // A reader that has not polled since the gating snapshot takes no share for now; the
+            // least-loaded of the others does, so one such reader cannot hold the excess back.
             int target = -1;
             int fewest = Integer.MAX_VALUE;
             for (int subtaskId : registered.keySet()) {
+                if (!mayReach(subtaskId)) {
+                    continue;
+                }
                 int load = readers.get(subtaskId).load();
                 if (load < fewest || (load == fewest && subtaskId < target)) {
                     target = subtaskId;
                     fewest = load;
                 }
+            }
+            if (target < 0) {
+                break;
             }
             candidates.remove();
             assigned.put(split.splitId(), split);
@@ -1064,7 +1198,8 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private void signalNoMoreSplits(int subtaskId) {
-        if (toldNoMoreSplits.add(subtaskId)) {
+        // A reader that may not be reached is told once it polls; see deliverWaiting.
+        if (mayReach(subtaskId) && toldNoMoreSplits.add(subtaskId)) {
             context.signalNoMoreSplits(subtaskId);
         }
     }
@@ -1086,16 +1221,42 @@ public final class BigtableChangeStreamSplitEnumerator
                 checkpointedRereads.add(splitId);
             }
         }
-        return new BigtableChangeStreamEnumeratorState(
-                initialized,
-                resolvedStartTime,
-                nextSplitId,
-                new ArrayList<>(unassigned),
-                new ArrayList<>(assigned.values()),
-                pendingMergeSnapshot(),
-                missingPartitions,
-                completedPartitions,
-                checkpointedRereads);
+        BigtableChangeStreamEnumeratorState state =
+                new BigtableChangeStreamEnumeratorState(
+                        initialized,
+                        resolvedStartTime,
+                        nextSplitId,
+                        new ArrayList<>(unassigned),
+                        new ArrayList<>(assigned.values()),
+                        pendingMergeSnapshot(),
+                        missingPartitions,
+                        completedPartitions,
+                        checkpointedRereads);
+        // A batch job's recovery snapshot (Flink's BATCH_CHECKPOINT_ID, -1), which a HybridSource
+        // forwards, stops no task and has no reader snapshot to report.
+        if (checkpointId >= 0) {
+            gatingSnapshots.add(checkpointId);
+        }
+        return state;
+    }
+
+    /**
+     * Forgets an aborted snapshot. If it gated the readers, the latest earlier snapshot that was
+     * not aborted gates them now, and readers that reported that one are reached. A
+     * stop-with-savepoint's savepoint is the latest snapshot when it is taken, and Flink fails a
+     * task whose synchronous savepoint is aborted, so its abort reaches no stopped reader; a
+     * snapshot taken after it, such as a manual savepoint, leaves it gating when that one is
+     * aborted.
+     */
+    @Override
+    public void notifyCheckpointAborted(long checkpointId) {
+        long gating = gatingSnapshot();
+        if (closed || !gatingSnapshots.remove(checkpointId) || gatingSnapshot() == gating) {
+            return;
+        }
+        for (Integer subtaskId : new ArrayList<>(context.registeredReaders().keySet())) {
+            deliverWaiting(subtaskId);
+        }
     }
 
     /**
@@ -1107,6 +1268,8 @@ public final class BigtableChangeStreamSplitEnumerator
         if (closed) {
             return;
         }
+        // A completed checkpoint is never aborted, so no earlier snapshot can gate again.
+        gatingSnapshots.headSet(checkpointId).clear();
         checkpointCompleted = true;
         if (closesFinalAtOnce) {
             LOG.info(

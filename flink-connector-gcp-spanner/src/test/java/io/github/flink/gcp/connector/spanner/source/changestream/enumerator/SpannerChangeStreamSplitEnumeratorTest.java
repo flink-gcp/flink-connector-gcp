@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
@@ -458,6 +459,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(enumerator.snapshotState(1).getPartitions())
                 .filteredOn(p -> p.getLifecycleState() == PartitionLifecycleState.CREATED)
                 .hasSize(2);
+        pollAfter(enumerator, context, 1);
         enumerator.handleSplitRequest(1, "localhost");
         assertThat(context.assignedSplits(1)).isEmpty();
 
@@ -466,6 +468,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
         assertThat(context.assignedSplits(1)).hasSize(1);
         SpannerChangeStreamEnumeratorState compact = enumerator.snapshotState(2);
+        pollAfter(enumerator, context, 2);
         assertThat(compact.getPartitions())
                 .filteredOn(p -> p.getLifecycleState() == PartitionLifecycleState.SCHEDULED)
                 .hasSize(1);
@@ -477,6 +480,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.notifyCheckpointComplete(2);
         assertThat(enumerator.snapshotState(3).getSourceWatermark())
                 .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(childStart));
+        pollAfter(enumerator, context, 3);
         assertThat(context.<Long>gauge(SpannerMetricNames.CHANGE_STREAM_PARTITION_LEDGER_ENTRIES))
                 .isEqualTo(2L);
         assertThat(context.<Long>gauge(SpannerMetricNames.CHANGE_STREAM_FINISHED_PARENT_PROOFS))
@@ -1509,6 +1513,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.start();
         context.runAsyncCalls();
         ChangeStreamPartitionSplit initial = enumerator.snapshotState(1).getPartitions().get(0);
+        pollAfter(enumerator, context, 1);
         Instant start = initial.getStartTimestamp().plusSeconds(1);
         enumerator.handleSplitRequest(0, "localhost");
 
@@ -1904,7 +1909,9 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
         // Snapshotted before the finish, so the parent's last records may follow their barriers.
         enumerator.snapshotState(1);
+        pollAfter(enumerator, context, 1);
         enumerator.snapshotState(2);
+        pollAfter(enumerator, context, 2);
         enumerator.handleSourceEvent(0, finished("p1", start));
         enumerator.handleSplitRequest(1, "localhost");
         assertThat(enumerator.heldParentCount()).isEqualTo(1);
@@ -1914,6 +1921,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.notifyCheckpointComplete(1);
         assertThat(context.assignedSplits(1)).as("before any covering snapshot").isEmpty();
         enumerator.snapshotState(3);
+        pollAfter(enumerator, context, 3);
         enumerator.notifyCheckpointComplete(2);
         assertThat(context.assignedSplits(1)).as("covered by a later snapshot").isEmpty();
         assertThat(enumerator.heldParentCount()).isEqualTo(1);
@@ -1943,6 +1951,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.handleSourceEvent(0, finished("p1", start));
         enumerator.snapshotState(1); // aborted: never completes
         enumerator.snapshotState(2);
+        pollAfter(enumerator, context, 2);
         enumerator.handleSplitRequest(1, "localhost");
         enumerator.notifyCheckpointComplete(2);
 
@@ -2034,6 +2043,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(context.assignedSplits(1)).isEmpty();
 
         enumerator.snapshotState(1);
+        pollAfter(enumerator, context, 1);
         enumerator.notifyCheckpointComplete(1);
         assertThat(context.assignedSplits(1))
                 .extracting(ChangeStreamPartitionSplit::getPartitionToken)
@@ -2237,6 +2247,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
         enumerator.handleSourceEvent(0, finished("p1", start));
         SpannerChangeStreamEnumeratorState afterFinish = enumerator.snapshotState(1);
+        pollAfter(enumerator, context, 1);
         enumerator.handleSourceEvent(0, finished("p1", start));
         enumerator.handleSourceEvent(1, finished("never-assigned", start));
 
@@ -2252,6 +2263,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .containsExactly(ChangeStreamPartitionSplit.idForToken("never-assigned"));
         assertThat(enumerator.snapshotState(2).getPartitions())
                 .isEqualTo(afterFinish.getPartitions());
+        pollAfter(enumerator, context, 2);
         assertThat(enumerator.heldParentCount()).isEqualTo(1);
         // The repeated finish did not restart the hold that checkpoint 1 covers.
         enumerator.notifyCheckpointComplete(1);
@@ -2339,6 +2351,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(lineage.enumerator.snapshotState(1).getPartitions())
                 .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
                 .containsExactlyInAnyOrder("p=RUNNING", "q=RUNNING", "c=CREATED", "d=CREATED");
+        pollAfter(lineage.enumerator, lineage.context, 1);
         // P's repeated report finds C in the ledger, and P's next finish releases it again.
         lineage.enumerator.handleSourceEvent(0, lineage.reported);
         lineage.enumerator.handleSourceEvent(
@@ -2426,12 +2439,14 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(lineage.enumerator.snapshotState(1).getPartitions())
                 .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
                 .containsExactlyInAnyOrder("c=SCHEDULED", "d=SCHEDULED");
+        pollAfter(lineage.enumerator, lineage.context, 1);
 
         lineage.enumerator.handleSourceEvent(
                 0,
                 new PartitionsRestoredEvent(Collections.singletonList(lineage.parent.splitId())));
 
         SpannerChangeStreamEnumeratorState rolledBack = lineage.enumerator.snapshotState(2);
+        pollAfter(lineage.enumerator, lineage.context, 2);
         assertThat(rolledBack.getPartitions())
                 .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
                 .containsExactlyInAnyOrder("p=RUNNING", "c=CREATED", "d=CREATED");
@@ -2502,6 +2517,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 new PartitionFinishedEvent(
                         lineage.other.splitId(), lineage.childStart, lineage.childStart, true));
         lineage.enumerator.snapshotState(1);
+        pollAfter(lineage.enumerator, lineage.context, 1);
         lineage.enumerator.notifyCheckpointComplete(1);
         lineage.reportAndFinishParent();
         lineage.enumerator.handleSplitRequest(0, "localhost");
@@ -2586,6 +2602,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                         new PartitionProgressEvent.Progress(assignedC.splitId(), ahead, ahead));
         lineage.enumerator.handleSourceEvent(0, PartitionProgressEvent.live(live));
         long live1 = lineage.enumerator.snapshotState(1).getSourceWatermark();
+        pollAfter(lineage.enumerator, lineage.context, 1);
         assertThat(live1)
                 .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.childStart));
 
@@ -2607,11 +2624,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
                                         ahead))));
         assertThat(lineage.enumerator.snapshotState(2).getSourceWatermark())
                 .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(ahead));
+        pollAfter(lineage.enumerator, lineage.context, 2);
 
         // A region failover returns C below that frontier. It holds rather than move back, and a
         // checkpoint records no frontier ahead of the ledger, so a restore from it succeeds.
         lineage.enumerator.addSplitsBack(Collections.singletonList(assignedC), 0);
         SpannerChangeStreamEnumeratorState checkpoint = lineage.enumerator.snapshotState(3);
+        pollAfter(lineage.enumerator, lineage.context, 3);
         assertThat(checkpoint.getSourceWatermark())
                 .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.childStart));
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> restoredContext = context(1);
@@ -2817,7 +2836,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
     /**
      * {@code clock} counts milliseconds; the enumerator reads it as both its wall and nano clock.
      */
-    private static SpannerChangeStreamSplitEnumerator handOff(
+    static SpannerChangeStreamSplitEnumerator handOff(
             FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             boolean holdChildrenUntilCheckpoint,
             Duration firstCheckpointTimeout,
@@ -2840,8 +2859,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
     }
 
     /** A restored ledger with each named parent running and its {@code <name>-child} created. */
-    private static SpannerChangeStreamEnumeratorState runningParents(
-            Instant start, String... parents) {
+    static SpannerChangeStreamEnumeratorState runningParents(Instant start, String... parents) {
         List<ChangeStreamPartitionSplit> ledger = new java.util.ArrayList<>();
         for (String parent : parents) {
             ChangeStreamPartitionSplit running =
@@ -2854,20 +2872,20 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 ledger, Collections.emptySet(), null, Long.MIN_VALUE);
     }
 
-    private static PartitionProgressEvent committedProgress(
+    static PartitionProgressEvent committedProgress(
             String splitId, Instant position, Instant watermark) {
         return PartitionProgressEvent.committed(
                 Collections.singletonList(
                         new PartitionProgressEvent.Progress(splitId, position, watermark)));
     }
 
-    private static PartitionFinishedEvent finished(String token, Instant start) {
+    static PartitionFinishedEvent finished(String token, Instant start) {
         Instant end = start.plusSeconds(1);
         return new PartitionFinishedEvent(
                 ChangeStreamPartitionSplit.idForToken(token), end, end, true);
     }
 
-    private static SpannerChangeStreamSplitEnumerator configured(
+    static SpannerChangeStreamSplitEnumerator configured(
             FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             StartPosition start,
             @Nullable StartPosition resumeFallback,
@@ -2936,7 +2954,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.close();
     }
 
-    private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
+    static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
                 new FakeSplitEnumeratorContext<>(parallelism);
         for (int i = 0; i < parallelism; i++) {
@@ -3036,7 +3054,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .withLifecycleState(PartitionLifecycleState.FINISHED);
     }
 
-    private static List<SpannerChangeStreamWatermarkEvent> watermarkEvents(
+    static List<SpannerChangeStreamWatermarkEvent> watermarkEvents(
             FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context, int subtaskId) {
         List<SpannerChangeStreamWatermarkEvent> watermarks = new java.util.ArrayList<>();
         for (SourceEvent event : context.sourceEvents(subtaskId)) {
@@ -3045,5 +3063,15 @@ class SpannerChangeStreamSplitEnumeratorTest {
             }
         }
         return watermarks;
+    }
+
+    /** Every registered reader reports polling after the snapshot, as a running reader does. */
+    private static void pollAfter(
+            SpannerChangeStreamSplitEnumerator enumerator,
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            long checkpointId) {
+        for (Integer subtaskId : new java.util.ArrayList<>(context.registeredReaders().keySet())) {
+            enumerator.handleSourceEvent(subtaskId, new ReaderPolledEvent(checkpointId));
+        }
     }
 }

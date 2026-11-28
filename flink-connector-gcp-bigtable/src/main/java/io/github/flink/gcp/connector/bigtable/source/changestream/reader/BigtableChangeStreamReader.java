@@ -45,6 +45,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgr
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionAckEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -163,6 +164,12 @@ public final class BigtableChangeStreamReader<T>
     private long lastLiveReportNanos;
     private long maxCompletedCheckpointId = Long.MIN_VALUE;
 
+    /**
+     * The latest checkpoint whose snapshot this reader took and has not yet reported from a poll,
+     * or {@code Long.MIN_VALUE}. The report tells the coordinator the reader is still running.
+     */
+    private long unreportedSnapshot = Long.MIN_VALUE;
+
     public BigtableChangeStreamReader(
             SourceReaderContext context, BigtableChangeStreamSourceConfig<T> config) {
         this(
@@ -280,6 +287,7 @@ public final class BigtableChangeStreamReader<T>
 
     @Override
     public InputStatus pollNext(ReaderOutput<T> output) throws Exception {
+        reportPolledSnapshot();
         if (!outputsToRelease.isEmpty()) {
             // An output nothing emits to would hold the source's combined watermark back.
             for (String splitId : outputsToRelease) {
@@ -404,7 +412,29 @@ public final class BigtableChangeStreamReader<T>
             checkpointProgress.pollFirstEntry();
         }
         state.addAll(closedUnacknowledged.values());
+        // Wakes an idle reader, so even one waiting for a split reports from its next poll.
+        unreportedSnapshot = Math.max(unreportedSnapshot, checkpointId);
+        signalAvailable();
         return state;
+    }
+
+    /**
+     * Tells the coordinator, from a poll, that this reader took its latest snapshot and still runs.
+     * A source that a stop-with-savepoint stopped is never polled after that snapshot, so the
+     * coordinator sends it nothing that could reach it after it finished. A reader that has read
+     * all its input reports nothing: it needs nothing more, and under a {@code HybridSource} the
+     * next source's coordinator would receive the report.
+     */
+    private void reportPolledSnapshot() {
+        if (unreportedSnapshot == Long.MIN_VALUE) {
+            return;
+        }
+        if (finished()) {
+            unreportedSnapshot = Long.MIN_VALUE;
+            return;
+        }
+        context.sendSourceEventToCoordinator(new ReaderPolledEvent(unreportedSnapshot));
+        unreportedSnapshot = Long.MIN_VALUE;
     }
 
     /**
@@ -477,6 +507,7 @@ public final class BigtableChangeStreamReader<T>
     public CompletableFuture<Void> isAvailable() {
         synchronized (availabilityLock) {
             if (!handover.isEmpty()
+                    || unreportedSnapshot != Long.MIN_VALUE
                     || firstTerminal() != null
                     || finished()
                     || !outputsToRelease.isEmpty()) {
