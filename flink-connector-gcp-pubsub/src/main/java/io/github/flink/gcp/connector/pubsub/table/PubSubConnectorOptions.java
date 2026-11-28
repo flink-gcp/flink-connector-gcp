@@ -341,7 +341,8 @@ public final class PubSubConnectorOptions {
 
     /**
      * How long a restored deduplication ledger is kept once the reader starts consuming. A
-     * redelivery that arrives later is emitted. Requires 'scan.restore-deduplication.enabled'.
+     * redelivery that arrives later is not suppressed. Requires
+     * 'scan.restore-deduplication.enabled'.
      */
     public static final ConfigOption<Duration> SCAN_RESTORE_DEDUPLICATION_TTL =
             ConfigOptions.key("scan.restore-deduplication.ttl")
@@ -349,8 +350,9 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "How long a restored deduplication ledger is kept once the reader"
-                                    + " starts consuming. A redelivery that arrives later is"
-                                    + " emitted. Requires 'scan.restore-deduplication.enabled'.");
+                                    + " starts consuming. A redelivery that arrives later is not"
+                                    + " suppressed. Requires"
+                                    + " 'scan.restore-deduplication.enabled'.");
 
     /**
      * Whether the source generates the table's WATERMARK itself, per split, which is what makes the

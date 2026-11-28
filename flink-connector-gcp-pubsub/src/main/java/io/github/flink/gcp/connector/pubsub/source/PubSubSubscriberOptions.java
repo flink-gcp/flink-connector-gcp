@@ -535,8 +535,9 @@ public final class PubSubSubscriberOptions implements Serializable {
          *
          * <p><b>{@code Duration.ZERO} is settable</b> and means what the client library means by
          * it: <em>"a zero duration effectively disables auto deadline extensions"</em>, so every
-         * message's lease expires at the subscription's own acknowledgement deadline. A setting
-         * this connector forwards to the SDK stays settable as the SDK defines it (ADR-0068).
+         * message's lease lasts only as long as the client library's own deadline for it, not the
+         * subscription's acknowledgement deadline. A setting this connector forwards to the SDK
+         * stays settable as the SDK defines it (ADR-0068).
          *
          * <p>Only a negative budget is refused. Unlike the {@code retry*} knobs this one takes no
          * millisecond floor, and that is measured rather than assumed: {@code MessageDispatcher}
@@ -694,11 +695,12 @@ public final class PubSubSubscriberOptions implements Serializable {
          * min; {@link Duration#ZERO} disables the detector.
          *
          * <p>The source acknowledges a message only once a completed checkpoint covers it, so a job
-         * running without checkpointing never has a checkpoint acknowledge what it consumes, and
-         * stalls silently once flow control fills. Raise this above the checkpoint interval for
-         * jobs that checkpoint less often than every 10 min. See {@code MissingCheckpointDetector}
-         * for why the guard measures elapsed time rather than reading the checkpoint configuration,
-         * and why it measures it from the first assignment rather than from the reader's creation.
+         * running without checkpoints never has what it processes covered, and its source stops
+         * pulling whenever flow control fills, without an error of its own. Raise this above the
+         * checkpoint interval for jobs that checkpoint less often than every 10 min. See {@code
+         * MissingCheckpointDetector} for why the guard measures elapsed time rather than reading
+         * the checkpoint configuration, and why it measures it from the first assignment rather
+         * than from the reader's creation.
          *
          * @param firstCheckpointTimeout the detector budget, non-negative and at most {@code
          *     Duration.ofNanos(Long.MAX_VALUE)}; zero disables it

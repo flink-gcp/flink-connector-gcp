@@ -275,16 +275,18 @@ public class PubSubSourceBuilder<T> {
      * requirements when a checkpoint completes; every rescale it triggers that way races the
      * notification, and one lost race duplicates a whole checkpoint interval.
      *
-     * <p>With this on, each checkpoint also records ids of messages it covers. After a restore, a
-     * redelivery of one of those messages can be suppressed for {@link
-     * #restoreDeduplicationTtl(Duration)}: it is not emitted, and it can be acknowledged at once
-     * rather than with a checkpoint. This removes the duplicates of a whole-job restore, which
-     * every AdaptiveScheduler restart is, whether it rescales up or down, as far as the ledger
-     * reaches the readers (below), and loses nothing: every suppressed message was covered by the
-     * restored checkpoint, and a redelivery that arrives after the ledger expires is emitted as it
-     * would be without this setting. A region failover is covered for the subtasks it restores; a
-     * redelivery that Pub/Sub routes to a source subtask the failover left running can be emitted
-     * again.
+     * <p>With this on, each checkpoint also records ids of messages it covers, its ledger. After a
+     * restore, a delivery whose id is in the reader's restored ledger is suppressed until {@link
+     * #restoreDeduplicationTtl(Duration)} has passed: it is not emitted, and it can be acknowledged
+     * at once rather than with a checkpoint. A suppressed message is one the restored checkpoint
+     * covers, as long as the subscription keeps reading the same topic (message ids are unique only
+     * within a topic), so nothing is lost as long as the restore also brings back the state
+     * downstream of the source; a downstream operator whose state is dropped, for example because
+     * its uid changed, loses what the suppressed messages contributed to it. Suppression is best
+     * effort, and a delivery the ledger does not suppress is processed as it would be without this
+     * setting. It removes most duplicates of a whole-job restore, which every AdaptiveScheduler
+     * restart is, whether it rescales up or down, and those of a region failover for the subtasks
+     * it restores.
      *
      * <p>The cost is checkpoint state that grows with the messages processed between checkpoints,
      * those {@link DeserializationFailurePolicy#DROP} discards included, and a restore that waits
@@ -309,7 +311,7 @@ public class PubSubSourceBuilder<T> {
      * Duration.ofNanos(Long.MAX_VALUE)}, or for ten minutes, the longest acknowledgement deadline,
      * when that extension is disabled.
      *
-     * <p>A redelivery that arrives after the ledger expires is emitted, so a longer lifetime
+     * <p>A redelivery that arrives after the ledger expires is not suppressed, so a longer lifetime
      * suppresses late redeliveries, for example behind a backlog, at the cost of keeping the ids in
      * memory for longer.
      *

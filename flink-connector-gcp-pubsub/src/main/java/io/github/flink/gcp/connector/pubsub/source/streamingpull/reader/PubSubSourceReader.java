@@ -241,9 +241,9 @@ public class PubSubSourceReader<T>
     }
 
     /**
-     * Encodes the ids the checkpoint covers but has not acknowledged, split by split. Each chunk
-     * carries its split's subscription; the plan never gives one subtask two splits of the same
-     * subscription, and two chunks of one subscription would be just as valid if it did.
+     * Encodes the ids {@link AckTracker#checkpointedMessageIds()} returns, split by split. Each
+     * chunk carries its split's subscription; the plan never gives one subtask two splits of the
+     * same subscription, and two chunks of one subscription would be just as valid if it did.
      */
     private List<SubscriptionSplit> ledgerChunks(long checkpointId) {
         List<SubscriptionSplit> chunks = new ArrayList<>();
