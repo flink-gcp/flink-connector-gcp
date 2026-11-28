@@ -75,8 +75,8 @@ import java.util.Set;
  * (a checkpointed plan is never recomputed), {@link #onPlanningStarted()}, {@link #plan()}, {@link
  * #onPlanned(Object)}, {@link #registerCounters(EnumeratorMetrics)} and {@link
  * #snapshotState(long)}. Everything else here is {@code final}: the queue, the parking, the
- * assignment protocol, the guard that keeps a completion arriving after teardown quiet, and the
- * close of the one seam the enumerator owns.
+ * assignment protocol, the guard that keeps a completion arriving after teardown quiet while a
+ * planning failure it drops is still logged, and the close of the one seam the enumerator owns.
  *
  * <p>Every method runs on the coordinator thread — including {@link #onPlanned(Object)}, which the
  * completion handler calls — so nothing here synchronizes. The two exceptions are named where they
@@ -103,8 +103,13 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
 
     private final AutoCloseable planner;
     private final String splitNoun;
-    private final String planFailureMessage;
     private final String closeFailureMessage;
+
+    /**
+     * Keeps a trace of a planning failure the completion handler does not report because the
+     * enumerator closed first.
+     */
+    private final AsyncStartupFailureReporter planFailures;
 
     /** Splits no reader currently holds, in assignment order. */
     private final Deque<SplitT> pending = new ArrayDeque<>();
@@ -135,7 +140,8 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
      * @param splitNoun what this connector calls one split, as it reads mid-sentence ("read stream
      *     split"), used in the assignment log lines
      * @param planFailureMessage what the job fails with when the planning call fails; the source
-     *     cannot start
+     *     cannot start. A line logged for a planning failure the job is not failed with carries it
+     *     too (see {@link AsyncStartupFailureReporter})
      * @param closeFailureMessage what the WARN log line and the {@link java.io.IOException} say
      *     when the seam refuses to close; at job shutdown the log line is the one an operator sees,
      *     since Flink's source coordinator drops what {@link #close()} throws. Both messages are
@@ -151,12 +157,14 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.planner = Preconditions.checkNotNull(planner, "planner must not be null");
         this.splitNoun = Preconditions.checkNotNull(splitNoun, "splitNoun must not be null");
-        this.planFailureMessage =
-                Preconditions.checkNotNull(
-                        planFailureMessage, "planFailureMessage must not be null");
         this.closeFailureMessage =
                 Preconditions.checkNotNull(
                         closeFailureMessage, "closeFailureMessage must not be null");
+        this.planFailures =
+                new AsyncStartupFailureReporter(
+                        log,
+                        Preconditions.checkNotNull(
+                                planFailureMessage, "planFailureMessage must not be null"));
     }
 
     @Override
@@ -167,7 +175,7 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
             return;
         }
         onPlanningStarted();
-        context.callAsync(this::plan, this::onPlanCompleted);
+        context.callAsync(planFailures.observing(this::plan), this::onPlanCompleted);
     }
 
     /**
@@ -264,15 +272,25 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
     /**
      * Runs on the coordinator thread once the planning call finishes, so it needs no
      * synchronization. Throwing is how a split enumerator fails the job from an asynchronous call.
+     *
+     * <p>Flink runs it on a closed enumerator, or never once it has shut the coordinator's executor
+     * down, so a planning failure it does not report is logged by {@code planFailures} instead.
      */
     private void onPlanCompleted(@Nullable PlanT plan, @Nullable Throwable error) {
-        if (closed) {
-            // The job is being torn down; failing it now would turn a clean cancellation into a
-            // failure whose cause is our own shutdown.
-            return;
-        }
         if (error != null) {
-            throw new FlinkRuntimeException(planFailureMessage, error);
+            // Claimed before the closed flag is read. close() closes the reporter first, which
+            // then refuses, so a teardown does not become a job failure; the failure is logged by
+            // the reporter's close or where the work threw it.
+            FlinkRuntimeException failure = planFailures.claim(error);
+            if (failure == null) {
+                return;
+            }
+            throw failure;
+        }
+        if (closed) {
+            // The job is being torn down; a plan landing now is not handed to a
+            // context that is being torn down.
+            return;
         }
         onPlanned(plan);
         planned = true;
@@ -362,7 +380,10 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
     @Override
     public final void close() throws IOException {
         // Usually runs on Flink's closer thread, possibly while the planning call is still in
-        // flight; the flag is volatile so the completion handler sees it and stays quiet.
+        // flight; the flag is volatile so the completion handler sees it and stays quiet. The
+        // reporter closes first, so a planning failure the handler has not reported is logged, and
+        // one the close of the planner may cause is told apart.
+        planFailures.close();
         closed = true;
         try {
             Closers.closeAll(planner);

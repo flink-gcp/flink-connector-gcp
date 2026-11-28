@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-03 ([#229]); the written-out loop 2026-08-05 ([#276], reversing [#229]'s
-  "delegate rather than reimplement")
-- Issues: [#229], [#276], [#297]
+  "delegate rather than reimplement"); revised by [#2369] (2026-11-28: a log call on a close path
+  is not guarded against a throwing appender)
+- Issues: [#229], [#276], [#297], [#2369]
 - Modules: base (`Closers`), every connector's `close()` paths
 - Current behavior: the `Closers` javadoc carries the contract (published by the API reference)
 
@@ -62,7 +63,38 @@ teardown fails the task into a restart loop instead. Ten lines over
   so the tree keeps one idiom — and [#276] added nine more. [#297] then made "one list, never a
   loop then a call" the rule at the reader teardown too (ADR-0012).
 
+## A log call on a close path is not guarded against a throwing appender ([#2369], 2026-11-28)
+
+A log call can throw.
+In log4j2 (read at 2.24.3), an appender configured to pass its failures on, for most appenders by
+`ignoreExceptions="false"` against a default of `true`, can raise a `LoggingException`, such as the
+`AppenderLoggingException` that log4j's stream appenders raise on a failed write, and log4j-api's
+`AbstractLogger.handleLogMessageException` lets it through to the caller.
+Whether a given configuration does so depends on its appenders and their error handlers.
+Under one that does, a release that follows the log call in the same straight-line code of a
+`close()` is skipped.
+For example, the three split enumerators of ADR-0208's [#2369] refinement close their
+`AsyncStartupFailureReporter`, which may log at WARN, before they close the planner, client or
+admin their start-up work calls.
+
+**These calls are not guarded, and a new one is not either.**
+
+- **Flink's own close does not survive an appender that throws at INFO.**
+  `SourceCoordinator.close()` logs at INFO before it closes the enumerator and the coordinator
+  context, in Flink 1.20.5 and 2.2.1, so under an appender that throws on that line the close
+  never reaches the enumerator, and no guard inside the enumerator changes that.
+- **A guard would bind every close path that logs before it releases.**
+  Each would have to move its release ahead of the log call, or carry the appender's failure past
+  the release as `Closers` carries a close failure, and no checker holds that rule, for a
+  configuration that is not log4j2's default.
+- **The limit is an appender that throws on the connector's line but not on Flink's**, by level
+  or by logger.
+  Flink's INFO line then passes, and the connector's line throws before the release after it.
+  That configuration is not guarded either: the guard would cost the same, and an appender set to
+  throw asks for a logging failure to stop its caller.
+
 [#211]: https://github.com/flink-gcp/flink-connector-gcp/issues/211
 [#229]: https://github.com/flink-gcp/flink-connector-gcp/issues/229
 [#276]: https://github.com/flink-gcp/flink-connector-gcp/issues/276
 [#297]: https://github.com/flink-gcp/flink-connector-gcp/issues/297
+[#2369]: https://github.com/flink-gcp/flink-connector-gcp/issues/2369

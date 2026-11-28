@@ -35,6 +35,7 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     private int closeCalls;
     private RuntimeException failNextGeneration;
     private Throwable closeFailure;
+    private Runnable closeHook;
 
     static ScriptedChangeStreamCoordinatorClient with(ByteStringRange... partitions) {
         return new ScriptedChangeStreamCoordinatorClient(
@@ -71,12 +72,20 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     @Override
     public void close() {
         closeCalls++;
+        if (closeHook != null) {
+            closeHook.run();
+        }
         if (closeFailure instanceof Error) {
             throw (Error) closeFailure;
         }
         if (closeFailure != null) {
             throw (RuntimeException) closeFailure;
         }
+    }
+
+    /** Runs the hook inside the close, as a call in flight that the close makes fail. */
+    void onClose(Runnable hook) {
+        closeHook = hook;
     }
 
     /** Answers later scans with these partitions, as a table whose tablets moved does. */

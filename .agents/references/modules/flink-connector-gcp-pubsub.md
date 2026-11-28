@@ -134,6 +134,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Error` included, before it throws it: `SourceCoordinator.close()` closes an enumerator through
   `IOUtils.closeQuietly`, which drops what `close()` throws (`docs/adr/0208`, #2370). The admin
   logs an ordinary close failure itself, so the enumerator's line matters for an `Error`; keep it.
+- A startup check failure the enumerator closed before reporting goes through base's
+  `AsyncStartupFailureReporter` (#2369): WARN from `close()` if the check failed while the
+  enumerator was open, INFO where it fails after the close, whose close of the admin may have
+  caused it. A deterministic rejection that lands after the close is logged at INFO too, and the
+  next start rejects it again.
 
 ## Metrics (`docs/adr/0010`; conventions in the base module's detailed guidance)
 

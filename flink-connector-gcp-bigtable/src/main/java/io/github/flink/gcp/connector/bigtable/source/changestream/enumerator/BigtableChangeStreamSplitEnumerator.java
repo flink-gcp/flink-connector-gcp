@@ -32,6 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.MetricValues;
+import io.github.flink.gcp.connector.base.source.AsyncStartupFailureReporter;
 import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
@@ -168,6 +169,9 @@ public final class BigtableChangeStreamSplitEnumerator
     /** The prefix of every split id; the number after it orders the splits by creation. */
     private static final String SPLIT_ID_PREFIX = "change-stream-";
 
+    private static final String INITIALIZATION_FAILURE_MESSAGE =
+            "Failed to initialize Bigtable Change Streams partitions.";
+
     /** The covering checkpoint of a pending close that no snapshot has run after yet. */
     private static final long UNCOVERED = -1L;
 
@@ -247,6 +251,14 @@ public final class BigtableChangeStreamSplitEnumerator
     private boolean checkpointCompleted;
     private boolean closesFinalAtOnce;
     private volatile boolean closed;
+
+    /**
+     * Keeps a trace of an initialization failure {@code onInitialized} does not report because the
+     * enumerator closed first.
+     */
+    private final AsyncStartupFailureReporter initializationFailures =
+            new AsyncStartupFailureReporter(LOG, INITIALIZATION_FAILURE_MESSAGE);
+
     private Instant resolvedStartTime = Instant.EPOCH;
     private long nextSplitId;
     @Nullable private volatile Duration reconciliationRetention;
@@ -329,7 +341,7 @@ public final class BigtableChangeStreamSplitEnumerator
     @Override
     public void start() {
         registerMetrics();
-        context.callAsync(this::initialize, this::onInitialized);
+        context.callAsync(initializationFailures.observing(this::initialize), this::onInitialized);
         if (!firstCheckpointTimeout.isZero()) {
             long period =
                     Math.max(
@@ -422,13 +434,25 @@ public final class BigtableChangeStreamSplitEnumerator
         return resolved;
     }
 
+    /**
+     * Runs on the coordinator thread once initialization finishes. Flink runs it on a closed
+     * enumerator, or never once it has shut the coordinator's executor down, so an initialization
+     * failure it does not report is logged by {@code initializationFailures} instead.
+     */
     private void onInitialized(@Nullable Initialization result, @Nullable Throwable error) {
-        if (closed) {
-            return;
-        }
         if (error != null) {
-            throw new FlinkRuntimeException(
-                    "Failed to initialize Bigtable Change Streams partitions.", error);
+            // Claimed before the closed flag is read. close() closes the reporter first, which
+            // then refuses, so a teardown does not become a job failure; the failure is logged by
+            // the reporter's close or where the work threw it.
+            FlinkRuntimeException failure = initializationFailures.claim(error);
+            if (failure == null) {
+                return;
+            }
+            throw failure;
+        }
+        if (closed) {
+            // The job is being torn down; an initialization landing now is not applied.
+            return;
         }
         Initialization initialization =
                 Preconditions.checkNotNull(result, "initialization result must not be null");
@@ -1240,7 +1264,10 @@ public final class BigtableChangeStreamSplitEnumerator
 
     @Override
     public void close() throws IOException {
-        // The flag first: a start() still registering sees it and lets go of what it bound.
+        // The reporter first, so an initialization failure onInitialized has not reported is
+        // logged, and one the close of the client may cause is told apart. Then the flag: a
+        // start() still registering sees it and lets go of what it bound.
+        initializationFailures.close();
         closed = true;
         try {
             Closers.closeAll(client);

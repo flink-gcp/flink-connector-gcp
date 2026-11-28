@@ -25,6 +25,7 @@ import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.util.FlinkRuntimeException;
 
+import io.github.flink.gcp.connector.base.source.AsyncStartupFailureReporter;
 import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
@@ -175,6 +176,12 @@ public class PubSubSplitEnumerator
     private volatile boolean closed;
 
     /**
+     * Keeps a trace of a startup check failure the completion handler does not report because the
+     * enumerator closed first.
+     */
+    private final AsyncStartupFailureReporter startupCheckFailures;
+
+    /**
      * Replaced when the metrics register; volatile because {@link #close()} runs on another thread.
      */
     private volatile EnumeratorMetrics metrics = EnumeratorMetrics.unregistered();
@@ -196,6 +203,12 @@ public class PubSubSplitEnumerator
         this.config = config;
         this.admin = admin;
         this.restoredState = restoredState;
+        this.startupCheckFailures =
+                new AsyncStartupFailureReporter(
+                        LOG,
+                        "Failed to verify the Pub/Sub subscriptions "
+                                + config.getSubscriptions()
+                                + " for consumption; the source cannot start.");
     }
 
     @Override
@@ -267,7 +280,8 @@ public class PubSubSplitEnumerator
                 subscriptions.size(),
                 seekTime == null ? "" : ", seeking them to " + seekTime);
         context.callAsync(
-                () -> runStartupCheck(seekTime, backwardsSeek), this::onStartupCheckComplete);
+                startupCheckFailures.observing(() -> runStartupCheck(seekTime, backwardsSeek)),
+                this::onStartupCheckComplete);
     }
 
     /**
@@ -407,19 +421,25 @@ public class PubSubSplitEnumerator
     /**
      * Runs on the coordinator thread once the check finishes, so it needs no synchronization.
      * Throwing is how a split enumerator fails the job from an asynchronous call.
+     *
+     * <p>Flink runs it on a closed enumerator, or never once it has shut the coordinator's executor
+     * down, so a check failure it does not report is logged by {@code startupCheckFailures}
+     * instead.
      */
     private void onStartupCheckComplete(@Nullable Void ignored, @Nullable Throwable error) {
-        if (closed) {
-            // The job is being torn down; failing it now would turn a clean cancellation into a
-            // failure whose cause is our own shutdown.
-            return;
-        }
         if (error != null) {
-            throw new FlinkRuntimeException(
-                    "Failed to verify the Pub/Sub subscriptions "
-                            + config.getSubscriptions()
-                            + " for consumption; the source cannot start.",
-                    error);
+            // Claimed before the closed flag is read. close() closes the reporter first, which
+            // then refuses, so a teardown does not become a job failure; the failure is logged by
+            // the reporter's close or where the work threw it.
+            FlinkRuntimeException failure = startupCheckFailures.claim(error);
+            if (failure == null) {
+                return;
+            }
+            throw failure;
+        }
+        if (closed) {
+            // The job is being torn down; no split is assigned to it.
+            return;
         }
         startPositionApplied = true;
         startupCheckComplete = true;
@@ -706,7 +726,10 @@ public class PubSubSplitEnumerator
     @Override
     public void close() throws IOException {
         // Runs on Flink's closer thread, possibly while the check is still in flight; the flag is
-        // volatile so the completion handler sees it and stays quiet.
+        // volatile so the completion handler sees it and stays quiet. The reporter closes first, so
+        // a check failure the handler has not reported is logged, and one the close of the admin
+        // may cause is told apart.
+        startupCheckFailures.close();
         closed = true;
         try {
             admin.close();

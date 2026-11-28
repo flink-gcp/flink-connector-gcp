@@ -67,6 +67,9 @@ final class FakeSubscriptionAdmin implements SubscriptionAdmin {
 
     int closeCalls;
 
+    /** Runs inside {@link #close()}, as a call in flight that the close makes fail. */
+    Runnable closeHook;
+
     /** Declares a subscription to exist with default settings. */
     FakeSubscriptionAdmin withSubscription(SubscriptionDestination subscription) {
         return withSubscription(subscription, SubscriptionInfo.builder().build());
@@ -121,6 +124,9 @@ final class FakeSubscriptionAdmin implements SubscriptionAdmin {
     @Override
     public void close() throws Exception {
         closeCalls++;
+        if (closeHook != null) {
+            closeHook.run();
+        }
         if (closeFailure instanceof Error) {
             throw (Error) closeFailure;
         }
