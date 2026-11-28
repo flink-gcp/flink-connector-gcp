@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0198: Pub/Sub restore deduplication records message ids, not acknowledgement ids
 
 - Status: Accepted
-- Date: 2026-11-06 (client library facts read in google-cloud-pubsub 1.158.0; Flink runtime facts read in 2.2.1 and flink-core 1.20.5; emulator behavior measured 2026-11-06)
-- Issues: [#2049]
+- Date: 2026-11-06 (client library facts read in google-cloud-pubsub 1.158.0; Flink runtime facts read in 2.2.1 and flink-core 1.20.5; emulator behavior measured 2026-11-06); revised by [#2383] (2026-11-28)
+- Issues: [#2049], [#2383]
 - Modules: pubsub (`io.github.flink.gcp.connector.pubsub.source.streamingpull`)
 - Refines: [ADR-0011] (readers now checkpoint ledger chunks, never consuming splits)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` § Restore deduplication
@@ -37,7 +37,8 @@ The Apache connector's legacy source keeps the acknowledgement ids of each check
 An opt-in setting, `restoreDeduplication(true)` (Table API `scan.restore-deduplication.enabled`), records with every checkpoint the message ids it covers that are not acknowledged yet, and after a restore acknowledges instead of emitting a redelivery whose id is in the restored ledger.
 
 - **Content.** The ids of messages bound to a checkpoint and not yet acknowledged when the snapshot is taken (`AckTracker.checkpointedMessageIds`), keyed by subscription.
-  A message received but not emitted is never included: its records are not in the checkpoint, so suppressing its redelivery would lose it.
+  A message received but not yet processed, neither emitted nor dropped by `DROP`, is never included: its records are not in the checkpoint, so suppressing its redelivery would lose it.
+  A message `DROP` discarded is included since [#2383]: the checkpoint holds whatever records the schema emitted from it, and a redelivery the live ledger matches is suppressed and counted in `redeliveriesSuppressed` rather than dropped again.
 - **Encoding.** The proto defines `message_id` only as a string unique within a topic, so the codec assumes no alphabet: ids are sorted by UTF-8 bytes and front-coded into self-contained chunks of about 1 MiB.
   An id of at most 17 ASCII digits, the shape of every id the service assigned in the measurement below, is packed into a `long` (`DecimalMessageIds`) whose order is the ids' byte order, so the codec sorts primitives and the restored ledger holds an open-addressing table of them; any other id stays a string, so the packing is an optimization and never an assumption.
   A string holding an unpaired surrogate has no UTF-8 form, and encoding it would turn it into a different id, so it is left out rather than altered; protobuf decodes a delivered id from UTF-8, so a delivered id never holds one.
@@ -104,4 +105,5 @@ The IT above keeps the case, and the Pub/Sub fault sequence runs with the settin
 [#2126]: https://github.com/flink-gcp/flink-connector-gcp/issues/2126
 [#2127]: https://github.com/flink-gcp/flink-connector-gcp/issues/2127
 [#2240]: https://github.com/flink-gcp/flink-connector-gcp/issues/2240
+[#2383]: https://github.com/flink-gcp/flink-connector-gcp/issues/2383
 [ADR-0204]: 0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md

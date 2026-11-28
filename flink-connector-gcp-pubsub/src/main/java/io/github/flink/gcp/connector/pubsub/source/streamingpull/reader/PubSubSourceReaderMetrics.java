@@ -46,10 +46,9 @@ import java.util.function.ToLongFunction;
  * make a completed checkpoint fail the job unless the futures its acknowledgements return report
  * success in time, and watch Cloud Monitoring's {@code subscription/oldest_unacked_message_age} to
  * detect a persistent acknowledgement failure from outside the job. The confirmation wait covers
- * only the acknowledgements a completed checkpoint sends: a message the {@code DROP}
- * deserialization failure policy discards, and a redelivery that restore deduplication suppresses,
- * are acknowledged at once and counted here, but no wait reads their futures, so a request that
- * fails after its acknowledgement call returned does not fail the job.
+ * only the acknowledgements a completed checkpoint sends: a redelivery that restore deduplication
+ * suppresses is acknowledged at once and counted here, but no wait reads its future, so a request
+ * that fails after its acknowledgement call returned does not fail the job.
  *
  * <p><b>The two subscriber-teardown counters are the exception to all of that</b> (#358): their
  * values are process-wide rather than this reader's, and they are registered here without being

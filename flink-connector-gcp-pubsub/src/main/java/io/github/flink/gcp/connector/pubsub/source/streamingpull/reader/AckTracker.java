@@ -28,8 +28,9 @@ import java.util.Map;
  * <p>A message passes through four states:
  *
  * <ol>
- *   <li><b>pending</b> — received from Pub/Sub but not yet emitted downstream
- *   <li><b>staged</b> — emitted downstream, and therefore eligible for the next checkpoint
+ *   <li><b>pending</b> — received from Pub/Sub but not yet processed by the record emitter
+ *   <li><b>staged</b> — processed, its records emitted downstream or the message dropped by the
+ *       deserialization failure policy, and therefore eligible for the next checkpoint
  *   <li><b>bound to a checkpoint</b> — included in the checkpoint being taken
  *   <li><b>acknowledged</b> — that checkpoint completed
  * </ol>
@@ -38,9 +39,10 @@ import java.util.Map;
  * message unacknowledged and Pub/Sub redelivers it. Messages still pending or staged when the
  * reader closes are nacked instead of left to expire, so redelivery is immediate.
  *
- * <p>Two paths settle a pending message at once instead: a message the deserialization failure
- * policy drops, and a message whose emission failed downstream. Neither produced records any
- * checkpoint could cover.
+ * <p>Three paths settle a pending message at once instead. A message whose emission failed
+ * downstream, and one the deserialization failure policy nacks, are nacked for redelivery. A
+ * redelivery that restore deduplication suppresses is acknowledged, since the restored checkpoint
+ * already holds its records.
  *
  * <p>Every operation is keyed by split. Two subscriptions of the same topic deliver the same
  * message id to the same reader, so a reader-wide message-id map would silently drop one of the two
@@ -77,8 +79,9 @@ public interface AckTracker {
     void nackReceived(AckHandle ackHandle);
 
     /**
-     * Marks a pending message as emitted downstream, making it eligible for the next checkpoint.
-     * Does nothing if the message is not pending.
+     * Marks a pending message as processed, its records emitted downstream or the message dropped
+     * by the deserialization failure policy, making it eligible for the next checkpoint. Does
+     * nothing if the message is not pending.
      *
      * @param splitId the split the message was received on
      * @param messageId the Pub/Sub message id
@@ -87,10 +90,9 @@ public interface AckTracker {
 
     /**
      * Acknowledges a pending message immediately, without waiting for a checkpoint. Used for
-     * messages the deserialization failure policy drops, and for redeliveries restore deduplication
-     * suppresses, whose records the restored checkpoint already holds. The acknowledgement is bound
-     * to no checkpoint, so no acknowledgement confirmation wait covers it. Does nothing if the
-     * message is not pending.
+     * redeliveries restore deduplication suppresses, whose records the restored checkpoint already
+     * holds. The acknowledgement is bound to no checkpoint, so no acknowledgement confirmation wait
+     * covers it. Does nothing if the message is not pending.
      *
      * @param splitId the split the message was received on
      * @param messageId the Pub/Sub message id
@@ -108,7 +110,7 @@ public interface AckTracker {
 
     /**
      * Binds everything staged so far to the given checkpoint. Called while the checkpoint is taken,
-     * so exactly the messages emitted before the barrier are covered by it.
+     * so exactly the messages processed before the barrier are covered by it.
      *
      * @param checkpointId the checkpoint being taken
      */
@@ -118,7 +120,7 @@ public interface AckTracker {
      * Returns the ids of every message bound to a checkpoint that has not been acknowledged yet,
      * per split, in binding order. Called right after {@link #addCheckpoint(long)}, these are the
      * messages the checkpoint being taken covers whose acknowledgement could still be lost; a
-     * message received but not yet emitted is never among them.
+     * message received but not yet processed is never among them.
      *
      * @return the message ids per split id
      */

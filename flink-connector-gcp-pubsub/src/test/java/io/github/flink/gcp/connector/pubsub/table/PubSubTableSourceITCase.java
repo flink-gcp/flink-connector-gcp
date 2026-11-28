@@ -16,13 +16,20 @@
 
 package io.github.flink.gcp.connector.pubsub.table;
 
+import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.TableResult;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.ExceptionUtils;
 
+import io.github.flink.gcp.connector.testutils.Awaits;
+import io.github.flink.gcp.connector.testutils.Drains;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -78,16 +85,18 @@ class PubSubTableSourceITCase extends PubSubTableTestBase {
     @Test
     void dropsAMessageTheFormatCannotDecodeUnderTheDropPolicy() throws Exception {
         String name = "table-source-drop";
+        // Ordered under PER_KEY only so that one subtask reads the subscription and emits every row
+        // down one channel. The emulator does not dispatch an ordered subscription's messages in
+        // order, so the test orders them itself: good-2 is published only once the bad message has
+        // been dropped.
         createTopicAndOrderedSubscription(name, 30);
-        // Ordered, so the undecodable message is guaranteed to reach the reader *before* the row
-        // after it. Without that, the SDK's receiver callbacks arrive out of order — which this
-        // module has already recorded against the emulator — and the test would pass under the
-        // 'fail' policy too, whenever the bad message happened to be buffered last.
-        publishOrdered(name, "k", "{\"id\":\"good-1\"}", "not json at all", "{\"id\":\"good-2\"}");
+        publishOrdered(name, "k", "{\"id\":\"good-1\"}", "not json at all");
 
-        TableEnvironment tEnv = checkpointingTableEnvironment();
+        MessagesDroppedReporter.reset();
+        TableEnvironment tEnv =
+                checkpointingTableEnvironment(MessagesDroppedReporter.configuration());
         tEnv.executeSql(
-                "CREATE TABLE lenient (id STRING) "
+                "CREATE TABLE lenient (id STRING, mid STRING METADATA FROM 'message-id' VIRTUAL) "
                         + withOptions(
                                 "subscription",
                                 name,
@@ -97,17 +106,39 @@ class PubSubTableSourceITCase extends PubSubTableTestBase {
                                 "per-key",
                                 "scan.deserialization-failure-policy",
                                 "drop"));
+        TableResult result = tEnv.executeSql("SELECT id, mid FROM lenient");
+        CompletableFuture<JobExecutionResult> ended =
+                result.getJobClient().orElseThrow().getJobExecutionResult();
 
-        List<Row> rows =
-                collect(tEnv.executeSql("SELECT id FROM lenient"), 2, r -> r.getField("id"));
+        // Opened first, so that closing it cancels the job however the test ends.
+        try (CloseableIterator<Row> iterator = result.collect()) {
+            Awaits.await(
+                    "the undecodable message to be dropped, or the job to end",
+                    COLLECT_TIMEOUT,
+                    () -> MessagesDroppedReporter.dropped() >= 1 || ended.isDone());
+            // Under 'fail' the bad message fails the job instead, and nothing counts it.
+            assertThat(ended)
+                    .as(
+                            "the job, which ended with %s",
+                            ended.handle(
+                                            (ignored, failure) ->
+                                                    failure == null
+                                                            ? "success"
+                                                            : ExceptionUtils.stringifyException(
+                                                                    failure))
+                                    .getNow("nothing"))
+                    .isNotDone();
+            publishOrdered(name, "k", "{\"id\":\"good-2\"}");
 
-        // good-2 arriving proves the bad message did not fail the job: under 'fail' the exception
-        // is thrown from emitRecord before good-2 is ever emitted.
-        assertThat(rows)
-                .extracting(r -> r.getField("id"))
-                .containsAll(Arrays.asList("good-1", "good-2"));
-        // And nothing else came through, so the dropped message was acknowledged rather than
-        // redelivered as a third row.
-        assertThat(rows).hasSize(2);
+            // Distinct by message id, so a redelivery collapses and a row of the bad message's own
+            // does not. Such a row would have been emitted before the drop was counted, so ahead
+            // of good-2 on the same channel, and taken one of the two places good-2 needs.
+            List<Row> rows =
+                    Drains.drainDistinct(iterator, 2, COLLECT_TIMEOUT, r -> r.getField("mid"));
+
+            assertThat(rows)
+                    .extracting(r -> r.getField("id"))
+                    .containsExactlyInAnyOrder("good-1", "good-2");
+        }
     }
 }

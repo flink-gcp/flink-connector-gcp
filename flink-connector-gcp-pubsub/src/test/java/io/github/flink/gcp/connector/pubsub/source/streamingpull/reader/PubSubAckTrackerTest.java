@@ -522,21 +522,21 @@ class PubSubAckTrackerTest {
 
     @Test
     void immediateSettlementRemovesTheMessageFromTheLifecycle() throws Exception {
-        RecordingAckHandle dropped = new RecordingAckHandle("dropped");
+        RecordingAckHandle suppressed = new RecordingAckHandle("suppressed");
         RecordingAckHandle failed = new RecordingAckHandle("failed");
-        tracker.addPendingAck(SPLIT_A, "dropped", dropped);
+        tracker.addPendingAck(SPLIT_A, "suppressed", suppressed);
         tracker.addPendingAck(SPLIT_A, "failed", failed);
 
-        tracker.ackPendingImmediately(SPLIT_A, "dropped");
+        tracker.ackPendingImmediately(SPLIT_A, "suppressed");
         tracker.nackPendingImmediately(SPLIT_A, "failed");
 
-        assertThat(dropped.isAcked()).isTrue();
+        assertThat(suppressed.isAcked()).isTrue();
         assertThat(failed.isNacked()).isTrue();
         assertThat(tracker.outstandingAckCount()).isZero();
 
         // Gone from the tracker, so nackSplit cannot settle them a second time.
         tracker.nackSplit(SPLIT_A);
-        assertThat(dropped.isNacked()).isFalse();
+        assertThat(suppressed.isNacked()).isFalse();
     }
 
     @Test

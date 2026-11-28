@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-25 ([#79], [#80], [#81], [#101]); gated-suite scope 2026-08-01 ([#82]);
-  acknowledgement confirmation recorded by [#2337] (2026-11-26)
-- Issues: [#79], [#80], [#81], [#101], [#118], [#82], [#2337]
+  acknowledgement confirmation recorded by [#2337] (2026-11-26); revised by [#2383] (2026-11-28)
+- Issues: [#79], [#80], [#81], [#101], [#118], [#82], [#2337], [#2383]
 - Modules: pubsub
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source half, including
   § Why streaming pull rather than synchronous pull)
@@ -110,6 +110,18 @@ so that the tracker's own diagnostic never takes the top slot from a failure an 
 fatal-error check in `Task.preProcessException` does not look at suppressed exceptions. [ADR-0012]
 records the loop and its failure ranking beside `nackSplit`'s.
 
+`DROP` acknowledges with the checkpoint ([#2383], 2026-11-28). A message the deserialization
+failure policy `DROP` discards is staged, as an emitted message is, rather than acknowledged at
+once. A schema can emit records before it fails, and `DROP` keeps them; acknowledging at once let a
+failover before the next checkpoint lose them, because the restored checkpoint did not hold them
+and Pub/Sub would not redeliver an acknowledged message. Staged, a dropped message's acknowledgement
+has the timing an emitted message's has, and its records the protection an emitted message's
+records have. The cost is the acknowledgement's delay, which an emitted message already pays, and the acknowledgement now
+falls under `awaitAckConfirmation`. A dropped message bound to a checkpoint enters that
+checkpoint's restore-deduplication ledger like an emitted one ([ADR-0198]), so after a restore a
+redelivery the live ledger matches is suppressed and counted in `redeliveriesSuppressed`. Only a redelivery that restore deduplication suppresses is still acknowledged at
+once: its records are already in the restored checkpoint.
+
 ## Consequences
 
 **The real-GCP gated suite ([#82]) is the only coverage of**: ordered dispatch (per-key callback
@@ -140,6 +152,7 @@ now, and this paragraph no longer claims otherwise.
 [#139]: https://github.com/flink-gcp/flink-connector-gcp/issues/139
 [#546]: https://github.com/flink-gcp/flink-connector-gcp/issues/546
 [#2337]: https://github.com/flink-gcp/flink-connector-gcp/issues/2337
+[#2383]: https://github.com/flink-gcp/flink-connector-gcp/issues/2383
 [ADR-0012]: 0012-the-subscriber-teardown-absorbs-discriminates-and-releases-in-order.md
 [ADR-0122]: 0122-the-pubsub-internals-are-decomposed-by-concern-rather-than-inherited-from-the-adaptation.md
 [ADR-0198]: 0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md

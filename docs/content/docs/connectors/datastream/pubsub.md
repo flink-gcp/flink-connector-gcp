@@ -249,7 +249,8 @@ flowControlMaxOutstandingRequestBytes ≳ downstream bytes/s × (checkpoint inte
 ```
 
 The rate is what the downstream can consume per source reader while it drains a backlog, not the
-topic's publish rate.
+topic's publish rate, and under `DROP` it includes the messages dropped, which also hold their
+permits until the checkpoint completes.
 Sized to the publish rate, a job catching up after an outage is held to that rate by its own flow
 control.
 Below the rule, the client stops pulling before a checkpoint completes, and once downstream has
@@ -625,7 +626,8 @@ the client.
 The source is **at-least-once**, and holds no message data in Flink state (with
 [restore deduplication](#restore-deduplication) on, it holds message ids) — delivery state lives on
 the Pub/Sub server. A received message passes through four states: *pending* (received, not yet
-emitted), *staged* (emitted downstream), *bound to a checkpoint* (that checkpoint is being taken),
+processed), *staged* (processed by the record emitter: its records, if any, emitted downstream,
+or the message discarded by `DROP`), *bound to a checkpoint* (that checkpoint is being taken),
 and *acknowledged* (that checkpoint completed). Only the last step tells Pub/Sub the message is
 done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers it.
 Acknowledging sweeps every checkpoint at or below the completed id, so an aborted checkpoint or a
@@ -745,7 +747,7 @@ A pipeline that must not see a duplicate at all still needs deduplication downst
 | Policy | Behavior |
 |---|---|
 | `FAIL` (default) | Fails the job. The message stays unacknowledged, so it is redelivered — a permanently bad message fails the job again after every restart until it is removed or the schema is fixed |
-| `DROP` | Discards the message, acknowledging it immediately so it is not redelivered. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
+| `DROP` | Discards the message. Its acknowledgement waits for a checkpoint as an emitted message's does, rather than being sent at once, so records the schema emitted from it before failing get the protection an emitted message's records have. Counted in `messagesDropped`, and logged at a decreasing rate so a bad batch cannot flood the log |
 | `NACK` | Returns the message for redelivery and carries on, leaving it to the subscription's dead-letter policy. Counted in `messagesNacked`, logged at the same decreasing rate |
 
 Whichever is chosen, the failure is counted in Flink's standard `numRecordsInErrors`. `DROP` **drops
@@ -821,10 +823,10 @@ acknowledgement future completes with `SUCCESSFUL` on success, and the failure o
 acknowledgement request completes nothing, so there is no error to observe, only the absence of a
 confirmation.
 
-**The wait covers only the acknowledgements a completed checkpoint sends.** A message that `DROP`
-discards and a redelivery that [restore deduplication](#restore-deduplication) suppresses are
-acknowledged at once instead, outside any checkpoint, and counted in `messagesAcked`; no wait reads
-their futures, so a request that fails after its acknowledgement call returned does not fail the
+**The wait covers only the acknowledgements a completed checkpoint sends**, a message that `DROP`
+discards among them. A redelivery that [restore deduplication](#restore-deduplication) suppresses
+is acknowledged at once instead, outside any checkpoint, and counted in `messagesAcked`; no wait
+reads its future, so a request that fails after its acknowledgement call returned does not fail the
 job.
 
 **The wait reads the future the client library returns for each acknowledgement it covers.** The

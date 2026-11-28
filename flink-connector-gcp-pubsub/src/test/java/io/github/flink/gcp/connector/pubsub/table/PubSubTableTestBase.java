@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.table;
 
 import org.apache.flink.configuration.CheckpointingOptions;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
@@ -59,7 +60,20 @@ abstract class PubSubTableTestBase extends AbstractPubSubSourceEmulatorITCase {
      * collect()} until the class timeout.
      */
     static TableEnvironment checkpointingTableEnvironment() {
-        TableEnvironment tEnv = streamingTableEnvironment();
+        return checkpointingTableEnvironment(new Configuration());
+    }
+
+    /**
+     * A {@link #checkpointingTableEnvironment()} whose local cluster also starts with {@code
+     * cluster}, which is where a metric reporter has to be configured.
+     */
+    static TableEnvironment checkpointingTableEnvironment(Configuration cluster) {
+        TableEnvironment tEnv =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance()
+                                .inStreamingMode()
+                                .withConfiguration(cluster)
+                                .build());
         tEnv.getConfig()
                 .set(CheckpointingOptions.CHECKPOINTING_INTERVAL, Duration.ofMillis(500))
                 .set(RestartStrategyOptions.RESTART_STRATEGY, "none");
