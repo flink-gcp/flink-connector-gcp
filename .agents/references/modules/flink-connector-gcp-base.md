@@ -251,7 +251,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
   so a handler's `if (closed) return` alone drops the failure without a trace.
   `PullAssignmentSplitEnumerator`, the Bigtable Change Streams and the
   Pub/Sub enumerators use it; Spanner Change Streams keeps its own monitor (#2358), because its
-  initialization also releases a client whose failure joins initialization's.
+  initialization also releases a client whose failure joins initialization's. Do not move it onto
+  the reporter unless another enumerator comes to hold, under its own monitor, a client that both
+  its start-up work and its `close()` may release; `docs/adr/0208` records why it was declined
+  (#2391).
 
 ## `base.retry` and `base.rpc` (`docs/adr/0039`)
 

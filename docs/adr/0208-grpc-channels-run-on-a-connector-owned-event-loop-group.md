@@ -37,7 +37,8 @@ limitations under the License.
   [#2347](https://github.com/flink-gcp/flink-connector-gcp/issues/2347),
   [#2358](https://github.com/flink-gcp/flink-connector-gcp/issues/2358),
   [#2369](https://github.com/flink-gcp/flink-connector-gcp/issues/2369),
-  [#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370)
+  [#2370](https://github.com/flink-gcp/flink-connector-gcp/issues/2370),
+  [#2391](https://github.com/flink-gcp/flink-connector-gcp/issues/2391)
 - Modules: base, bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -1001,9 +1002,38 @@ initialization, and the Pub/Sub enumerator's subscription check.
   A closed reporter refuses the claim, and the claim and the close take the same monitor, so a
   handler that claims once `close()` has begun does not fail the job, and a failure that closing
   what the work calls causes is the one logged at INFO.
-- **The Spanner Change Streams enumerator keeps its own monitor.**
-  Its initialization also releases a client it created, a release `close()` waits for and whose
-  failure joins initialization's, which the reporter does not model.
+- **The Spanner Change Streams enumerator keeps its own monitor**
+  ([#2358](https://github.com/flink-gcp/flink-connector-gcp/issues/2358); the alternatives were weighed in
+  [#2391](https://github.com/flink-gcp/flink-connector-gcp/issues/2391), 2026-11-28).
+  Its initialization also releases the client it created, and the #2358 refinement above describes
+  how it reports a failure around that release.
+  That reporting departs from the reporter's model in four ways.
+  First, it records a failure at the step that observes it, before the release.
+  `observing` sees a failure only when the work throws it, after the release, so with the reporter
+  a `close()` that lands during the release would treat a failure observed while the enumerator
+  was open as one the close may have caused, and log it at INFO.
+  Second, its `close()` takes the record at once but, unless its thread is interrupted, logs it
+  only after a release that initialization is running ends, so that a non-fatal release failure
+  can join it first; while the enumerator is open, a JVM-fatal release failure that
+  follows an earlier one replaces the record, under the monitor that also guards `closed` and the
+  client hand-over.
+  The reporter's `close()` logs at once, and since the reporter records only what the work throws,
+  it has no operation that replaces a record made earlier in the same work.
+  Third, once the enumerator has closed, it chooses the level by step: a failed call of the client
+  the enumerator's `close()` took over is logged at INFO, and a creation, start-position or release
+  failure at WARN, since that close cannot have caused it.
+  The reporter logs at INFO every failure the work throws after its close.
+  Fourth, its refusal to start once closed is not logged, but `observing` would log it.
+  Extending the reporter to cover all four was declined: it would hand nearly all of the reporter's
+  state to its caller, add a second monitor that needs a lock order with the enumerator's, and
+  correct nothing.
+  Logging a release failure on its own, instead of joining it to initialization's, was declined
+  because it reverses the #2358 refinement.
+  Sharing only the log lines was declined too: the reporter's lines would change the text operators
+  see, and passing the enumerator's own text in would share little beyond the log call.
+  The question is worth reopening when another enumerator comes to hold, under its own monitor, a
+  client that both its start-up work and its `close()` may release; a planner that closes its own
+  client inside the work, as the Spanner batch planner does, is not that case.
 - **Flink's residual applies to these handlers too**: a failure a handler throws on an open
   enumerator is dropped when the coordinator context closes before Flink's handler of a throwing
   callback checks it (#2371).
