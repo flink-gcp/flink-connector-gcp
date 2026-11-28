@@ -46,7 +46,7 @@ uv = "0.12.1"
 # reason as shellcheck: a release that changes a rule's behaviour would fail a
 # pull request that changed nothing. A single binary, so the repository needs
 # no Node.js runtime.
-rumdl = "0.3.5"
+rumdl = "0.3.8"
 # Runs the opentofu/ roots through their local commands and the
 # tofu-plan/tofu-apply workflows. Each root's required_version repeats this
 # exact pin, so a version bump updates all root constraints together.
