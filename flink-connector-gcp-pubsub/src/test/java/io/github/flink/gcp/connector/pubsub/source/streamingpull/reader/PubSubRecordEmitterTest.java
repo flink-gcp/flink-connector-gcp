@@ -330,19 +330,24 @@ class PubSubRecordEmitterTest {
     }
 
     @Test
-    void theDropPolicyAcknowledgesTheMessageImmediatelyAndCountsIt() throws Exception {
+    void theDropPolicyAcknowledgesTheMessageWithTheNextCheckpointAndCountsIt() throws Exception {
         RecordingAckHandle handle = receive("m1");
 
         emitter(new UndeserializableSchema(), DeserializationFailurePolicy.DROP)
                 .emitRecord(message("m1", "payload"), output, SPLIT);
 
         assertThat(output.records()).isEmpty();
-        // Acknowledged without waiting for a checkpoint: nothing was emitted, so no checkpoint
-        // covers it.
-        assertThat(handle.isAcked()).isTrue();
         assertThat(testMetrics.counter("messagesDropped")).isEqualTo(1);
-        assertThat(testMetrics.counter("messagesAcked")).isEqualTo(1);
         assertThat(testMetrics.numRecordsInErrors()).isEqualTo(1);
+        // Staged like an emitted message's, so a failover before the checkpoint has it redelivered.
+        assertThat(handle.isUnsettled()).isTrue();
+        assertThat(testMetrics.counter("messagesAcked")).isZero();
+
+        ackTracker.addCheckpoint(1L);
+        ackTracker.notifyCheckpointComplete(1L);
+
+        assertThat(handle.isAcked()).isTrue();
+        assertThat(testMetrics.counter("messagesAcked")).isEqualTo(1);
     }
 
     @Test
@@ -370,6 +375,24 @@ class PubSubRecordEmitterTest {
 
         // The prefix already reached the output and cannot be recalled.
         assertThat(output.records()).containsExactly("first");
+    }
+
+    @Test
+    void aPartiallyEmittedDroppedMessageIsCoveredByTheCheckpointThatHoldsItsRecords()
+            throws Exception {
+        // Acknowledging before a checkpoint holds "first" would lose it on a failover: the
+        // restored checkpoint would not contain it, and Pub/Sub would not redeliver the message.
+        RecordingAckHandle handle = receive("m1");
+
+        emitter(new PartiallyFailingSchema(), DeserializationFailurePolicy.DROP)
+                .emitRecord(message("m1", "payload"), output, SPLIT);
+
+        assertThat(handle.isUnsettled()).isTrue();
+        ackTracker.addCheckpoint(1L);
+        assertThat(ackTracker.checkpointedMessageIds())
+                .containsEntry(SPLIT.splitId(), List.of("m1"));
+        ackTracker.notifyCheckpointComplete(1L);
+        assertThat(handle.isAcked()).isTrue();
     }
 
     @Test

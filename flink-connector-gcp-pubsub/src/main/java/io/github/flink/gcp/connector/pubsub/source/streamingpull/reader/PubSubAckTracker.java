@@ -54,11 +54,11 @@ import java.util.TreeMap;
 @Internal
 public class PubSubAckTracker implements AckTracker {
 
-    /** Pending (received, not yet emitted) acknowledgements, per split and message id. */
+    /** Pending (received, not yet processed) acknowledgements, per split and message id. */
     @GuardedBy("this")
     private final Map<String, Map<String, AckHandle>> pendingAcks = new HashMap<>();
 
-    /** Emitted but not yet bound to a checkpoint. */
+    /** Processed (emitted or dropped) but not yet bound to a checkpoint. */
     @GuardedBy("this")
     private final List<TrackedAck> stagedAcks = new ArrayList<>();
 
@@ -167,9 +167,9 @@ public class PubSubAckTracker implements AckTracker {
      * Returns the ids of every message bound to a checkpoint that has not been acknowledged yet,
      * per split. Called right after {@link #addCheckpoint(long)}, this is exactly the set the
      * checkpoint being taken covers but whose acknowledgement could still be lost: everything
-     * emitted before its barrier, minus what earlier completions already acknowledged.
+     * processed before its barrier, minus what earlier completions already acknowledged.
      *
-     * <p>Received-but-unemitted messages are never included: their records are not in the
+     * <p>Received-but-unprocessed messages are never included: their records are not in the
      * checkpoint, so suppressing their redelivery after a restore would lose them.
      *
      * @return the message ids per split id, in binding order

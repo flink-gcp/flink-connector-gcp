@@ -189,7 +189,11 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
             return;
         }
         metrics.messageDropped();
-        ackTracker.ackPendingImmediately(split.splitId(), message.getMessageId());
+        // Acknowledged with the next completed checkpoint, as an emitted message is, not at once:
+        // the schema may have emitted records before it failed, and an acknowledgement sent before
+        // a checkpoint covers them would lose them on a failover, since Pub/Sub would not redeliver
+        // the message (#2383).
+        ackTracker.stagePendingAck(split.splitId(), message.getMessageId());
         logHandledFailure(message, split, failure, "Dropped");
     }
 

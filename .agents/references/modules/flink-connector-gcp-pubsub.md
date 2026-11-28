@@ -150,7 +150,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Restore deduplication (`docs/adr/0198`) records message ids, never acknowledgement ids** —
   the streaming-pull `Subscriber` exposes none, and `stop()` nacks every lease. The ledger is
   `AckTracker.checkpointedMessageIds()` after `addCheckpoint`: bound and unacknowledged only,
-  never a received-but-unemitted message, which would be loss. Message ids are opaque strings;
+  never a received-but-unprocessed message, which would be loss; a message `DROP` discarded is
+  processed and is included (#2383). Message ids are opaque strings;
   never assume digits: `DecimalMessageIds` packs digit-only ids of up to 17 characters as an
   optimization, and every path keeps a string fallback for any other id. A restored chunk's split output is released on the next `pollNext`, or it
   pins the watermark; every reader reports `LedgerUploadedEvent` even with nothing restored; the
