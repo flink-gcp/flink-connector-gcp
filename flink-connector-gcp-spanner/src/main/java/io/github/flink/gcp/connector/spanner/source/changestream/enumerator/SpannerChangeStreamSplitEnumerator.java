@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
@@ -68,6 +69,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongConsumer;
@@ -200,6 +202,12 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private static final long UNCOVERED = -1L;
 
+    /**
+     * {@link #gatingSnapshot()} while no reader has to report a poll: before this coordinator's
+     * first snapshot, and while every snapshot it took was aborted.
+     */
+    private static final long NO_GATING_SNAPSHOT = Long.MIN_VALUE;
+
     /** The longest pause between two checks of the first-checkpoint wait. */
     private static final long MAX_FIRST_CHECKPOINT_CHECK_MILLIS = Duration.ofSeconds(30).toMillis();
 
@@ -257,6 +265,21 @@ public final class SpannerChangeStreamSplitEnumerator
     private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
     private final TreeMap<Long, Integer> ledgerWatermarkCounts = new TreeMap<>();
     private final Set<Integer> waitingReaders = new LinkedHashSet<>();
+
+    /**
+     * Per reader subtask, the latest snapshot it reported polling after; see {@link
+     * #mayReach(int)}.
+     */
+    private final Map<Integer, Long> polledSnapshots = new HashMap<>();
+
+    /** Per reader subtask, the source watermark last sent to it. */
+    private final Map<Integer, Long> sentWatermarks = new HashMap<>();
+
+    /**
+     * Per reader subtask, the finish acknowledgements waiting until {@link #mayReach(int)} holds.
+     */
+    private final Map<Integer, List<String>> unsentFinishAcknowledgements = new HashMap<>();
+
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicLong scheduledCount = new AtomicLong();
     private final AtomicLong oldestScheduledPositionMillis = new AtomicLong(Long.MAX_VALUE);
@@ -298,6 +321,13 @@ public final class SpannerChangeStreamSplitEnumerator
     private boolean boundedLedger;
     private int unfinishedPartitions;
     private long sourceWatermark = Long.MIN_VALUE;
+
+    /**
+     * The checkpoints this coordinator snapshotted and was not told were aborted, from the latest
+     * completed one on; the latest of them gates the readers, see {@link #mayReach(int)}.
+     */
+    private final TreeSet<Long> gatingSnapshots = new TreeSet<>();
+
     private boolean checkpointCompleted;
     private boolean releasingWithoutCheckpoint;
 
@@ -825,6 +855,10 @@ public final class SpannerChangeStreamSplitEnumerator
             waitingReaders.remove(subtaskId);
             return;
         }
+        if (!mayReach(subtaskId)) {
+            waitingReaders.add(subtaskId);
+            return;
+        }
         ChangeStreamPartitionSplit scheduled = firstScheduled();
         if (scheduled == null) {
             if (boundedLedgerFinished()) {
@@ -992,21 +1026,121 @@ public final class SpannerChangeStreamSplitEnumerator
 
     @Override
     public void addReader(int subtaskId) {
+        // A newly registered attempt is running. A reader registers while its task initializes, and
+        // Flink triggers a checkpoint only once every task runs, so an attempt this coordinator
+        // learns of after a snapshot normally takes no part in it.
+        polledSnapshots.put(subtaskId, gatingSnapshot());
+        forgetSnapshotsEveryReaderPassed();
+        unsentFinishAcknowledgements.remove(subtaskId);
+        sentWatermarks.remove(subtaskId);
+        // A request a failed attempt left waiting is moot; this attempt asks for itself once
+        // started.
+        waitingReaders.remove(subtaskId);
         if (initialized) {
             sendInitializationEvent(subtaskId);
         }
     }
 
     private void sendInitializationEvent(int subtaskId) {
+        sentWatermarks.put(subtaskId, sourceWatermark);
         context.sendEventToSourceReader(
                 subtaskId,
                 new SpannerChangeStreamInitializationEvent(
                         discardRestoredReaderSplits, sourceWatermark));
     }
 
+    /**
+     * Whether this coordinator may send the reader subtask anything: no snapshot gates the readers,
+     * or the reader reported polling after the gating snapshot, the latest this coordinator took.
+     *
+     * <p>A stop-with-savepoint without drain stops a source before its task snapshots the
+     * savepoint, and the task finishes once the savepoint completes, while the JobManager may still
+     * see it running. An event that reaches the task then is lost, and Flink fails the task for it,
+     * which fails the stop (#2404). A stopped source still snapshots but is never polled again, so
+     * only a reader that is still running reports polling after the snapshot. Every assignment,
+     * watermark, finish acknowledgement and end signal waits for that report and goes out once it
+     * arrives; the initialization event goes only to a newly registered reader, which is running.
+     * An aborted gating snapshot opens every reader: see {@link #notifyCheckpointAborted(long)}.
+     */
+    private boolean mayReach(int subtaskId) {
+        long gating = gatingSnapshot();
+        return gating == NO_GATING_SNAPSHOT
+                || polledSnapshots.getOrDefault(subtaskId, NO_GATING_SNAPSHOT) >= gating;
+    }
+
+    @VisibleForTesting
+    int heldSnapshotCount() {
+        return gatingSnapshots.size();
+    }
+
+    /** The latest snapshot this coordinator took and was not told was aborted. */
+    private long gatingSnapshot() {
+        return gatingSnapshots.isEmpty() ? NO_GATING_SNAPSHOT : gatingSnapshots.last();
+    }
+
+    private void acceptPoll(int subtaskId, long checkpointId) {
+        polledSnapshots.merge(subtaskId, checkpointId, Math::max);
+        forgetSnapshotsEveryReaderPassed();
+        deliverWaiting(subtaskId);
+    }
+
+    /**
+     * Drops the snapshots below the oldest one every registered reader has reported: should every
+     * later one be aborted, such a snapshot would gate no reader. An ordinary savepoint, whose
+     * completion Flink does not announce, would otherwise stay for as long as no checkpoint
+     * completes.
+     */
+    private void forgetSnapshotsEveryReaderPassed() {
+        if (gatingSnapshots.size() < 2) {
+            // Only the gating snapshot itself, or nothing, is held: nothing to forget.
+            return;
+        }
+        long everyReaderPassed = Long.MAX_VALUE;
+        for (Integer subtaskId : context.registeredReaders().keySet()) {
+            everyReaderPassed =
+                    Math.min(
+                            everyReaderPassed,
+                            polledSnapshots.getOrDefault(subtaskId, NO_GATING_SNAPSHOT));
+        }
+        if (everyReaderPassed != Long.MAX_VALUE) {
+            gatingSnapshots.headSet(everyReaderPassed).clear();
+        }
+    }
+
+    /** Sends the reader subtask what waited for {@link #mayReach(int)} to hold. */
+    private void deliverWaiting(int subtaskId) {
+        if (!initialized
+                || !context.registeredReaders().containsKey(subtaskId)
+                || !mayReach(subtaskId)) {
+            return;
+        }
+        List<String> acknowledgements = unsentFinishAcknowledgements.remove(subtaskId);
+        if (acknowledgements != null) {
+            for (String splitId : acknowledgements) {
+                context.sendEventToSourceReader(subtaskId, new PartitionFinishedAckEvent(splitId));
+            }
+        }
+        sendWatermarkIfBehind(subtaskId);
+        serveWaitingReaders();
+    }
+
+    private void sendWatermarkIfBehind(int subtaskId) {
+        if (!mayReach(subtaskId)
+                || sentWatermarks.getOrDefault(subtaskId, Long.MIN_VALUE) >= sourceWatermark) {
+            return;
+        }
+        sentWatermarks.put(subtaskId, sourceWatermark);
+        context.sendEventToSourceReader(
+                subtaskId, new SpannerChangeStreamWatermarkEvent(sourceWatermark));
+    }
+
     @Override
     public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
         if (closed) {
+            return;
+        }
+        if (sourceEvent instanceof ReaderPolledEvent) {
+            acceptPoll(subtaskId, ((ReaderPolledEvent) sourceEvent).getCheckpointId());
             return;
         }
         if (!initialized) {
@@ -1171,8 +1305,15 @@ public final class SpannerChangeStreamSplitEnumerator
      * the finish has no gateway; its restored attempt reports the finish again.
      */
     private void acknowledgeFinish(int subtaskId, String splitId) {
-        if (context.registeredReaders().containsKey(subtaskId)) {
+        if (!context.registeredReaders().containsKey(subtaskId)) {
+            return;
+        }
+        if (mayReach(subtaskId)) {
             context.sendEventToSourceReader(subtaskId, new PartitionFinishedAckEvent(splitId));
+        } else {
+            unsentFinishAcknowledgements
+                    .computeIfAbsent(subtaskId, ignored -> new ArrayList<>())
+                    .add(splitId);
         }
     }
 
@@ -1331,14 +1472,23 @@ public final class SpannerChangeStreamSplitEnumerator
         Iterator<Integer> waiting = waitingReaders.iterator();
         while (firstScheduled() != null && waiting.hasNext()) {
             int subtaskId = waiting.next();
+            // Skipped here rather than in assignOrWait, which would add the reader back to the set
+            // this loop iterates.
+            if (context.registeredReaders().containsKey(subtaskId) && !mayReach(subtaskId)) {
+                continue;
+            }
             waiting.remove();
             assignOrWait(subtaskId);
         }
         if (boundedLedgerFinished()) {
             while (waiting.hasNext()) {
                 int subtaskId = waiting.next();
+                boolean registered = context.registeredReaders().containsKey(subtaskId);
+                if (registered && !mayReach(subtaskId)) {
+                    continue;
+                }
                 waiting.remove();
-                if (context.registeredReaders().containsKey(subtaskId)) {
+                if (registered) {
                     context.signalNoMoreSplits(subtaskId);
                 }
             }
@@ -1405,9 +1555,8 @@ public final class SpannerChangeStreamSplitEnumerator
             return;
         }
         sourceWatermark = next;
-        SpannerChangeStreamWatermarkEvent event = new SpannerChangeStreamWatermarkEvent(next);
         for (Integer subtaskId : context.registeredReaders().keySet()) {
-            context.sendEventToSourceReader(subtaskId, event);
+            sendWatermarkIfBehind(subtaskId);
         }
     }
 
@@ -1447,11 +1596,18 @@ public final class SpannerChangeStreamSplitEnumerator
                 ledgerWatermarkCounts.isEmpty()
                         ? sourceWatermark
                         : Math.min(sourceWatermark, ledgerWatermarkCounts.firstKey());
-        return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
-                unfinished,
-                finishedParentProofReferences.keySet(),
-                endTimestamp,
-                checkpointedWatermark);
+        SpannerChangeStreamEnumeratorState state =
+                SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
+                        unfinished,
+                        finishedParentProofReferences.keySet(),
+                        endTimestamp,
+                        checkpointedWatermark);
+        // A batch job's recovery snapshot (Flink's BATCH_CHECKPOINT_ID, -1), which a HybridSource
+        // forwards, stops no task and has no reader snapshot to report.
+        if (checkpointId >= 0) {
+            gatingSnapshots.add(checkpointId);
+        }
+        return state;
     }
 
     @Override
@@ -1459,6 +1615,8 @@ public final class SpannerChangeStreamSplitEnumerator
         if (closed) {
             return;
         }
+        // A completed checkpoint is never aborted, so no earlier snapshot can gate again.
+        gatingSnapshots.headSet(checkpointId).clear();
         if (releasingWithoutCheckpoint) {
             LOG.info(
                     "Checkpoint {} is the first to complete since this coordinator started, so"
@@ -1485,6 +1643,25 @@ public final class SpannerChangeStreamSplitEnumerator
                 .values()
                 .removeIf(covering -> covering != UNCOVERED && covering <= checkpointId)) {
             releaseHeldChildren();
+        }
+    }
+
+    /**
+     * Forgets an aborted snapshot. If it gated the readers, the latest earlier snapshot that was
+     * not aborted gates them now, and readers that reported that one are reached. A
+     * stop-with-savepoint's savepoint is the latest snapshot when it is taken, and Flink fails a
+     * task whose synchronous savepoint is aborted, so its abort reaches no stopped reader; a
+     * snapshot taken after it, such as a manual savepoint, leaves it gating when that one is
+     * aborted.
+     */
+    @Override
+    public void notifyCheckpointAborted(long checkpointId) {
+        long gating = gatingSnapshot();
+        if (closed || !gatingSnapshots.remove(checkpointId) || gatingSnapshot() == gating) {
+            return;
+        }
+        for (Integer subtaskId : new ArrayList<>(context.registeredReaders().keySet())) {
+            deliverWaiting(subtaskId);
         }
     }
 

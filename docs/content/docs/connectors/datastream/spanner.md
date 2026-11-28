@@ -336,6 +336,9 @@ The parents' readers emitted their last records before that checkpoint's barrier
 Once an aligned checkpoint completes, every operator that handles its input before the barrier has therefore processed those records, and every sink that flushes on the barrier has written them.
 Each split or merge delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration, and the source watermark holds at the children's start meanwhile.
 Once a checkpoint has completed, the children do not start while later checkpoints keep failing; before the first completes, the timeout described below applies.
+The coordinator sends a reader anything, a child or the watermark included, only once that reader has been polled after the coordinator's latest checkpoint snapshot, which normally happens while the checkpoint completes.
+A stop-with-savepoint stops each source before its task takes the savepoint's snapshot and never polls it again, so the coordinator sends nothing to a task that is about to finish; what waits goes out when a poll report from that reader names the coordinator's latest checkpoint snapshot that was not aborted, or a later one, or when aborted snapshots stop holding it back, so a reader that is not being polled, under backpressure for example, or whose reports keep naming an older snapshot, waits longer.
+Under a `HybridSource` that switches to this source, the switch itself is outside this protection, so schedule a planned stop-with-savepoint after the switch.
 Nothing waits at source parallelism 1, where every record takes one path, or after a parent whose reader emitted no record, such as the initial query, since nothing of it is downstream to overtake.
 
 The order this buys has three limits.
@@ -411,7 +414,7 @@ Heartbeat records advance their partition's safe progress, which each reader rep
 The source watermark is one coordinator-owned minimum across every partition a completed checkpoint has not yet seen finish, including discovered, scheduled, reader-queued, and running partitions.
 Because it follows the positions of completed checkpoints, it trails the newest changes by about one checkpoint interval; while checkpoints complete, a failover therefore never re-reads a record behind it, except after a period on the readers' current positions described next, from which a running coordinator's watermark does not move back.
 Before the first checkpoint completes it stays at the start until `firstCheckpointTimeout` (10 minutes by default) has passed since the source started, and from then on until one completes it follows the readers' current positions, which is what a job without checkpointing sees; with a zero timeout it stays at the start until a checkpoint completes or the source ends.
-The coordinator broadcasts that frontier to every source reader, including readers with no assigned split, so failover and rescaling do not omit temporarily unowned work.
+The coordinator broadcasts that frontier to every source reader, including readers with no assigned split, so failover and rescaling do not omit temporarily unowned work; each reader receives it once it has been polled after the latest checkpoint snapshot, as described above.
 The conversion subtracts one millisecond from the heartbeat instant after truncation because a later nanosecond timestamp can occupy the same Flink millisecond; this prevents an on-time record from being classified as late.
 Quiet partitions are not marked idle because doing so would remove them from the safety minimum.
 The default two-second heartbeat can be configured from one second through five minutes.

@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTrans
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderPolledEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -110,6 +111,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
         assertThat(enumerator.snapshotState(1).getUnassignedSplits())
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-2");
+        pollAfter(enumerator, context, 1);
 
         // Subtask 1 has still not reported, so only a slot subtask 0 frees takes the third split.
         enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 1, 2));
@@ -269,6 +271,9 @@ class BigtableChangeStreamSplitEnumeratorTest {
         assertThat(context.assignedSplits(0)).hasSize(2);
         assertThat(enumerator.snapshotState(1).getUnassignedSplits())
                 .containsExactlyElementsOf(lost);
+        // Checkpoint 1 completes, so only the missing capacity report holds the excess back.
+        enumerator.handleSourceEvent(0, new ReaderPolledEvent(1));
+        enumerator.notifyCheckpointComplete(1);
 
         // Registered again, but until it reports, its report from before the failure counts for
         // nothing, so subtask 0's next report still hands nothing out.
@@ -495,6 +500,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                                 assertThat(merge.getContinuationTokens())
                                         .extracting(ChangeStreamContinuationToken::getToken)
                                         .containsExactly("left-parent"));
+        pollAfter(enumerator, context, 2);
 
         enumerator.handleSourceEvent(
                 1, transition(right, successorForParent(WHOLE, RIGHT, "right-parent")));
@@ -506,6 +512,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 .extracting(ChangeStreamContinuationToken::getToken)
                 .containsExactly("left-parent", "right-parent");
         assertThat(enumerator.snapshotState(3).getPendingMerges()).isEmpty();
+        pollAfter(enumerator, context, 3);
         assertThat(context.counter("changeStreamPartitionsDiscovered")).isEqualTo(3);
         assertThat(context.counter("changeStreamPartitionSplits")).isZero();
         assertThat(context.counter("changeStreamPartitionMerges")).isEqualTo(1);
@@ -627,12 +634,15 @@ class BigtableChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
 
         assertThat(enumerator.snapshotState(0).getAssignedSplits()).isEmpty();
+        pollAfter(enumerator, context, 0);
         assertThat(enumerator.snapshotState(0).getUnassignedSplits())
                 .containsExactly(restoredSplit);
+        pollAfter(enumerator, context, 0);
         enumerator.handleSplitRequest(0, "localhost");
 
         assertThat(context.assignedSplits(0)).containsExactly(restoredSplit);
         assertThat(enumerator.snapshotState(1).getAssignedSplits()).containsExactly(restoredSplit);
+        pollAfter(enumerator, context, 1);
         assertThat(enumerator.snapshotState(1).getUnassignedSplits()).isEmpty();
         enumerator.close();
     }
@@ -855,6 +865,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                                     .isEqualTo(missing.getFirstObserved());
                             assertThat(rebuilt.getLowWatermark()).isAfterOrEqualTo(base);
                         });
+        pollAfter(enumerator, context, 1);
 
         enumerator.handleSplitRequest(0, "localhost");
         context.runPeriodicAsyncCalls();
@@ -867,6 +878,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                             assertThat(split.getLowWatermark()).isAfterOrEqualTo(base);
                         });
         assertThat(enumerator.snapshotState(2).getMissingPartitions()).isEmpty();
+        pollAfter(enumerator, context, 2);
         assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS))
                 .isEqualTo(1);
         enumerator.close();
@@ -1558,6 +1570,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
 
         assertThat(context.assignedSplits(0)).isEmpty();
         assertThat(enumerator.snapshotState(1).getMissingPartitions()).containsExactly(missing);
+        pollAfter(enumerator, context, 1);
         assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
                 .isZero();
 
@@ -1567,6 +1580,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
 
         assertThat(context.assignedSplits(0)).hasSize(1);
         assertThat(enumerator.snapshotState(2).getMissingPartitions()).isEmpty();
+        pollAfter(enumerator, context, 2);
         assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
                 .isEqualTo(1);
         enumerator.close();
@@ -1639,6 +1653,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
         ChangeStreamPartitionSplit right = context.assignedSplits(0).get(1);
         enumerator.handleSourceEvent(0, transition(left, successor(LEFT, "left-child")));
         enumerator.snapshotState(1);
+        pollAfter(enumerator, context, 1);
         enumerator.handleSourceEvent(0, transition(right, successor(RIGHT, "right-child")));
 
         enumerator.notifyCheckpointComplete(1);
@@ -1650,6 +1665,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
         assertThat(enumerator.snapshotState(2).getUnassignedSplits())
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly(right.splitId());
+        pollAfter(enumerator, context, 2);
 
         enumerator.notifyCheckpointComplete(2);
         assertThat(enumerator.pendingCloseCount()).isZero();
@@ -1985,6 +2001,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
         assertThat(enumerator.snapshotState(1).getUnassignedSplits())
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-1");
+        pollAfter(enumerator, context, 1);
         // The current attempt's own transition is acknowledged.
         enumerator.handleSourceEvent(0, close);
         assertThat(context.sourceEvents(0))
@@ -2209,6 +2226,16 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 throw failure;
             }
             return instant;
+        }
+    }
+
+    /** Every registered reader reports polling after the snapshot, as a running reader does. */
+    private static void pollAfter(
+            BigtableChangeStreamSplitEnumerator enumerator,
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            long checkpointId) {
+        for (Integer subtaskId : new java.util.ArrayList<>(context.registeredReaders().keySet())) {
+            enumerator.handleSourceEvent(subtaskId, new ReaderPolledEvent(checkpointId));
         }
     }
 }

@@ -538,6 +538,15 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   and a stale ack to the next attempt drops its own close. Registrations are counted per subtask
   (Flink passes attempt numbers only under concurrent execution attempts). Readers release the
   split output Flink creates for each restored closed split, or the source watermark stalls.
+- **Nothing goes to a reader that has not polled since the coordinator's latest snapshot** (#2404,
+  ADR-0097, ADR-0099). Readers send `ReaderPolledEvent` from the first `pollNext` after each
+  `snapshotState`; `assignAvailable`, the transition acknowledgement and `signalNoMoreSplits` go
+  through `mayReach`, and `assignBeyondFreeSlots` gives each split to the least-loaded reader that
+  passes it. The gating snapshot is the latest one not aborted and not a batch snapshot (id -1), and a
+  newly registered reader is reached at once, as in the Spanner module. A `HybridSource` switch is
+  outside the gate (#2406). A new
+  assignment path must go through the same gate; `notifyCheckpointComplete`,
+  capacity reports, reconciliation and the first-checkpoint timer all reach the assignment routines.
 - **Positions arrive per completed checkpoint, not per heartbeat.** Readers send the floor entry
   of their recorded snapshots from `notifyCheckpointComplete`, and current positions at most once
   a second only until a checkpoint completes; an assigned split takes every report.
