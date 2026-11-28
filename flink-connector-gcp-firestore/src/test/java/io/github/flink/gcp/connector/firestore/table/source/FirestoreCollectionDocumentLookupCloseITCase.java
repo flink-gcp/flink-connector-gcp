@@ -22,6 +22,7 @@ import com.google.firestore.v1.BatchGetDocumentsRequest;
 import com.google.firestore.v1.BatchGetDocumentsResponse;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.firestore.source.TestSources;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.MethodDescriptor;
 import io.grpc.Server;
@@ -77,8 +78,10 @@ class FirestoreCollectionDocumentLookupCloseITCase {
      */
     @BeforeEach
     void startSilentServer() throws IOException, InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
-                .as("no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         assertThat(GrpcEventLoops.isRunning()).as("a lease open before the test").isFalse();
         server =
@@ -104,6 +107,9 @@ class FirestoreCollectionDocumentLookupCloseITCase {
 
     @Test
     void closingTheLookupMidReadEndsTheReadAndStopsTheGroup() throws Exception {
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         FirestoreCollectionDocumentLookup lookup =
                 new FirestoreCollectionDocumentLookup(
                         TestSources.DATABASE,
@@ -117,9 +123,7 @@ class FirestoreCollectionDocumentLookupCloseITCase {
             assertThat(requested.await(30, TimeUnit.SECONDS))
                     .as("the read reached the server")
                     .isTrue();
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread carries the read", GrpcEventLoopThreads.PREFIX)
-                    .isTrue();
+            assertThat(starts.anyStarted()).as("a group event loop started for the read").isTrue();
 
             CompletableFuture<Void> closing =
                     CompletableFuture.runAsync(

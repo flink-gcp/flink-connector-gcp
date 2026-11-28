@@ -19,7 +19,8 @@ package io.github.flink.gcp.connector.pubsub;
 import com.google.api.core.ApiFunction;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.TransportChannelProvider;
-import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
@@ -35,22 +36,35 @@ public final class EventLoopChannelChecks {
     private EventLoopChannelChecks() {}
 
     /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     *
+     * @return a baseline that later readings of the count are compared against
+     */
+    public static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
+    }
+
+    /**
      * Builds a channel through the provider's configurator, connects it to a local socket and
-     * checks that a thread of the connector's group serves it. The caller holds a lease, so the
-     * group starts a thread only when a channel registers on it rather than to shut down, and
-     * gRPC's own threads are named otherwise. A provider without the lease's configurator builds
-     * the channel on gRPC's group, and this fails.
+     * checks that one of the connector's group's event loops started for it. The client's own
+     * channels connect lazily, so no loop has started before this channel registers. A provider
+     * without the lease's configurator builds the channel on gRPC's group, and this fails.
      *
      * @param provider the client's transport provider
+     * @param starts the baseline {@link #loopStartsFromNow()} took before the client opened its
+     *     lease
      * @throws Exception if the check cannot run
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
-    public static void assertBuildsChannelsOnTheGroup(TransportChannelProvider provider)
+    public static void assertBuildsChannelsOnTheGroup(
+            TransportChannelProvider provider, EventLoopObserver.LoopStarts starts)
             throws Exception {
         assertThat(provider).isInstanceOf(InstantiatingGrpcChannelProvider.class);
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread before the channel connects", GrpcEventLoopThreads.PREFIX)
-                .isTrue();
+        assertThat(starts.anyStarted())
+                .as("a group event loop started before the channel connects")
+                .isFalse();
         ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
                 ((InstantiatingGrpcChannelProvider) provider).toBuilder().getChannelConfigurator();
         ManagedChannelBuilder builder;
@@ -62,8 +76,8 @@ public final class EventLoopChannelChecks {
                     (configurator == null ? builder : configurator.apply(builder)).build();
             try {
                 channel.getState(true);
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a %s* thread serves the channel", GrpcEventLoopThreads.PREFIX)
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started for the channel")
                         .isTrue();
             } finally {
                 channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);

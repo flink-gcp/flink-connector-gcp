@@ -24,6 +24,7 @@ import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.TransportChannelProvider;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.FakeUserCodeClassLoader;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -91,6 +92,9 @@ class GrpcEventLoopsTest {
 
     @Test
     void aChannelRunsOnTheGroupAndItsThreadsStopWithTheLastRelease() throws Exception {
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try (ServerSocket server = new ServerSocket(0)) {
             ManagedChannel channel =
@@ -103,8 +107,8 @@ class GrpcEventLoopsTest {
             try {
                 // Connecting registers the channel on an event loop, which starts its thread.
                 channel.getState(true);
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a thread named %s* while the channel connects", prefix())
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started while the channel connects")
                         .isTrue();
             } finally {
                 channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
@@ -728,6 +732,9 @@ class GrpcEventLoopsTest {
                         new DefaultThreadFactory("foreign-elg", true),
                         NioIoHandler.newFactory());
         // Built before any lease is open, as a client's settings are.
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
                 GrpcEventLoops.channelConfigurator(
                         builder -> {
@@ -747,8 +754,8 @@ class GrpcEventLoopsTest {
             try {
                 channel.getState(true);
                 assertThat(calls).containsExactly("existing");
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a thread named %s* while the channel connects", prefix())
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started while the channel connects")
                         .isTrue();
             } finally {
                 channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);

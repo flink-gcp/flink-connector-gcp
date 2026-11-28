@@ -106,12 +106,23 @@ class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
 
     @Test
     void theStreamOpenerRunsOnTheGroupAndStopsItOnClose() throws Exception {
+        // A lease an earlier class in this reused fork has not yet released would hold the group
+        // past the creator below, and the opener's reading could not start from no group.
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as(
+                        "no lease and no %s* thread before the creator opens",
+                        GrpcEventLoopThreads.PREFIX)
+                .isTrue();
         String stream;
         try (ReadClientSessionCreator creator = new ReadClientSessionCreator(endpoint())) {
             stream = creator.create(request()).getStreams(0).getName();
         }
-        // The creator's group is gone, so a thread from here on is the opener's.
-        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+        // The creator's group is released, so a loop that starts from here on is the opener's.
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
 
         try (ReadClientRowStreamOpener opener =
                 new ReadClientRowStreamOpener(
@@ -122,8 +133,11 @@ class BigQueryReadEventLoopITCase extends AbstractBigQuerySourceEmulatorITCase {
                 }
             }
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the stream opener is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the stream opener is open")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the stream opener still holds its lease")
                     .isTrue();
         }
 

@@ -22,6 +22,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceConfig;
 import io.github.flink.gcp.connector.firestore.source.TestSources;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.MethodDescriptor;
 import io.grpc.Server;
@@ -100,8 +101,10 @@ class ClientQueryPlannerCloseITCase {
      */
     @BeforeEach
     void noGroupIsRunning() throws InterruptedException {
-        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
-                .as("no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         assertThat(GrpcEventLoops.isRunning()).as("a lease open before the test").isFalse();
     }
@@ -123,6 +126,9 @@ class ClientQueryPlannerCloseITCase {
                                     ? builder.readTime(Instant.now().minusSeconds(60))
                                     : builder;
                         });
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         ClientQueryPlanner planner = new ClientQueryPlanner(EmulatorEndpoint.parse(target, "e"));
         try {
             CompletableFuture<QueryPlan> plan =
@@ -137,8 +143,11 @@ class ClientQueryPlannerCloseITCase {
             assertThat(queried.await(30, TimeUnit.SECONDS))
                     .as("the plan's query reached the server")
                     .isTrue();
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread carries the plan's call", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started for the plan's call")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the planner's client holds its lease while the call waits")
                     .isTrue();
 
             CompletableFuture<Void> closing =

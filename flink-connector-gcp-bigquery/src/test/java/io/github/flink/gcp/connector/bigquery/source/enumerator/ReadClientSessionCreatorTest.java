@@ -26,6 +26,7 @@ import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.grpc.Server;
 import io.grpc.Status;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -175,6 +176,16 @@ class ReadClientSessionCreatorTest {
         CountDownLatch cancelled = new CountDownLatch(1);
         AtomicLong cancelledAt = new AtomicLong();
         InetAddress loopback = InetAddress.getByName("127.0.0.1");
+        // Before the server starts, so that a failed wait leaves no server behind; within the
+        // method's timeout.
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(30)))
+                .as("no lease and no group thread before the creator opens")
+                .isTrue();
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         Server silent =
                 NettyServerBuilder.forAddress(new InetSocketAddress(loopback, 0))
                         .addService(
@@ -218,7 +229,12 @@ class ReadClientSessionCreatorTest {
             assertThat(received.await(30, TimeUnit.SECONDS))
                     .as("the call never reached the server")
                     .isTrue();
-            assertThat(groupThreads()).as("the call did not run on the group").isNotEmpty();
+            // A group thread's name would not say which group it belongs to: an earlier group
+            // still shutting down has threads too (#2354).
+            assertThat(starts.anyStarted()).as("a group event loop started for the call").isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the creation's client holds the group while its call waits")
+                    .isTrue();
 
             long closing = System.nanoTime();
             creator.close();

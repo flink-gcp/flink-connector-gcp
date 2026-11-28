@@ -75,6 +75,9 @@ class PubSubSinkEventLoopITCase extends AbstractPubSubEmulatorITCase {
         createTopic(destination);
         createSubscription(destination, "event-loop-sub");
 
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         PubSubWriter<String> writer =
                 newWriter(
                         TestSinkConfigs.forTopic(
@@ -87,9 +90,10 @@ class PubSubSinkEventLoopITCase extends AbstractPubSubEmulatorITCase {
             writer.write("event-loop", CONTEXT);
             writer.flush(false);
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the writer is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the writer is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the writer still holds its lease").isTrue();
         } finally {
             writer.close();
         }

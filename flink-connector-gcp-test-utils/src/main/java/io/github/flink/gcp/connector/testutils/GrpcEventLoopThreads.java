@@ -24,22 +24,21 @@ import java.time.Duration;
  * Observes the threads of the connectors' own gRPC event-loop group ({@code
  * base.rpc.GrpcEventLoops}, ADR-0208) by name.
  *
- * <p>The group starts a thread when a channel registers on it, so a live thread while a client is
- * open shows that a channel of the client's runs on the group rather than on gRPC's shared one (not
- * that every one does), and no thread after it closed shows that its close stopped the group. The
- * release of the last lease starts threads too: the group's shutdown starts every event loop that
- * never ran in order to stop it, so a lease opened and released around a client whose channels ran
- * on gRPC's group still shows threads for a moment, and finding none afterwards does not show the
- * client used the group. An operation that opens and closes its own client is therefore observed
- * through {@link EventLoopObserver}, which reads base's count of the event-loop threads that
- * started while their own group was running rather than thread names. The readings here assume that
- * no other lease is open in the JVM, that no pin holds the group (a pinned group keeps its threads
- * with no lease open), and that no earlier group is still shutting down. A name does not say which
- * group a thread belongs to: a release detaches its group before shutting it down, the shutdown
- * starts the event loops that never ran, and a loop busy with a task keeps its thread until the
- * task ends, so an earlier group's threads can read as those of a group a later lease opened.
- * Surefire runs one test class at a time in a fork, but it reuses forks, so a class that leaked a
- * lease would leave the group running into the next one: a test checks {@link
+ * <p>Finding no thread after a client closed shows that no thread of the group was alive when the
+ * threads were looked at, not that the close released its lease: a lease whose client never
+ * registered a channel has no thread. A live thread does not show that the client's channels run on
+ * the group: a name does not say which group a thread belongs to. A release detaches its group
+ * before shutting it down, the shutdown starts every event loop that never ran in order to stop it,
+ * and a loop busy with a task keeps its thread until the task ends, so an earlier group's threads
+ * can read as those of a group a later lease opened, and a lease opened and released around a
+ * client whose channels ran on gRPC's shared group still shows threads for a moment. Whether a
+ * client's channels run on the group is therefore observed through {@link EventLoopObserver}, which
+ * reads base's count of the event-loop threads that Netty asked for while their own group was
+ * running rather than thread names, both for an operation that opens and closes its own client and
+ * for a client a test keeps open. The readings here assume that no other lease is open in the JVM
+ * and that no pin holds the group (a pinned group keeps its threads with no lease open). Surefire
+ * runs one test class at a time in a fork, but it reuses forks, so a class that leaked a lease
+ * would leave the group running into the next one: a test checks {@link
  * EventLoopObserver#awaitNoGroup(java.util.function.BooleanSupplier, Duration)} before it opens a
  * client, so that such a leak fails there rather than at the close it would otherwise be blamed on.
  * {@link #awaitNone()} alone misses a leaked lease whose client never registered a channel, since
@@ -59,7 +58,9 @@ public final class GrpcEventLoopThreads {
     private GrpcEventLoopThreads() {}
 
     /**
-     * Returns whether a thread of the group is alive.
+     * Returns whether a thread of the group is alive. The thread can be one of an earlier group
+     * that is still shutting down, so whether a client's channels run on the group is read from
+     * {@link EventLoopObserver} instead.
      *
      * @return whether one is
      */
@@ -69,23 +70,13 @@ public final class GrpcEventLoopThreads {
     }
 
     /**
-     * Waits up to ten seconds for a thread of the group to be alive.
-     *
-     * @return whether one became alive in time
-     * @throws InterruptedException if interrupted while waiting
-     */
-    public static boolean awaitAlive() throws InterruptedException {
-        return await(true);
-    }
-
-    /**
      * Waits up to ten seconds for every thread of the group to finish.
      *
      * @return whether they had finished in time
      * @throws InterruptedException if interrupted while waiting
      */
     public static boolean awaitNone() throws InterruptedException {
-        return await(false, Duration.ofSeconds(TIMEOUT_SECONDS));
+        return awaitNone(Duration.ofSeconds(TIMEOUT_SECONDS));
     }
 
     /**
@@ -98,16 +89,8 @@ public final class GrpcEventLoopThreads {
      * @throws InterruptedException if interrupted while waiting
      */
     public static boolean awaitNone(Duration timeout) throws InterruptedException {
-        return await(false, timeout);
-    }
-
-    private static boolean await(boolean alive) throws InterruptedException {
-        return await(alive, Duration.ofSeconds(TIMEOUT_SECONDS));
-    }
-
-    private static boolean await(boolean alive, Duration timeout) throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
-        while (alive() != alive) {
+        while (alive()) {
             if (System.nanoTime() >= deadline) {
                 return false;
             }

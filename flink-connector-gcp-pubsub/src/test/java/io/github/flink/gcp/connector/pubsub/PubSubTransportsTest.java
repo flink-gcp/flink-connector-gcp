@@ -25,6 +25,7 @@ import com.google.cloud.pubsub.v1.Publisher;
 import com.google.cloud.pubsub.v1.Subscriber;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -81,6 +82,7 @@ class PubSubTransportsTest {
     @Test
     void aProductionTransportBuildsTheSdksChannelsOnTheGroup() throws Exception {
         // The channels connect lazily, so nothing here talks to the service.
+        EventLoopObserver.LoopStarts starts = EventLoopChannelChecks.loopStartsFromNow();
         try (PubSubTransports.Transport transport = PubSubTransports.openForPublisher(null)) {
             assertThat(GrpcEventLoops.isRunning()).as("the transport holds a lease").isTrue();
             InstantiatingGrpcChannelProvider provider = instantiating(transport);
@@ -88,15 +90,16 @@ class PubSubTransportsTest {
                     .as("the lease costs the SDK's pool nothing")
                     .isEqualTo(
                             PubSubTransports.publisherDefaults().build().getChannelPoolSettings());
-            EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider);
+            EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider, starts);
         }
         assertThat(GrpcEventLoops.isRunning()).as("closing released the lease").isFalse();
 
+        starts = EventLoopChannelChecks.loopStartsFromNow();
         try (PubSubTransports.Transport transport = PubSubTransports.openForSubscriber(null)) {
             InstantiatingGrpcChannelProvider provider = instantiating(transport);
             assertThat(provider.toBuilder().getMaxInboundMessageSize()).isEqualTo(20 << 20);
             // The subscriber resizes the pool to its parallel pull count; the copy keeps the lease.
-            EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider.withPoolSize(4));
+            EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider.withPoolSize(4), starts);
         }
     }
 
@@ -109,6 +112,7 @@ class PubSubTransportsTest {
             server.setSoTimeout(10_000);
             String target = scheme + "127.0.0.1:" + server.getLocalPort();
             GrpcTransportChannel transportChannel;
+            EventLoopObserver.LoopStarts starts = EventLoopChannelChecks.loopStartsFromNow();
             try (PubSubTransports.Transport transport =
                     PubSubTransports.openForSubscriber(
                             EmulatorEndpoint.parse(target, "emulatorEndpoint"))) {
@@ -122,7 +126,7 @@ class PubSubTransportsTest {
                 channel.getState(true);
                 // The connection reaching this socket, opening with HTTP/2's cleartext preface
                 // rather than a TLS handshake, shows the target resolved to it and the channel is
-                // plaintext; the thread name shows which group serves it.
+                // plaintext; the group's count shows the channel runs on it.
                 try (Socket accepted = server.accept()) {
                     accepted.setSoTimeout(10_000);
                     byte[] preface = new byte[3];
@@ -131,8 +135,8 @@ class PubSubTransportsTest {
                             .as("the first bytes %s sends", target)
                             .isEqualTo("PRI");
                 }
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a %s* thread serves %s", GrpcEventLoopThreads.PREFIX, target)
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started for %s", target)
                         .isTrue();
             }
             assertThat(transportChannel.isTerminated()).isTrue();

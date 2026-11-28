@@ -43,7 +43,7 @@ import io.github.flink.gcp.connector.cloudtasks.CloudTasksClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
-import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -155,6 +155,7 @@ class DefaultTaskCreatorFactoryTest {
         Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
         for (Integer pool : new Integer[] {null, 2}) {
+            EventLoopObserver.LoopStarts starts = loopStartsFromNow();
             TaskCreator creator =
                     new DefaultTaskCreatorFactory(keyFile.toString(), null, pool).create(null);
             try {
@@ -169,7 +170,7 @@ class DefaultTaskCreatorFactoryTest {
                                         .getTransportChannelProvider());
                 assertThat(provider.getChannelPoolSettings())
                         .isEqualTo(ChannelPoolSettings.staticallySized(pool == null ? 1 : pool));
-                assertBuildsChannelsOnTheGroup(provider);
+                assertBuildsChannelsOnTheGroup(provider, starts);
             } finally {
                 creator.close();
             }
@@ -182,9 +183,10 @@ class DefaultTaskCreatorFactoryTest {
         // A key file rather than ADC: the client resolves its credentials as it is created, and a
         // build machine need not have application-default credentials.
         Path keyFile = ServiceAccountKeyFiles.create(tempDir);
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         try (var client = DefaultTaskCreatorFactory.openRetentionClient(keyFile.toString())) {
             assertBuildsChannelsOnTheGroup(
-                    provider(client.client().getSettings().getTransportChannelProvider()));
+                    provider(client.client().getSettings().getTransportChannelProvider()), starts);
         }
     }
 
@@ -194,17 +196,26 @@ class DefaultTaskCreatorFactoryTest {
     }
 
     /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     */
+    private static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
+    }
+
+    /**
      * Builds a channel through the provider's configurator, connects it to a local socket and
-     * checks that a thread of the connector's group serves it. The caller holds a lease, so the
-     * group starts a thread only when a channel registers on it rather than to shut down, and
-     * gRPC's own threads are named otherwise.
+     * checks that one of the connector's group's event loops started for it. The client's own
+     * channels connect lazily, so no loop has started before this channel registers.
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private static void assertBuildsChannelsOnTheGroup(InstantiatingGrpcChannelProvider provider)
+    private static void assertBuildsChannelsOnTheGroup(
+            InstantiatingGrpcChannelProvider provider, EventLoopObserver.LoopStarts starts)
             throws Exception {
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no group thread before the channel connects")
-                .isTrue();
+        assertThat(starts.anyStarted())
+                .as("a group event loop started before the channel connects")
+                .isFalse();
         ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
                 provider.toBuilder().getChannelConfigurator();
         assertThat(configurator).as("the provider carries the lease's configurator").isNotNull();
@@ -218,8 +229,8 @@ class DefaultTaskCreatorFactoryTest {
                             .build();
             try {
                 channel.getState(true);
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a %s* thread serves the channel", GrpcEventLoopThreads.PREFIX)
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started for the channel")
                         .isTrue();
             } finally {
                 channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
@@ -251,9 +262,7 @@ class DefaultTaskCreatorFactoryTest {
             try (ServerSocket server = new ServerSocket(0)) {
                 server.setSoTimeout(10_000);
                 String target = scheme + "127.0.0.1:" + server.getLocalPort();
-                assertThat(GrpcEventLoopThreads.awaitNone())
-                        .as("no group thread before the creator opens")
-                        .isTrue();
+                EventLoopObserver.LoopStarts starts = loopStartsFromNow();
                 TaskCreator creator =
                         new DefaultTaskCreatorFactory(
                                         null,
@@ -278,7 +287,7 @@ class DefaultTaskCreatorFactoryTest {
                     channel.getState(true);
                     // The connection reaching this socket, opening with HTTP/2's cleartext
                     // preface rather than a TLS handshake, shows the target resolved to it and
-                    // the channel is plaintext; the thread name shows which group serves it.
+                    // the channel is plaintext; the group's count shows the channel runs on it.
                     try (Socket accepted = server.accept()) {
                         accepted.setSoTimeout(10_000);
                         byte[] preface = new byte[3];
@@ -287,8 +296,8 @@ class DefaultTaskCreatorFactoryTest {
                                 .as("the first bytes %s sends", target)
                                 .isEqualTo("PRI");
                     }
-                    assertThat(GrpcEventLoopThreads.awaitAlive())
-                            .as("a %s* thread serves %s", GrpcEventLoopThreads.PREFIX, target)
+                    assertThat(starts.awaitAnyStarted())
+                            .as("a group event loop started for %s", target)
                             .isTrue();
                 } finally {
                     creator.close();

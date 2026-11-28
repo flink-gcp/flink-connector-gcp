@@ -29,6 +29,7 @@ import com.google.rpc.RetryInfo;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.EmulatorConnections;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.Metadata;
 import io.grpc.Server;
@@ -79,6 +80,7 @@ class BigQueryReadClientsEmulatorTest {
             assertThat(GrpcEventLoops.isRunning())
                     .as("no lease open before the client opens")
                     .isFalse();
+            EventLoopObserver.LoopStarts starts = EmulatorConnections.loopStartsFromNow();
             try (GrpcEventLoops.LeasedClient<BigQueryReadClient> client =
                     BigQueryReadClients.createForSessions(
                             null, EmulatorEndpoint.parse(target, "emulatorEndpoint"))) {
@@ -86,7 +88,7 @@ class BigQueryReadClientsEmulatorTest {
                 assertThat(settings.getCredentialsProvider())
                         .isInstanceOf(NoCredentialsProvider.class);
                 EmulatorConnections.assertPlaintextOnTheGroup(
-                        settings.getTransportChannelProvider(), server, target);
+                        settings.getTransportChannelProvider(), server, target, starts);
             }
             assertThat(GrpcEventLoops.isRunning())
                     .as("closing the client released both leases")
@@ -107,6 +109,7 @@ class BigQueryReadClientsEmulatorTest {
             assertThat(GrpcEventLoops.isRunning())
                     .as("no lease open before the client opens")
                     .isFalse();
+            EventLoopObserver.LoopStarts starts = EmulatorConnections.loopStartsFromNow();
             try (GrpcEventLoops.LeasedClient<BigQueryReadClient> client =
                     BigQueryReadClients.createForReads(
                             null,
@@ -121,7 +124,7 @@ class BigQueryReadClientsEmulatorTest {
                 assertThat(settings.readRowsSettings().getRetrySettings().getMaxAttempts())
                         .isEqualTo(7);
                 EmulatorConnections.assertPlaintextOnTheGroup(
-                        settings.getTransportChannelProvider(), server, target);
+                        settings.getTransportChannelProvider(), server, target, starts);
             }
             assertThat(GrpcEventLoops.isRunning())
                     .as("closing the client released both leases")

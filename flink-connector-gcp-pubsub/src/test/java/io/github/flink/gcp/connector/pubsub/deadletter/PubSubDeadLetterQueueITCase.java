@@ -24,7 +24,9 @@ import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -163,21 +165,27 @@ class PubSubDeadLetterQueueITCase {
      */
     @Test
     void thePublisherRunsOnTheEventLoopGroupAndStopsItOnClose() throws Exception {
-        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
                 .as(
-                        "no %s* thread before the queue opens: an earlier class in this fork left"
+                        "no lease and no %s* thread before the queue opens: an earlier class in this fork left"
                                 + " the group running",
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         Fixture fixture = newFixture();
         try {
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("event loop")));
             fixture.queue.flush();
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the queue is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the queue is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the queue still holds its lease").isTrue();
         } finally {
             fixture.close();
         }

@@ -113,6 +113,7 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void theWritersClientRunsOnTheGroupAndStopsItOnClose() throws Exception {
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         SpannerDatabaseAccess access =
                 new DefaultSpannerDatabaseAccessFactory(
                                 database, SpannerWriterOptions.defaults(), endpoint)
@@ -120,10 +121,11 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
         try {
             access.readPrimaryKeys("singers");
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as(
-                            "a %s* thread while the writer's client is open",
-                            GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the writer's client is open")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the writer's client still holds its lease")
                     .isTrue();
         } finally {
             access.close();
@@ -180,6 +182,8 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
         PartitionPlan plan = planned.get();
         assertThat(plan.getPartitions()).isNotEmpty();
 
+        // The planner's group is released, so a loop that starts from here on is the reader's.
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         BatchClientStructStreamOpener opener =
                 new BatchClientStructStreamOpener(database, endpoint);
         int rows = 0;
@@ -192,10 +196,11 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
                     }
                 }
             }
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as(
-                            "a %s* thread while the reader's client is open",
-                            GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the reader's client is open")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the reader's client still holds its lease")
                     .isTrue();
         } finally {
             opener.close();
@@ -209,15 +214,17 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void theChangeStreamClientsRunOnTheGroupAndStopItOnClose() throws Exception {
+        EventLoopObserver.LoopStarts coordinatorStarts = loopStartsFromNow();
         try (SpannerChangeStreamCoordinatorClient coordinator =
                 new DefaultSpannerChangeStreamCoordinatorClientFactory(
                                 database, "changes", endpoint)
                         .create((io.github.flink.gcp.connector.base.metrics.ClientMetrics) null)) {
             assertThat(coordinator.initialize()).isPositive();
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as(
-                            "a %s* thread while the coordinator's client is open",
-                            GrpcEventLoopThreads.PREFIX)
+            assertThat(coordinatorStarts.anyStarted())
+                    .as("a group event loop started while the coordinator's client is open")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the coordinator's client still holds its lease")
                     .isTrue();
         }
         assertThat(GrpcEventLoopThreads.awaitNone())
@@ -226,14 +233,16 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
                         GrpcEventLoopThreads.PREFIX)
                 .isTrue();
 
+        EventLoopObserver.LoopStarts readerStarts = loopStartsFromNow();
         try (SpannerChangeStreamQueryClient reader =
                 new DefaultSpannerChangeStreamQueryClientFactory(
                                 database, "changes", SpannerRpcPriority.HIGH, 1, endpoint)
                         .create(null)) {
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as(
-                            "a %s* thread while the reader's client is open",
-                            GrpcEventLoopThreads.PREFIX)
+            assertThat(readerStarts.anyStarted())
+                    .as("a group event loop started while the reader's client is open")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the reader's client still holds its lease")
                     .isTrue();
         }
         assertThat(GrpcEventLoopThreads.awaitNone())
@@ -243,6 +252,7 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void theCatalogsClientRunsOnTheGroupUntilTheCatalogCloses() throws Exception {
+        EventLoopObserver.LoopStarts starts = loopStartsFromNow();
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         table.executeSql(
@@ -260,14 +270,24 @@ class SpannerEventLoopITCase extends AbstractSpannerEmulatorITCase {
         Catalog catalog = table.getCatalog("sp").orElseThrow(IllegalStateException::new);
         try {
             assertThat(catalog.listTables(database.getDatabase())).contains("singers");
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the catalog is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the catalog is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the catalog still holds its lease").isTrue();
         } finally {
             catalog.close();
         }
         assertThat(GrpcEventLoopThreads.awaitNone())
                 .as("no %s* thread once the catalog closed", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
+    }
+
+    /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     */
+    private static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
     }
 }

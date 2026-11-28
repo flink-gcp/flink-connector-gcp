@@ -20,7 +20,7 @@ import com.google.api.gax.core.BackgroundResource;
 import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
-import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import org.junit.jupiter.api.AfterEach;
@@ -55,6 +55,9 @@ class EmulatorChannelsTest {
     @ValueSource(strings = {"", "dns:///"})
     void aLeasedChannelDialsTheEndpointOnTheGroupAndReleasesItOnClose(String scheme)
             throws Exception {
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         try (ServerSocket server = new ServerSocket(0)) {
             String hostPort = "127.0.0.1:" + server.getLocalPort();
             // The dns:/// form is the one gax's own provider cannot dial (it splits the target at
@@ -74,8 +77,8 @@ class EmulatorChannelsTest {
                 ManagedChannel channel = (ManagedChannel) leased.client().getChannel();
                 assertThat(channel.authority()).isEqualTo(hostPort);
                 channel.getState(true);
-                assertThat(GrpcEventLoopThreads.awaitAlive())
-                        .as("a group thread once the channel connects")
+                assertThat(starts.awaitAnyStarted())
+                        .as("a group event loop started once the channel connects")
                         .isTrue();
             } finally {
                 leased.close();

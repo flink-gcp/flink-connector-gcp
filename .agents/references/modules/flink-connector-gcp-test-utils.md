@@ -57,8 +57,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   started while their own group ran before and after the operation instead of sampling thread
   names (#2350): a sample could miss a short call, and a thread name cannot tell an earlier group
   still shutting down from the operation's. It throws if a group is already running when the
-  operation would start. A bare `alive()` while a long-lived client is open still reads any
-  group's thread (#2354); `awaitNoGroup` misses a pin registered before any lease opened.
+  operation would start. A test that keeps its client open reads the same count through
+  `EventLoopObserver.loopStartsFromNow` before the client opens and `LoopStarts.anyStarted()` (or
+  `awaitAnyStarted()`) while it is open, because a bare `alive()` reads any group's thread
+  (#2354); `GrpcEventLoopThreads` is left for checks that no group thread remains. `awaitNoGroup`
+  misses a pin registered before any lease opened.
 
 ## Harnesses (`docs/adr/0051`)
 

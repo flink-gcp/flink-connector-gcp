@@ -29,8 +29,10 @@ import com.google.cloud.datastore.ListValue;
 import com.google.cloud.datastore.StringValue;
 import com.google.datastore.v1.Key;
 import com.google.datastore.v1.LookupResponse;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.datastore.AbstractDatastoreEmulatorITCase;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -192,20 +194,26 @@ class DatastoreKindEntityLookupITCase extends AbstractDatastoreEmulatorITCase {
      */
     @Test
     void aLookupThroughADnsTargetRunsOnTheGroupAndStopsItOnClose() throws Exception {
-        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
-                .as("no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
         String kind = uniqueKind();
         client().put(Entity.newBuilder(key(kind, "d")).set("x", 1L).build());
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
         DatastoreKindEntityLookup lookup =
                 new DatastoreKindEntityLookup(
                         database(), new String[] {"x"}, "dns:///" + emulatorEndpoint(), null);
         lookup.open();
         try {
             assertThat(lookUp(lookup, named(keys(kind), "d")).getFoundCount()).isEqualTo(1);
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the lookup is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the lookup is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the lookup still holds its lease").isTrue();
         } finally {
             lookup.close();
         }

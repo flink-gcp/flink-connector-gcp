@@ -18,11 +18,14 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,8 +38,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * deployment is after Flink has closed the job's class loader; under {@code
  * cluster.uncaught-exception-handling: FAIL} that exits the TaskManager. What makes the connector
  * immune is that its channels never use that group and that its own group has stopped by the time
- * {@code close()} returns, which is what these tests observe through the group's thread names. The
- * emulator path is the one a test can reach; the production default-stream path builds its
+ * {@code close()} returns. These tests observe that the client's channels run on the connector's
+ * group through base's count of the group's event loops started while the client is open ({@link
+ * EventLoopObserver}), and that the group stopped through its thread names once the client closed.
+ * The emulator path is the one a test can reach; the production default-stream path builds its
  * transport provider in {@code StreamWriterRowAppenderFactory.productionChannelProvider}, which
  * {@code StreamWriterRowAppenderFactoryTest} covers.
  */
@@ -47,9 +52,16 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
         NameColumnSerializer serializer = new NameColumnSerializer();
         TableDestination destination = TableDestination.of(PROJECT, DATASET, "event_loop_default");
         createTable("event_loop_default", serializer.getTableSchema(destination));
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread before the client opens", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as(
+                        "no lease and no %s* thread before the client opens",
+                        GrpcEventLoopThreads.PREFIX)
                 .isTrue();
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
 
         try (RowAppender appender =
                 emulatorAppenderFactory()
@@ -60,8 +72,11 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
                                     .build())
                     .get(30, TimeUnit.SECONDS);
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while appending", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while appending")
+                    .isTrue();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the appender still holds its lease")
                     .isTrue();
         }
 
@@ -75,9 +90,16 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
         NameColumnSerializer serializer = new NameColumnSerializer();
         TableDestination destination = TableDestination.of(PROJECT, DATASET, "event_loop_buffered");
         createTable("event_loop_buffered", serializer.getTableSchema(destination));
-        assertThat(GrpcEventLoopThreads.awaitNone())
-                .as("no %s* thread before the client opens", GrpcEventLoopThreads.PREFIX)
+        assertThat(
+                        EventLoopObserver.awaitNoGroup(
+                                GrpcEventLoops::isRunning, Duration.ofSeconds(60)))
+                .as(
+                        "no lease and no %s* thread before the client opens",
+                        GrpcEventLoopThreads.PREFIX)
                 .isTrue();
+        EventLoopObserver.LoopStarts starts =
+                EventLoopObserver.loopStartsFromNow(
+                        GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
 
         try (BufferedStreamService service =
                 new WriteClientBufferedStreamService(
@@ -95,9 +117,10 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
                         .get(30, TimeUnit.SECONDS);
             }
 
-            assertThat(GrpcEventLoopThreads.alive())
-                    .as("a %s* thread while the service is open", GrpcEventLoopThreads.PREFIX)
+            assertThat(starts.anyStarted())
+                    .as("a group event loop started while the service is open")
                     .isTrue();
+            assertThat(GrpcEventLoops.isRunning()).as("the service still holds its lease").isTrue();
         }
 
         assertThat(GrpcEventLoopThreads.awaitNone())

@@ -18,7 +18,8 @@ package io.github.flink.gcp.connector.bigquery;
 
 import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.rpc.TransportChannelProvider;
-import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.EventLoopObserver;
 import io.grpc.ManagedChannel;
 
 import java.io.IOException;
@@ -34,16 +35,32 @@ public final class EmulatorConnections {
     private EmulatorConnections() {}
 
     /**
+     * Takes a baseline of the group's count of event loops started while it runs, before a client
+     * opens its lease ({@link EventLoopObserver}).
+     *
+     * @return a baseline that later readings of the count are compared against
+     */
+    public static EventLoopObserver.LoopStarts loopStartsFromNow() {
+        return EventLoopObserver.loopStartsFromNow(
+                GrpcEventLoops::isRunning, GrpcEventLoops::loopsStartedWhileRunning);
+    }
+
+    /**
      * Asserts that a client's transport is a channel the client does not close, that connecting it
-     * reaches {@code server} over plaintext, and that a thread of the connector's event-loop group
-     * serves it.
+     * reaches {@code server} over plaintext, and that one of the connector's event-loop group's
+     * event loops started for it.
      *
      * @param provider the client's transport channel provider
      * @param server the socket the emulator target points at
      * @param target the emulator target, for the failure message
+     * @param starts the baseline {@link #loopStartsFromNow()} took before the client opened its
+     *     lease
      */
     public static void assertPlaintextOnTheGroup(
-            TransportChannelProvider provider, ServerSocket server, String target)
+            TransportChannelProvider provider,
+            ServerSocket server,
+            String target,
+            EventLoopObserver.LoopStarts starts)
             throws IOException, InterruptedException {
         assertThat(provider.shouldAutoClose())
                 .as("the client does not close the caller-owned channel")
@@ -54,7 +71,7 @@ public final class EmulatorConnections {
         channel.getState(true);
         // The connection reaching this socket, opening with HTTP/2's cleartext preface rather than
         // a TLS handshake, shows the target resolved to it and the channel is plaintext; the
-        // thread name shows which group serves it.
+        // group's count shows the channel runs on it.
         try (Socket accepted = server.accept()) {
             accepted.setSoTimeout(10_000);
             byte[] preface = new byte[3];
@@ -63,8 +80,8 @@ public final class EmulatorConnections {
                     .as("the first bytes %s sends", target)
                     .isEqualTo("PRI");
         }
-        assertThat(GrpcEventLoopThreads.awaitAlive())
-                .as("a %s* thread serves %s", GrpcEventLoopThreads.PREFIX, target)
+        assertThat(starts.awaitAnyStarted())
+                .as("a group event loop started for %s", target)
                 .isTrue();
     }
 }
