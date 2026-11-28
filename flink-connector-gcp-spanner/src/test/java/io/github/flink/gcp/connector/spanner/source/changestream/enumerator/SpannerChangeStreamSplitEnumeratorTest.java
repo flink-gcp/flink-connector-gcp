@@ -420,7 +420,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
                         restored,
                         null,
                         now::get,
-                        System::nanoTime);
+                        System::nanoTime,
+                        count -> {});
 
         enumerator.start();
         context.runAsyncCalls();
@@ -2834,7 +2835,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 restored,
                 null,
                 clock::get,
-                () -> TimeUnit.MILLISECONDS.toNanos(clock.get()));
+                () -> TimeUnit.MILLISECONDS.toNanos(clock.get()),
+                count -> {});
     }
 
     /** A restored ledger with each named parent running and its {@code <name>-child} created. */

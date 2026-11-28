@@ -70,6 +70,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 
 /**
@@ -225,6 +226,14 @@ public final class SpannerChangeStreamSplitEnumerator
     private final LongSupplier currentTimeMillis;
     private final LongSupplier nanoTime;
 
+    /**
+     * Called with the count of the latch {@link #initialize()} stored in {@code clientReleased}
+     * just before it counts that latch down, once a client's creation or release has ended and any
+     * failure it observed is recorded or logged; a no-op outside tests, which check that point or
+     * hold initialization there to land a {@link #close()} in between.
+     */
+    private final LongConsumer beforeClientReleasedCountDown;
+
     private final Map<String, ChangeStreamPartitionSplit> ledger = new LinkedHashMap<>();
     private final Map<String, Set<String>> childrenByParent = new HashMap<>();
     private final Map<String, Integer> finishedParentProofReferences = new LinkedHashMap<>();
@@ -332,7 +341,8 @@ public final class SpannerChangeStreamSplitEnumerator
                 restoredState,
                 clientMetrics,
                 System::currentTimeMillis,
-                System::nanoTime);
+                System::nanoTime,
+                count -> {});
     }
 
     @VisibleForTesting
@@ -348,7 +358,8 @@ public final class SpannerChangeStreamSplitEnumerator
             @Nullable SpannerChangeStreamEnumeratorState restoredState,
             @Nullable ClientMetrics clientMetrics,
             LongSupplier currentTimeMillis,
-            LongSupplier nanoTime) {
+            LongSupplier nanoTime,
+            LongConsumer beforeClientReleasedCountDown) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.clientFactory =
                 Preconditions.checkNotNull(clientFactory, "clientFactory must not be null");
@@ -374,6 +385,10 @@ public final class SpannerChangeStreamSplitEnumerator
         this.currentTimeMillis =
                 Preconditions.checkNotNull(currentTimeMillis, "currentTimeMillis must not be null");
         this.nanoTime = Preconditions.checkNotNull(nanoTime, "nanoTime must not be null");
+        this.beforeClientReleasedCountDown =
+                Preconditions.checkNotNull(
+                        beforeClientReleasedCountDown,
+                        "beforeClientReleasedCountDown must not be null");
     }
 
     @Override
@@ -582,7 +597,11 @@ public final class SpannerChangeStreamSplitEnumerator
             }
             throw closedDuringInitialization();
         } finally {
-            creating.countDown();
+            try {
+                beforeClientReleasedCountDown.accept(creating.getCount());
+            } finally {
+                creating.countDown();
+            }
         }
     }
 
@@ -653,7 +672,11 @@ public final class SpannerChangeStreamSplitEnumerator
                 ExceptionUtils.rethrow(e);
             }
         } finally {
-            released.countDown();
+            try {
+                beforeClientReleasedCountDown.accept(released.getCount());
+            } finally {
+                released.countDown();
+            }
         }
     }
 
