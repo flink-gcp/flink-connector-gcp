@@ -74,9 +74,8 @@ import java.util.stream.Collectors;
  * Subscriber} streaming pull.
  *
  * <p>Delivery state lives on the Pub/Sub server, not in Flink state: a message is acknowledged only
- * once the checkpoint that covers its emission completes, and anything unacknowledged is
- * redelivered. Checkpoints therefore hold no message data, and a restore needs no retained
- * checkpoint to resume.
+ * once a completed checkpoint covers it, and anything unacknowledged is redelivered. Checkpoints
+ * therefore hold no message data, and a restore needs no retained checkpoint to resume.
  *
  * @param <T> type of the records produced by the source
  */

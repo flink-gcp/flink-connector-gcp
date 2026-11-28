@@ -342,8 +342,8 @@ public final class PubSubSubscriberOptions implements Serializable {
         /**
          * Caps the messages one subscriber holds outstanding; the client library stops pulling once
          * the cap is reached. Optional; defaults to the SDK's limit of 1000 messages. Because the
-         * source acknowledges only on checkpoint completion, everything received since the last
-         * completed checkpoint counts against this cap.
+         * source acknowledges a message only once a completed checkpoint covers it, everything
+         * received since the last completed checkpoint can count against this cap.
          *
          * @param flowControlMaxOutstandingElementCount the outstanding-message limit, positive
          * @return this builder
@@ -693,12 +693,12 @@ public final class PubSubSubscriberOptions implements Serializable {
          * before failing the job, measured from the reader's first split assignment. Defaults to 10
          * min; {@link Duration#ZERO} disables the detector.
          *
-         * <p>The source acknowledges only on checkpoint completion, so a job running without
-         * checkpointing never acknowledges anything and stalls silently once flow control fills.
-         * Raise this above the checkpoint interval for jobs that checkpoint less often than every
-         * 10 min. See {@code MissingCheckpointDetector} for why the guard measures elapsed time
-         * rather than reading the checkpoint configuration, and why it measures it from the first
-         * assignment rather than from the reader's creation.
+         * <p>The source acknowledges a message only once a completed checkpoint covers it, so a job
+         * running without checkpointing never has a checkpoint acknowledge what it consumes, and
+         * stalls silently once flow control fills. Raise this above the checkpoint interval for
+         * jobs that checkpoint less often than every 10 min. See {@code MissingCheckpointDetector}
+         * for why the guard measures elapsed time rather than reading the checkpoint configuration,
+         * and why it measures it from the first assignment rather than from the reader's creation.
          *
          * @param firstCheckpointTimeout the detector budget, non-negative and at most {@code
          *     Duration.ofNanos(Long.MAX_VALUE)}; zero disables it

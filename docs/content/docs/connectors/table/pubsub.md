@@ -580,9 +580,9 @@ At-least-once in both directions, unchanged from the DataStream connectors. The 
 asynchronously and flushes at each checkpoint, so a failover republishes whatever the last completed
 checkpoint did not cover.
 
-**A source table needs checkpointing enabled.** Messages are acknowledged when a checkpoint
-completes, so without one nothing is ever acknowledged and everything is redelivered forever; the
-source detects that state and fails rather than stalling silently. Set
+**A source table needs checkpointing enabled.** A message is acknowledged only once a completed
+checkpoint covers it, so without checkpointing no checkpoint ever acknowledges what the source
+consumes; the source detects that state and fails rather than stalling silently. Set
 `execution.checkpointing.interval`.
 
 The source's changelog mode is **the format's**, not a hard-coded insert-only, so a changelog format

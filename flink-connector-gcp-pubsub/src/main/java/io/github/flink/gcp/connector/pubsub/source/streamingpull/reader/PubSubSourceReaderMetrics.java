@@ -185,7 +185,10 @@ public final class PubSubSourceReaderMetrics {
         metricGroup.gauge(PubSubMetricNames.LEDGER_ENTRIES, (Gauge<Integer>) ledger::size);
     }
 
-    /** Counts one redelivery the restored ledger acknowledged instead of emitting. */
+    /**
+     * Counts one redelivery the restored ledger suppressed, whether or not an acknowledgement
+     * followed.
+     */
     public void redeliverySuppressed() {
         redeliveriesSuppressed.inc();
     }

@@ -275,15 +275,16 @@ public class PubSubSourceBuilder<T> {
      * requirements when a checkpoint completes; every rescale it triggers that way races the
      * notification, and one lost race duplicates a whole checkpoint interval.
      *
-     * <p>With this on, each checkpoint also records the ids of the messages it covers that are not
-     * acknowledged yet. After a restore, a redelivery of one of those messages is acknowledged
-     * instead of emitted, for {@link #restoreDeduplicationTtl(Duration)}. This removes the
-     * duplicates of a whole-job restore, which every AdaptiveScheduler restart is, whether it
-     * rescales up or down, as far as the ledger reaches the readers (below), and loses nothing:
-     * every suppressed message was covered by the restored checkpoint, and a redelivery that
-     * arrives after the ledger expires is emitted as it would be without this setting. A region
-     * failover is covered for the subtasks it restores; a redelivery that Pub/Sub routes to a
-     * source subtask the failover left running is emitted again.
+     * <p>With this on, each checkpoint also records ids of messages it covers. After a restore, a
+     * redelivery of one of those messages can be suppressed for {@link
+     * #restoreDeduplicationTtl(Duration)}: it is not emitted, and it can be acknowledged at once
+     * rather than with a checkpoint. This removes the duplicates of a whole-job restore, which
+     * every AdaptiveScheduler restart is, whether it rescales up or down, as far as the ledger
+     * reaches the readers (below), and loses nothing: every suppressed message was covered by the
+     * restored checkpoint, and a redelivery that arrives after the ledger expires is emitted as it
+     * would be without this setting. A region failover is covered for the subtasks it restores; a
+     * redelivery that Pub/Sub routes to a source subtask the failover left running can be emitted
+     * again.
      *
      * <p>The cost is checkpoint state that grows with the messages processed between checkpoints,
      * those {@link DeserializationFailurePolicy#DROP} discards included, and a restore that waits

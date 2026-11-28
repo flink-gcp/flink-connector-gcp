@@ -58,12 +58,11 @@ import java.util.function.Supplier;
  * reports to the {@link MissingCheckpointDetector} it shares with the split reader.
  *
  * <p>With restore deduplication on (#2049), the reader also carries the restore-deduplication
- * ledger through checkpoints. Its snapshot holds ledger chunks — the ids of messages the checkpoint
- * covers that are not acknowledged yet — and never a consuming split. On a restore, the chunks it
- * is handed are released at once, so their split outputs hold back no watermark, and uploaded to
- * the enumerator, which forwards each subscription's chunks to the readers that consume it before
- * assigning any split. A chunk the enumerator forwards lands in the {@link RestoredLedger} the
- * record emitter consults.
+ * ledger through checkpoints. Its snapshot holds ledger chunks — ids of messages the checkpoint
+ * covers — and never a consuming split. On a restore, the chunks it is handed are released at once,
+ * so their split outputs hold back no watermark, and uploaded to the enumerator, which forwards
+ * each subscription's chunks to the readers that consume it before assigning any split. A chunk the
+ * enumerator forwards lands in the {@link RestoredLedger} the record emitter consults.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),

@@ -112,9 +112,9 @@ is equivalent to not setting options at all. Every knob and its default is in th
 section is why they are what they are.
 
 **Flow control bounds in-flight messages only while the client is extending their leases.**
-Because the source acknowledges only on checkpoint completion, everything received since the last
-completed checkpoint counts against these limits, and the client stops pulling once they are
-reached.
+Because the source acknowledges a message only once a completed checkpoint covers it, everything
+received since the last completed checkpoint can count against these limits, and the client stops
+pulling once they are reached.
 After `maxAckExtensionPeriod` passes for a message the job has not emitted, however, the client
 releases its permit while the connector still holds it.
 **What decides whether that accumulates is how fast the split is being drained**, and the break-even is
@@ -628,8 +628,11 @@ The source is **at-least-once**, and holds no message data in Flink state (with
 the Pub/Sub server. A received message passes through four states: *pending* (received, not yet
 processed), *staged* (processed by the record emitter: its records, if any, emitted downstream,
 or the message discarded by `DROP`), *bound to a checkpoint* (that checkpoint is being taken),
-and *acknowledged* (that checkpoint completed). Only the last step tells Pub/Sub the message is
-done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers it.
+and *acknowledged* (that checkpoint completed). On this path only the last step tells Pub/Sub the
+message is done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers
+it. [Restore deduplication](#restore-deduplication) can also acknowledge a redelivery at once,
+because the restored checkpoint already covers that message. Either way, a message is acknowledged
+only once a completed checkpoint covers it.
 Acknowledging sweeps every checkpoint at or below the completed id, so an aborted checkpoint or a
 lost completion notification is healed by the next successful one, as long as the job keeps
 running. A notification lost because the job stopped is not healed this way; see
@@ -637,8 +640,8 @@ running. A notification lost because the job stopped is not healed this way; see
 restore needs no retained checkpoint.
 
 **Checkpointing must be enabled** in streaming jobs: without it `notifyCheckpointComplete` never
-fires, nothing is ever acknowledged, and the source stalls once the client library's flow control
-fills. The reader enforces this itself — if no checkpoint has been taken within
+fires, no checkpoint ever acknowledges what the source consumes, and the source stalls once the client
+library's flow control fills. The reader enforces this itself — if no checkpoint has been taken within
 `firstCheckpointTimeout` (10 min by default) while messages wait to be acknowledged, it fails the
 job with a message naming `execution.checkpointing.interval`. It has to observe the outcome rather
 than read the configuration: a reader is handed the *TaskManager* configuration, while
@@ -668,7 +671,7 @@ only when the interval happens to be set at cluster level, for the same visibili
 the reader closes**, so Pub/Sub redelivers them immediately instead of after the acknowledgement
 deadline expires — this is what makes failover recover quickly. A reader close is not the only
 occasion: parking a paused split whose buffer outgrew its bound nacks the same three states, on a
-running job with no failure and no restart, so those records are redelivered and emitted again when
+running job with no failure and no restart, so those records are redelivered and can be emitted again when
 the split resumes (see [Watermark alignment](#watermark-alignment)). The SDK subscriber is additionally
 configured with `NACK_IMMEDIATELY` shutdown, which releases messages the client buffered but never
 handed to the source; the SDK's `WAIT_FOR_PROCESSING` default would instead wait for
@@ -689,8 +692,8 @@ A TaskManager that leaves, including one that a reactive scale-in removes, resta
 One lost race duplicates a whole checkpoint interval, which is minutes of data for a job that needs long intervals, such as one writing to BigQuery with `FILE_LOADS`.
 
 `restoreDeduplication(true)` (Table API: `'scan.restore-deduplication.enabled' = 'true'`) closes that gap for a restore of the whole source.
-Each checkpoint additionally records the ids of the messages it covers that are not acknowledged yet, per subscription.
-After a restore, a redelivered message whose id is in the restored ledger is acknowledged instead of emitted.
+Each checkpoint additionally records, per subscription, ids of messages it covers, though not necessarily all of them.
+After a restore, a redelivered message whose id is in the restored ledger is suppressed: it is not emitted, and it can be acknowledged at once rather than with a checkpoint.
 Nothing is lost by this: a job restores only from a completed checkpoint, so every suppressed message had its records committed by that checkpoint.
 A redelivery the ledger misses, because its entry expired or never reached the reader, is emitted, which is the duplicate the source produces without the setting.
 
@@ -712,7 +715,7 @@ Every AdaptiveScheduler restart is a restore of the whole job, so rescales in bo
 The default scheduler's region failover keeps the enumerator running and restores only the subtasks of the failed region; the enumerator then waits for those subtasks' uploads and forwards their ledger to them.
 A region that spans every source subtask, as in any job whose source feeds an all-to-all exchange, is therefore covered like a whole restore.
 Until a checkpoint completes after a restore, the enumerator keeps the ledger it forwarded and sends it again to a subtask that resets on its own, because that subtask restores the same checkpoint but may have been forwarded chunks from another subtask's state.
-When the region leaves some source subtasks running, a redelivery that Pub/Sub routes to one of those is emitted again, because a running reader is not sent a restored ledger; under `PER_KEY` a subscription has a single reader, so this does not arise.
+When the region leaves some source subtasks running, a redelivery that Pub/Sub routes to one of those can be emitted again, because a running reader is not sent the restored ledger; under `PER_KEY` a subscription has a single reader, so this does not arise.
 A stop with a savepoint is not affected by the race in the first place: the task waits for the savepoint's completion notification before it stops.
 
 **Lifetime.**
@@ -721,7 +724,7 @@ The default is the subscriber's `maxAckExtensionPeriod` (1 hour by default), the
 A cancellation nacks the messages, so their redelivery usually starts within seconds of the restore; a TaskManager that is lost leaves them leased until their deadline lapses, and a subscription's retry policy or a large backlog delays redelivery further.
 An entry is kept after its first match, so a message redelivered more than once is suppressed every time.
 Because the restored ledger is not carried into later checkpoints, a second restore keeps the first one's entries only when it restores the same checkpoint again.
-A second restore from a checkpoint taken after the first one carries only that checkpoint's own ledger, so a redelivery from the first restore that arrives after the second one is emitted again.
+A second restore from a checkpoint taken after the first one carries only that checkpoint's own ledger, so a redelivery from the first restore that arrives after the second one can be emitted again.
 
 **Costs and caveats.**
 
@@ -732,10 +735,10 @@ A second restore from a checkpoint taken after the first one carries only that c
   While it lives, each delivery costs one hash lookup; once it has expired, a delivery costs a field read.
 - **Downgrade**: a checkpoint taken with the setting on holds ledger chunks that a connector before 1.4.0 cannot read, so it cannot restore that checkpoint. Turn the setting off and let one checkpoint complete before moving to an earlier version; with the setting off the reader's state is empty again.
 - **Restore**: the ledger crosses the network twice, once to the enumerator and once to each reader of its subscription, and consuming starts only after the transfer.
-- **Seek**: a seek during the ledger's lifetime replays messages, and a replayed message that is in the ledger is acknowledged rather than emitted.
+- **Seek**: a seek during the ledger's lifetime replays messages, and a replayed message that is in the ledger is suppressed like a redelivery.
 - **Exactly-once delivery** subscriptions stay rejected by the [startup check](#startup-check); this setting does not change that.
 
-The setting suppresses duplicates only from the restore's own redelivery.
+The setting suppresses only deliveries of messages in the restored ledger, and only while the ledger lives.
 A pipeline that must not see a duplicate at all still needs deduplication downstream, keyed by the message id, which every record can carry.
 `redeliveriesSuppressed`, `ledgerEntriesExpired` and `ledgerEntries` in [Metrics](#metrics) show what a restore suppressed and what expired unmatched.
 
@@ -798,7 +801,7 @@ now running, including one that a failover or a restart builds:
 | `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
 | `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
 | `subscriberFailuresUnreported` | counter | failures a subscriber's teardown was the only report of, so no job failure is coming for them. Process-wide in the same sense as the row above |
-| `redeliveriesSuppressed` | counter | redeliveries the restored deduplication ledger acknowledged instead of emitting; registered only with [restore deduplication](#restore-deduplication) on, like the two rows below |
+| `redeliveriesSuppressed` | counter | redeliveries the restored deduplication ledger suppressed, counted per delivery; a suppressed redelivery is not always acknowledged; registered only with [restore deduplication](#restore-deduplication) on, like the two rows below |
 | `ledgerEntriesExpired` | counter | restored ledger entries dropped at expiry without a redelivery to suppress |
 | `ledgerEntries` | gauge | restored ledger entries this subtask still holds |
 | `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |

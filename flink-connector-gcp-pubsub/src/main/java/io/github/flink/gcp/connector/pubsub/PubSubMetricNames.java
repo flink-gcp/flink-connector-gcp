@@ -83,11 +83,12 @@ public final class PubSubMetricNames {
     public static final String PENDING_CHECKPOINTS = "pendingCheckpoints";
 
     /**
-     * Restore deduplication (#2049): redeliveries the restored ledger acknowledged instead of
-     * emitting, and ledger entries that expired without a redelivery to suppress. Both stay zero
-     * while the feature is off. A high expiry count beside a low suppression count after a restore
-     * means the notification had reached the reader, so there was nothing to suppress; expiries
-     * while duplicates still arrive mean the TTL is too short.
+     * Restore deduplication (#2049): redeliveries the restored ledger suppressed, counted per
+     * delivery and not always acknowledged, and ledger entries that expired without a redelivery to
+     * suppress. Both stay zero while the feature is off. Each reader of a subscription can hold the
+     * whole restored ledger, so an entry can expire on one reader after another suppressed its
+     * redelivery; duplicates that still arrive after the entries expire can mean the TTL is too
+     * short.
      */
     public static final String REDELIVERIES_SUPPRESSED = "redeliveriesSuppressed";
 

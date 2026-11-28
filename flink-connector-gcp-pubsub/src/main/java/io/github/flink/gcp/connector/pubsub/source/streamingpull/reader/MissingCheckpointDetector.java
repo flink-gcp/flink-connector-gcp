@@ -26,9 +26,10 @@ import java.util.function.LongSupplier;
 /**
  * Fails a reader that holds unacknowledged messages but has never been asked for a checkpoint.
  *
- * <p>This source acknowledges only on checkpoint completion, so a streaming job running without
- * checkpointing acknowledges nothing: it consumes until the client library's flow control fills and
- * then stalls, silently and forever. That is worse than an exception, so the reader raises one.
+ * <p>This source acknowledges a message only once a completed checkpoint covers it, so a streaming
+ * job running without checkpointing never has a checkpoint acknowledge what it consumes: it
+ * consumes until the client library's flow control fills and then stalls, silently and forever.
+ * That is worse than an exception, so the reader raises one.
  *
  * <p><b>The configuration cannot be asked about it.</b> A reader is handed the <em>TaskManager</em>
  * configuration — {@code SourceOperatorFactory} passes {@code
@@ -156,10 +157,10 @@ public final class MissingCheckpointDetector {
                         + Duration.ofNanos(budgetNanos)
                         + " while "
                         + outstanding
-                        + " messages wait to be acknowledged. The Pub/Sub source acknowledges"
-                        + " messages only when the checkpoint covering them completes, so nothing"
-                        + " will ever be acknowledged and the source stalls once the client"
-                        + " library's flow control fills. Enable checkpointing"
+                        + " messages wait to be acknowledged. The Pub/Sub source acknowledges a"
+                        + " message only once a completed checkpoint covers it, so without"
+                        + " checkpointing the source stalls once the client library's flow control"
+                        + " fills. Enable checkpointing"
                         + " (execution.checkpointing.interval), or raise"
                         + " PubSubSubscriberOptions.firstCheckpointTimeout(...) above the"
                         + " checkpoint interval if the job legitimately checkpoints less often.");
