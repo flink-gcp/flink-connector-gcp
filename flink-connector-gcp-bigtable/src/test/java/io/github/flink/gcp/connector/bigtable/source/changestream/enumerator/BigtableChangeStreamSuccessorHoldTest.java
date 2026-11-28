@@ -184,12 +184,16 @@ class BigtableChangeStreamSuccessorHoldTest {
         // A restored checkpoint has completed, so nothing it records is held. Here a partition and
         // a later split over part of its range are both unassigned, which a restore during a
         // re-read leaves behind; both close with output and are handed back before a checkpoint.
-        ChangeStreamPartitionSplit earlier = split("change-stream-0", WHOLE);
-        ChangeStreamPartitionSplit later = split("change-stream-1", LEFT);
+        // The enumerator checks restored positions against the change stream's retention, less a
+        // one-minute safety margin, on the system clock whatever clock it is given, so they are
+        // recent rather than START, which falls out of that window just under a week after it.
+        Instant restoredAt = Instant.now().minus(Duration.ofMinutes(1));
+        ChangeStreamPartitionSplit earlier = split("change-stream-0", WHOLE, restoredAt);
+        ChangeStreamPartitionSplit later = split("change-stream-1", LEFT, restoredAt);
         BigtableChangeStreamEnumeratorState restored =
                 new BigtableChangeStreamEnumeratorState(
                         true,
-                        START,
+                        restoredAt,
                         2,
                         Arrays.asList(earlier, later),
                         Collections.emptyList(),
@@ -218,8 +222,15 @@ class BigtableChangeStreamSuccessorHoldTest {
         enumerator.handleSourceEvent(0, emitted(earlier, successor(RIGHT, "right")));
         enumerator.snapshotState(1);
         enumerator.notifyCheckpointComplete(1);
-        assertThat(assignedIds(context)).contains(later.splitId(), "change-stream-2");
-        assertThat(assignedIds(context)).doesNotContain("change-stream-3");
+        // The checkpoint releases the later one, to be read again, and the earlier one's successor,
+        // and nothing else: the later one has not closed again since it was handed back.
+        assertThat(assignedIds(context))
+                .containsExactlyInAnyOrder(
+                        earlier.splitId(),
+                        later.splitId(),
+                        earlier.splitId(),
+                        later.splitId(),
+                        "change-stream-2");
         enumerator.close();
     }
 
@@ -651,8 +662,10 @@ class BigtableChangeStreamSuccessorHoldTest {
         throw new AssertionError(split.splitId() + " was never assigned");
     }
 
-    private static ChangeStreamPartitionSplit split(String splitId, ByteStringRange partition) {
-        return new ChangeStreamPartitionSplit(splitId, partition, Collections.emptyList(), START);
+    private static ChangeStreamPartitionSplit split(
+            String splitId, ByteStringRange partition, Instant lowWatermark) {
+        return new ChangeStreamPartitionSplit(
+                splitId, partition, Collections.emptyList(), lowWatermark);
     }
 
     private static PartitionTransitionEvent emitted(
