@@ -29,6 +29,9 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -377,9 +380,21 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
         enumerator.start();
         Thread initializing = new Thread(() -> context.runAsyncCallsDeferringHandlers(), "init");
         AtomicReference<Throwable> closeResult = new AtomicReference<>();
-        Thread closing = new Thread(() -> closeResult.set(catchThrowable(enumerator::close)), "c");
+        AtomicReference<List<LogCapture.Event>> loggedByClose = new AtomicReference<>();
 
-        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+        // At INFO, so that a failure reported at INFO instead is captured, and fails the level
+        // assertion rather than going unseen.
+        try (LogCapture capture =
+                LogCapture.of(SpannerChangeStreamSplitEnumerator.class, LogCapture.Level.INFO)) {
+            Thread closing =
+                    new Thread(
+                            () -> {
+                                closeResult.set(catchThrowable(enumerator::close));
+                                // Taken as close() returns: Flink may never run the handler after
+                                // it.
+                                loggedByClose.set(new ArrayList<>(capture.getEvents()));
+                            },
+                            "c");
             try {
                 initializing.start();
                 assertThat(releaseEntered.await(10, TimeUnit.SECONDS))
@@ -392,6 +407,17 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
                 assertThat(capture.getEvents())
                         .as("logged while the release is still closing the client")
                         .isEmpty();
+                assertHoldsNoMonitorOf(closing, enumerator);
+                // Held while the release fails, the enumerator's monitor stops it where it records
+                // its failure: after it has added that failure to initialization's, and before it
+                // publishes its end to the waiting close.
+                synchronized (enumerator) {
+                    releaseGate.countDown();
+                    awaitBlockedOnAMonitorThisThreadHolds(initializing);
+                    assertThat(failure.getSuppressed())
+                            .as("what the initialization failure carries before the release ends")
+                            .containsExactly(releaseFailure);
+                }
             } finally {
                 releaseGate.countDown();
                 initializing.join(10_000);
@@ -399,15 +425,93 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
             }
             assertThat(initializing.isAlive()).as("initialization ended").isFalse();
             assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
-            assertThat(capture.getEvents())
-                    .as("the initialization failure, carrying the release's")
+            // The release's own failure is logged as well, since the enumerator had closed by the
+            // time it failed; this test asserts only the initialization failure.
+            assertThat(loggedByClose.get())
+                    .as("the initialization failure, logged at WARN by the time close() returns")
                     .anySatisfy(
                             event -> {
+                                isAWarning(event);
                                 assertThat(event.getThrowable()).isSameAs(failure);
-                                assertThat(failure.getSuppressed()).containsExactly(releaseFailure);
                             });
         }
         assertThat(closeResult.get()).isNull();
+    }
+
+    @Test
+    void aStartPositionFailureIsRecordedBeforeTheReleaseSoACloseDuringItLogsIt() throws Exception {
+        // The start position resolves after the bound while the enumerator is open, and the close
+        // lands while the release after it is still closing the client. Recorded only after the
+        // release, the failure would be left to initialization's thread, which would log it only
+        // once the release has ended, racing the close's return, when Flink may already be shutting
+        // the coordinator's executor down.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        CountDownLatch releaseEntered = new CountDownLatch(1);
+        CountDownLatch releaseGate = new CountDownLatch(1);
+        ScriptedClient client = new ScriptedClient();
+        client.duringClose =
+                () -> {
+                    releaseEntered.countDown();
+                    releaseGate.await();
+                };
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, clientMetrics -> client, Instant.EPOCH);
+        enumerator.start();
+        Thread initializing = new Thread(() -> context.runAsyncCallsDeferringHandlers(), "init");
+        AtomicReference<Throwable> closeResult = new AtomicReference<>();
+        AtomicReference<List<LogCapture.Event>> loggedByClose = new AtomicReference<>();
+
+        try (LogCapture capture =
+                LogCapture.of(SpannerChangeStreamSplitEnumerator.class, LogCapture.Level.INFO)) {
+            Thread closing =
+                    new Thread(
+                            () -> {
+                                closeResult.set(catchThrowable(enumerator::close));
+                                // Taken as close() returns: Flink may never run the handler after
+                                // it.
+                                loggedByClose.set(new ArrayList<>(capture.getEvents()));
+                            },
+                            "c");
+            try {
+                initializing.start();
+                assertThat(releaseEntered.await(10, TimeUnit.SECONDS))
+                        .as("the release after the failure began closing the client")
+                        .isTrue();
+                closing.start();
+                assertThat(awaitParkedOrEnded(closing))
+                        .as("the enumerator's close waits for the release")
+                        .isEqualTo(Thread.State.WAITING);
+                assertHoldsNoMonitorOf(closing, enumerator);
+                // Holding the enumerator's monitor once the release ends keeps initialization's
+                // thread from recording or logging the failure until the close has returned, so
+                // what the close logged cannot be confused with what that thread logs after it. The
+                // close needs the monitor only before it waits for the release.
+                synchronized (enumerator) {
+                    releaseGate.countDown();
+                    closing.join(10_000);
+                    assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+                }
+            } finally {
+                releaseGate.countDown();
+                initializing.join(10_000);
+                closing.join(10_000);
+            }
+            assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+            assertThat(loggedByClose.get())
+                    .as("the start-position failure, logged by the time close() returns")
+                    .singleElement()
+                    .satisfies(
+                            SpannerChangeStreamSplitEnumeratorInitializationFailureTest::isAWarning)
+                    .satisfies(
+                            event ->
+                                    assertIsTheFailure(
+                                            event.getThrowable(),
+                                            OpenFailure.START_POSITION,
+                                            null));
+            assertThat(capture.getEvents()).as("events once initialization ended").hasSize(1);
+        }
+        assertThat(closeResult.get()).isNull();
+        assertThat(client.closeCalls).isOne();
     }
 
     @ParameterizedTest
@@ -526,6 +630,46 @@ class SpannerChangeStreamSplitEnumeratorInitializationFailureTest {
             }
             assertThat(System.nanoTime())
                     .as("%s parked or ended in time", thread.getName())
+                    .isLessThan(deadline);
+            Thread.onSpinWait();
+        }
+    }
+
+    /**
+     * Asserts that {@code thread} holds no monitor of {@code object}, before the test takes that
+     * monitor itself: should it hold one, taking it would block the test instead of failing it.
+     */
+    private static void assertHoldsNoMonitorOf(Thread thread, Object object) {
+        ThreadInfo info =
+                ManagementFactory.getThreadMXBean()
+                        .getThreadInfo(new long[] {thread.getId()}, true, false)[0];
+        assertThat(info).as("%s is alive", thread.getName()).isNotNull();
+        assertThat(info.getLockedMonitors())
+                .as("the monitors %s holds while it waits", thread.getName())
+                .noneMatch(
+                        monitor ->
+                                monitor.getIdentityHashCode() == System.identityHashCode(object)
+                                        && monitor.getClassName()
+                                                .equals(object.getClass().getName()));
+    }
+
+    /**
+     * Waits until {@code thread} is blocked on a monitor the calling thread holds, rather than in
+     * any state that a class initialization or a wake-up from a latch passes through.
+     */
+    private static void awaitBlockedOnAMonitorThisThreadHolds(Thread thread) {
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        long holder = Thread.currentThread().getId();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (true) {
+            ThreadInfo info = threads.getThreadInfo(thread.getId());
+            if (info != null
+                    && info.getThreadState() == Thread.State.BLOCKED
+                    && info.getLockOwnerId() == holder) {
+                return;
+            }
+            assertThat(System.nanoTime())
+                    .as("%s blocked on the test's monitor in time", thread.getName())
                     .isLessThan(deadline);
             Thread.onSpinWait();
         }
