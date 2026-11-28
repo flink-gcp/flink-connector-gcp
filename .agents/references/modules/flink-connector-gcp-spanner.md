@@ -220,9 +220,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   open is recorded under the monitor and logged by `close()`, after it waits for the release, if
   `onInitialized` has not reported it, and one observed after the close is logged where it is
   observed; only the closed enumerator's refusal is not logged, and a failed call of a client
-  `close()` took over is logged at INFO, since that close may have caused it. Flink itself drops
-  a failure `onInitialized` throws if its coordinator context closes before Flink's handler sees
-  it (#2371). `close()` logs a failure to close the client it took over before throwing it, since
+  `close()` took over is logged at INFO, since that close may have caused it. Keep this tracking
+  rather than base's `AsyncStartupFailureReporter`: `docs/adr/0208` records why (#2391). Flink
+  itself drops a failure `onInitialized` throws if its coordinator context closes before Flink's
+  handler sees it (#2371). `close()` logs a failure to close the client it took over before
+  throwing it, since
   Flink closes the enumerator through `IOUtils.closeQuietly`. Do not cancel a creation: a failed or
   cancelled emulator check leaves the
   library's stubs open (#2306). The planner therefore builds
