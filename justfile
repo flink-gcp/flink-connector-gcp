@@ -446,7 +446,9 @@ sweep-e2e *args:
 #
 # rumdl's file set and rule deviations live in .rumdl.toml (#1035), discovered
 # from the working directory, and docs/content's MD052 opt-out in
-# docs/content/.rumdl.toml.
+# docs/content/.rumdl.toml. --deny-config-warnings fails on a configuration
+# warning, such as a misspelled rule code in the `enable` list, which rumdl would
+# otherwise only print while the intended rule silently stops running.
 #
 # Lint the shell and Python scripts, the workflows and the markdown.
 lint:
@@ -458,7 +460,7 @@ lint:
     mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x rumdl -- rumdl --version
-    mise x rumdl -- rumdl check .
+    mise x rumdl -- rumdl check --deny-config-warnings .
 
 # Does every skill's frontmatter parse, so Claude Code can load it at all? A
 # broken one is invisible: the file stays valid markdown, no build step reads
